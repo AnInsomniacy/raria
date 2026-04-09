@@ -15,14 +15,22 @@ use raria_core::progress::DownloadEvent;
 use serde::{Deserialize, Serialize};
 
 /// An aria2-compatible WebSocket notification.
+///
+/// Wire format per aria2 manual:
+/// ```json
+/// {"jsonrpc":"2.0","method":"aria2.onDownloadStart","params":[{"gid":"..."}]}
+/// ```
+///
+/// Note: No `id` field — this is a JSON-RPC 2.0 notification.
+/// Note: `params` is `[{"gid":"..."}]`, NOT `[[{"gid":"..."}]]`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Aria2Notification {
     /// JSON-RPC version.
     pub jsonrpc: String,
     /// Notification method name (e.g., "aria2.onDownloadStart").
     pub method: String,
-    /// Params: [[{gid: "..."}]]
-    pub params: Vec<Vec<GidParam>>,
+    /// Params: [{"gid": "..."}] — a single-element array containing a GID struct.
+    pub params: Vec<GidParam>,
 }
 
 /// GID parameter in a notification.
@@ -37,9 +45,9 @@ impl Aria2Notification {
         Self {
             jsonrpc: "2.0".into(),
             method: method.into(),
-            params: vec![vec![GidParam {
+            params: vec![GidParam {
                 gid: format!("{gid}"),
-            }]],
+            }],
         }
     }
 }
@@ -83,7 +91,7 @@ mod tests {
         let notif = event_to_notification(&event).unwrap();
         assert_eq!(notif.method, "aria2.onDownloadStart");
         assert_eq!(notif.jsonrpc, "2.0");
-        assert_eq!(notif.params[0][0].gid, "0000000000000001");
+        assert_eq!(notif.params[0].gid, "0000000000000001");
     }
 
     #[test]
@@ -140,7 +148,7 @@ mod tests {
         let json = serde_json::to_string(&notif).unwrap();
         let recovered: Aria2Notification = serde_json::from_str(&json).unwrap();
         assert_eq!(recovered.method, "aria2.onDownloadStart");
-        assert_eq!(recovered.params[0][0].gid, "0000000000000001");
+        assert_eq!(recovered.params[0].gid, "0000000000000001");
     }
 
     #[test]
@@ -148,10 +156,10 @@ mod tests {
         let notif = Aria2Notification::new("aria2.onDownloadComplete", Gid::from_raw(255));
         let json = serde_json::to_value(&notif).unwrap();
 
-        // aria2 format: {"jsonrpc":"2.0","method":"...","params":[[{"gid":"..."}]]}
+        // aria2 format: {"jsonrpc":"2.0","method":"...","params":[{"gid":"..."}]}
         assert_eq!(json["jsonrpc"], "2.0");
         assert!(json["params"].is_array());
-        assert!(json["params"][0].is_array());
-        assert_eq!(json["params"][0][0]["gid"], "00000000000000ff");
+        assert!(json["params"][0].is_object());
+        assert_eq!(json["params"][0]["gid"], "00000000000000ff");
     }
 }

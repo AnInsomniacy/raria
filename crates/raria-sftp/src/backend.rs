@@ -145,6 +145,7 @@ impl ByteSourceBackend for SftpBackend {
             etag: None,
             last_modified: None,
             content_type: None,
+            suggested_filename: None,
         })
     }
 

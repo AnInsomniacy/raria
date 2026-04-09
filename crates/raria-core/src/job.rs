@@ -4,6 +4,7 @@
 // Every download—whether HTTP, FTP, SFTP, or BitTorrent—is represented
 // as a `Job` with a unique `Gid` and tracked through a `Status` state machine.
 
+use crate::config::JobOptions;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -121,11 +122,19 @@ pub struct Job {
     pub created_at: DateTime<Utc>,
     /// Error message if `status == Error`.
     pub error_msg: Option<String>,
+    /// Per-job configuration options (overrides global defaults).
+    #[serde(default)]
+    pub options: JobOptions,
 }
 
 impl Job {
-    /// Create a new Range (HTTP/FTP/SFTP) job.
+    /// Create a new Range (HTTP/FTP/SFTP) job with default options.
     pub fn new_range(uris: Vec<String>, out_path: PathBuf) -> Self {
+        Self::new_range_with_options(uris, out_path, JobOptions::default())
+    }
+
+    /// Create a new Range (HTTP/FTP/SFTP) job with custom options.
+    pub fn new_range_with_options(uris: Vec<String>, out_path: PathBuf, options: JobOptions) -> Self {
         Self {
             gid: Gid::new(),
             kind: JobKind::Range,
@@ -138,11 +147,17 @@ impl Job {
             download_speed: 0,
             created_at: Utc::now(),
             error_msg: None,
+            options,
         }
     }
 
-    /// Create a new BitTorrent job.
+    /// Create a new BitTorrent job with default options.
     pub fn new_bt(uris: Vec<String>, out_path: PathBuf) -> Self {
+        Self::new_bt_with_options(uris, out_path, JobOptions::default())
+    }
+
+    /// Create a new BitTorrent job with custom options.
+    pub fn new_bt_with_options(uris: Vec<String>, out_path: PathBuf, options: JobOptions) -> Self {
         Self {
             gid: Gid::new(),
             kind: JobKind::Bt,
@@ -155,6 +170,7 @@ impl Job {
             download_speed: 0,
             created_at: Utc::now(),
             error_msg: None,
+            options,
         }
     }
 

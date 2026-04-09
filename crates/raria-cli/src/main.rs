@@ -193,7 +193,7 @@ async fn run_download(
     );
 
     // Probe the file.
-    let backend = Arc::new(HttpBackend::new()?);
+    let backend = create_backend(url)?;
     let probe_ctx = ProbeContext::default();
     let parsed_url: url::Url = url.parse().context("invalid URL")?;
 
@@ -501,7 +501,7 @@ async fn run_job_download(
 
     info!(%gid, uri = %parsed_url, "daemon: starting download");
 
-    let backend = Arc::new(HttpBackend::new()?);
+    let backend = create_backend(uri_str)?;
     let probe_ctx = ProbeContext::default();
 
     let probe = backend
@@ -510,7 +510,7 @@ async fn run_job_download(
         .with_context(|| format!("failed to probe {parsed_url}"))?;
 
     let file_size = probe.size.unwrap_or(0);
-    let max_conn = 16u32; // TODO: from job options.
+    let max_conn = job.options.max_connections;
     let effective_connections = if probe.supports_range && file_size > 0 {
         max_conn.min((file_size / 1024).max(1) as u32)
     } else {
@@ -535,10 +535,33 @@ async fn run_job_download(
             engine_ref.update_progress(progress_gid, bytes);
         });
 
+    // Wire segment checkpoint to persist progress to redb for crash recovery.
+    let on_checkpoint: Option<Arc<dyn Fn(u32, u64) + Send + Sync>> =
+        engine.store().map(|store| {
+            let store = Arc::clone(store);
+            let checkpoint_gid = gid;
+            Arc::new(move |seg_id: u32, bytes_downloaded: u64| {
+                let seg = raria_core::segment::SegmentState {
+                    start: 0,
+                    end: 0,
+                    downloaded: bytes_downloaded,
+                    etag: None,
+                    status: raria_core::segment::SegmentStatus::Active,
+                };
+                if let Err(e) = store.put_segment(checkpoint_gid, seg_id, &seg) {
+                    tracing::warn!(
+                        %checkpoint_gid, seg_id, error = %e,
+                        "failed to checkpoint segment progress"
+                    );
+                }
+            }) as Arc<dyn Fn(u32, u64) + Send + Sync>
+        });
+
     let executor = SegmentExecutor::new(ExecutorConfig {
         max_connections: effective_connections,
         max_retries: 5,
         rate_limiter,
+        on_checkpoint,
         ..Default::default()
     });
 
@@ -604,3 +627,122 @@ fn format_bytes(bytes: u64) -> String {
         format!("{bytes} B")
     }
 }
+
+/// Create the appropriate ByteSourceBackend for a given URI.
+///
+/// Routes based on scheme:
+/// - `http://` / `https://` → HttpBackend
+/// - `ftp://` → FtpBackend
+/// - `ftps://` → FtpBackend (suppaftp handles TLS)
+/// - `sftp://` → SftpBackend
+/// - `magnet:` → Error (BT uses BtService, not ByteSourceBackend)
+///
+/// Returns an error for unrecognized schemes.
+fn create_backend(uri: &str) -> anyhow::Result<Arc<dyn ByteSourceBackend>> {
+    use raria_core::service::{detect_scheme, JobSource};
+    use raria_ftp::backend::FtpBackend;
+    use raria_sftp::backend::SftpBackend;
+
+    let source = detect_scheme(uri)
+        .ok_or_else(|| anyhow::anyhow!("unsupported or unrecognized URI scheme: {uri}"))?;
+
+    match source {
+        JobSource::Http => Ok(Arc::new(HttpBackend::new()?)),
+        JobSource::Ftp | JobSource::Ftps => Ok(Arc::new(FtpBackend::new())),
+        JobSource::Sftp => Ok(Arc::new(SftpBackend::new())),
+        JobSource::Magnet => Err(anyhow::anyhow!(
+            "magnet URIs use BitTorrent, not range-based download"
+        )),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── create_backend dispatch tests ────────────────────────────────
+
+    #[test]
+    fn dispatch_https_to_http_backend() {
+        let backend = create_backend("https://example.com/file.zip").unwrap();
+        assert_eq!(backend.name(), "http");
+    }
+
+    #[test]
+    fn dispatch_http_to_http_backend() {
+        let backend = create_backend("http://example.com/file.zip").unwrap();
+        assert_eq!(backend.name(), "http");
+    }
+
+    #[test]
+    fn dispatch_ftp_to_ftp_backend() {
+        let backend = create_backend("ftp://ftp.example.com/pub/file.tar.gz").unwrap();
+        assert_eq!(backend.name(), "ftp");
+    }
+
+    #[test]
+    fn dispatch_ftps_to_ftp_backend() {
+        let backend = create_backend("ftps://ftp.example.com/secure/file.zip").unwrap();
+        assert_eq!(backend.name(), "ftp");
+    }
+
+    #[test]
+    fn dispatch_sftp_to_sftp_backend() {
+        let backend = create_backend("sftp://server.example.com/home/user/file.bin").unwrap();
+        assert_eq!(backend.name(), "sftp");
+    }
+
+    #[test]
+    fn dispatch_unknown_scheme_errors() {
+        let result = create_backend("gopher://old.server.net/file");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("unsupported"));
+    }
+
+    #[test]
+    fn dispatch_empty_uri_errors() {
+        assert!(create_backend("").is_err());
+    }
+
+    #[test]
+    fn dispatch_magnet_errors_for_range_backend() {
+        let result = create_backend("magnet:?xt=urn:btih:abc123");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("magnet"));
+    }
+
+    #[test]
+    fn dispatch_ftp_with_credentials() {
+        let backend = create_backend("ftp://user:pass@ftp.example.com/file.zip").unwrap();
+        assert_eq!(backend.name(), "ftp");
+    }
+
+    #[test]
+    fn dispatch_http_custom_port() {
+        let backend = create_backend("http://example.com:8080/file.zip").unwrap();
+        assert_eq!(backend.name(), "http");
+    }
+
+    // ── format_bytes tests ───────────────────────────────────────────
+
+    #[test]
+    fn format_bytes_small() {
+        assert_eq!(format_bytes(42), "42 B");
+    }
+
+    #[test]
+    fn format_bytes_kib() {
+        assert_eq!(format_bytes(2048), "2.00 KiB");
+    }
+
+    #[test]
+    fn format_bytes_mib() {
+        assert_eq!(format_bytes(1024 * 1024 * 5), "5.00 MiB");
+    }
+
+    #[test]
+    fn format_bytes_gib() {
+        assert_eq!(format_bytes(1024 * 1024 * 1024 * 2), "2.00 GiB");
+    }
+}
+

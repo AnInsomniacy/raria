@@ -89,6 +89,11 @@ impl Engine {
         }
     }
 
+    /// Get a reference to the persistent store, if configured.
+    pub fn store(&self) -> Option<&Arc<Store>> {
+        self.store.as_ref()
+    }
+
     /// Restore jobs from the persistent store into the in-memory registry.
     ///
     /// - Waiting and Paused jobs are re-enqueued into the scheduler.

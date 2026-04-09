@@ -48,7 +48,14 @@ pub async fn start_rpc_server(
     info!(%addr, "RPC server listening");
 
     let handler = RpcHandler::new(Arc::clone(&engine));
-    let handle = server.start(handler.into_rpc());
+    let mut module = handler.into_rpc();
+
+    // Register system.multicall — required for AriaNg compatibility.
+    // aria2 multicall format: params = [[{methodName, params}, ...]]
+    // Returns: [[result1], [result2], ...] or {code, message} for errors.
+    register_system_methods(&mut module)?;
+
+    let handle = server.start(module);
 
     // Spawn WebSocket event push loop.
     let ws_cancel = cancel.clone();
@@ -65,6 +72,126 @@ pub async fn start_rpc_server(
     });
 
     Ok(addr)
+}
+
+/// Notification method names that aria2 supports.
+const ARIA2_NOTIFICATIONS: &[&str] = &[
+    "aria2.onDownloadStart",
+    "aria2.onDownloadPause",
+    "aria2.onDownloadStop",
+    "aria2.onDownloadComplete",
+    "aria2.onDownloadError",
+    "aria2.onBtDownloadComplete",
+];
+
+/// Register system.multicall, system.listMethods, system.listNotifications
+/// on the RPC module.
+///
+/// These are required for AriaNg and Motrix compatibility:
+/// - AriaNg sends every poll as a system.multicall batch
+/// - system.listMethods is used for capability discovery
+fn register_system_methods(
+    module: &mut jsonrpsee::RpcModule<RpcHandler>,
+) -> Result<()> {
+    // Collect method names before registering system.* methods.
+    let method_names: Vec<String> = module
+        .method_names()
+        .map(String::from)
+        .collect();
+
+    // system.listMethods — returns all registered method names.
+    let names_for_list = method_names.clone();
+    module
+        .register_method("system.listMethods", move |_params, _ctx, _| {
+            let mut all_names = names_for_list.clone();
+            all_names.push("system.multicall".into());
+            all_names.push("system.listMethods".into());
+            all_names.push("system.listNotifications".into());
+            all_names.sort();
+            serde_json::to_value(&all_names)
+                .map_err(|e| jsonrpsee::types::ErrorObjectOwned::owned(-32603, e.to_string(), None::<()>))
+        })
+        .context("failed to register system.listMethods")?;
+
+    // system.listNotifications — returns notification method names.
+    module
+        .register_method("system.listNotifications", move |_params, _ctx, _| {
+            serde_json::to_value(ARIA2_NOTIFICATIONS)
+                .map_err(|e| jsonrpsee::types::ErrorObjectOwned::owned(-32603, e.to_string(), None::<()>))
+        })
+        .context("failed to register system.listNotifications")?;
+
+    // system.multicall — aria2's batch execution method.
+    //
+    // Approach: capture a clone of the RpcModule and dispatch each sub-call
+    // by constructing a proper JSON-RPC batch and using raw_json_request.
+    let methods_module = module.clone();
+    module
+        .register_async_method("system.multicall", move |params, _ctx, _ext| {
+            let inner_module = methods_module.clone();
+            async move {
+                // aria2 wraps calls as: params = [[{methodName, params}, ...]]
+                let raw: serde_json::Value = params.parse()
+                    .map_err(|e: jsonrpsee::types::ErrorObjectOwned| e)?;
+
+                let calls = raw
+                    .as_array()
+                    .and_then(|outer| outer.first())
+                    .and_then(|inner| inner.as_array())
+                    .or_else(|| raw.as_array())
+                    .ok_or_else(|| jsonrpsee::types::ErrorObjectOwned::owned(
+                        -32602, "multicall params must be [[{methodName, params}, ...]]", None::<()>,
+                    ))?
+                    .clone();
+
+                let mut results = Vec::with_capacity(calls.len());
+
+                for (i, call) in calls.iter().enumerate() {
+                    let method_name = call
+                        .get("methodName")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
+
+                    let call_params = call
+                        .get("params")
+                        .cloned()
+                        .unwrap_or(serde_json::json!([]));
+
+                    // Build a JSON-RPC 2.0 request and dispatch via the module.
+                    let request = serde_json::json!({
+                        "jsonrpc": "2.0",
+                        "id": i,
+                        "method": method_name,
+                        "params": call_params
+                    });
+
+                    let request_str = serde_json::to_string(&request).unwrap();
+                    match inner_module.raw_json_request(&request_str, 1).await {
+                        Ok((resp_str, _)) => {
+                            if let Ok(resp_json) = serde_json::from_str::<serde_json::Value>(&resp_str) {
+                                if let Some(result) = resp_json.get("result") {
+                                    results.push(serde_json::json!([result.clone()]));
+                                } else if let Some(error) = resp_json.get("error") {
+                                    results.push(error.clone());
+                                } else {
+                                    results.push(serde_json::json!({"code": -32603, "message": "no result or error"}));
+                                }
+                            } else {
+                                results.push(serde_json::json!({"code": -32603, "message": "response parse error"}));
+                            }
+                        }
+                        Err(_) => {
+                            results.push(serde_json::json!({"code": -32601, "message": format!("method not found: {method_name}")}));
+                        }
+                    }
+                }
+
+                Ok::<serde_json::Value, jsonrpsee::types::ErrorObjectOwned>(serde_json::json!(results))
+            }
+        })
+        .context("failed to register system.multicall")?;
+
+    Ok(())
 }
 
 /// Maps DownloadEvent variants to aria2-compatible WebSocket notification method names.

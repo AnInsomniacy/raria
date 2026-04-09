@@ -71,6 +71,8 @@ pub struct FileProbe {
     pub last_modified: Option<String>,
     /// Content-Type (HTTP only).
     pub content_type: Option<String>,
+    /// Suggested filename from Content-Disposition header (HTTP only).
+    pub suggested_filename: Option<String>,
 }
 
 /// A boxed async byte stream.
@@ -132,6 +134,7 @@ mod tests {
             etag: Some("abc".into()),
             last_modified: None,
             content_type: Some("application/octet-stream".into()),
+            suggested_filename: None,
         };
         assert_eq!(probe.size, Some(1024));
         assert!(probe.supports_range);

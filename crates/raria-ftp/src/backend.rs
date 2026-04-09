@@ -19,10 +19,49 @@ use async_trait::async_trait;
 use raria_range::backend::{
     ByteSourceBackend, ByteStream, FileProbe, OpenContext, ProbeContext,
 };
+use std::pin::Pin;
+use std::task::{self, Poll};
 use suppaftp::tokio::AsyncNativeTlsFtpStream;
 use suppaftp::types::FileType;
+use tokio::io::AsyncRead;
 use tracing::{debug, info, warn};
 use url::Url;
+
+/// Wraps an FTP control connection and its data stream together.
+///
+/// This ensures the FTP control connection stays alive as long as the data
+/// stream is being read, and is properly cleaned up when dropped.
+///
+/// Previously, `mem::forget(ftp)` was used which leaked the control connection's
+/// TCP socket and associated resources.
+struct FtpOwnedStream<S: AsyncRead + Unpin> {
+    /// The FTP control connection. Kept alive while data is being read.
+    _ftp: AsyncNativeTlsFtpStream,
+    /// The data stream from RETR.
+    data: S,
+}
+
+impl<S: AsyncRead + Unpin> FtpOwnedStream<S> {
+    fn new(ftp: AsyncNativeTlsFtpStream, data: S) -> Self {
+        Self { _ftp: ftp, data }
+    }
+}
+
+impl<S: AsyncRead + Unpin> AsyncRead for FtpOwnedStream<S> {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        cx: &mut task::Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        // SAFETY: We only access `data` which is Unpin.
+        let this = self.get_mut();
+        Pin::new(&mut this.data).poll_read(cx, buf)
+    }
+}
+
+// The wrapper is Send if both components are Send.
+// AsyncNativeTlsFtpStream is Send, and the DataStream owns its socket.
+unsafe impl<S: AsyncRead + Unpin + Send> Send for FtpOwnedStream<S> {}
 
 /// FTP/FTPS download backend.
 #[derive(Debug)]
@@ -108,6 +147,7 @@ impl ByteSourceBackend for FtpBackend {
             etag: None,
             last_modified: None,
             content_type: None,
+            suggested_filename: None,
         })
     }
 
@@ -124,26 +164,16 @@ impl ByteSourceBackend for FtpBackend {
             debug!(offset, "FTP REST set successfully");
         }
 
-        // RETR returns a DataStream<T> that implements AsyncRead + Send.
-        // ByteStream = Pin<Box<dyn AsyncRead + Send>>, so we box it directly.
+        // RETR returns a DataStream that owns its data-channel socket.
+        // The FTP control connection is needed for finalize_retr_stream()
+        // after the data is read. We wrap both in FtpOwnedStream so the
+        // control connection is properly cleaned up when the stream drops.
         let data_stream = ftp
             .retr_as_stream(&path)
             .await
             .with_context(|| format!("FTP RETR failed for {path}"))?;
 
-        // DataStream implements AsyncRead + Send, which matches ByteStream.
-        // The FTP control connection (`ftp`) is leaked here — this is
-        // intentional. The DataStream holds a reference to the FTP connection
-        // internally. When the DataStream is dropped, the data channel closes.
-        // For proper cleanup, the caller should finalize_retr_stream(), but
-        // since we transfer ownership to the executor, the executor will
-        // just drop the stream when the segment is complete.
-        //
-        // NOTE: We intentionally forget the ftp handle here. The DataStream
-        // borrows from it, and both live until the download completes.
-        std::mem::forget(ftp);
-
-        Ok(Box::pin(data_stream))
+        Ok(Box::pin(FtpOwnedStream::new(ftp, data_stream)))
     }
 
     fn name(&self) -> &'static str {

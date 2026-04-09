@@ -108,12 +108,18 @@ impl ByteSourceBackend for HttpBackend {
             .and_then(|v| v.to_str().ok())
             .map(String::from);
 
+        let suggested_filename = headers
+            .get("content-disposition")
+            .and_then(|v| v.to_str().ok())
+            .and_then(crate::content_disposition::parse_content_disposition);
+
         Ok(FileProbe {
             size,
             supports_range,
             etag,
             last_modified,
             content_type,
+            suggested_filename,
         })
     }
 
