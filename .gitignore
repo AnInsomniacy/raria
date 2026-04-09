@@ -22,3 +22,6 @@ Cargo.lock
 
 # Test artifacts
 /tmp/
+
+# Legacy aria2 source (local reference only)
+aria2-legacy/
