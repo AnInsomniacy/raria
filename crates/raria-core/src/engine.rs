@@ -163,7 +163,14 @@ impl Engine {
             .unwrap_or_else(|| "download".to_string());
 
         let out_path = spec.dir.join(&filename);
-        let job = Job::new_range(spec.uris.clone(), out_path);
+
+        // Detect whether this is a BT job (magnet URI) or a range-based download.
+        let is_bt = spec.uris.iter().any(|u| u.starts_with("magnet:"));
+        let job = if is_bt {
+            Job::new_bt(spec.uris.clone(), out_path)
+        } else {
+            Job::new_range(spec.uris.clone(), out_path)
+        };
         let gid = job.gid;
 
         // Persist BEFORE in-memory state so crash-safe.

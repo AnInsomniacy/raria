@@ -23,10 +23,10 @@ mod tests {
         let rpc_config = RpcServerConfig {
             listen_addr: SocketAddr::from(([127, 0, 0, 1], 0)),
         };
-        let addr = start_rpc_server(engine.clone(), &rpc_config, cancel.clone())
+        let addrs = start_rpc_server(engine.clone(), &rpc_config, cancel.clone())
             .await
             .unwrap();
-        let url = format!("http://{addr}");
+        let url = format!("http://{}", addrs.rpc);
         (engine, url, cancel)
     }
 

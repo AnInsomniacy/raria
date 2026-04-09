@@ -3,6 +3,7 @@
 // This module defines configuration structures for global and per-job settings.
 
 use serde::{Deserialize, Serialize};
+use crate::file_alloc::FileAllocation;
 use std::path::PathBuf;
 
 /// Global configuration for the raria daemon.
@@ -38,6 +39,23 @@ pub struct GlobalConfig {
     pub ca_certificate: Option<PathBuf>,
     /// User-Agent string override.
     pub user_agent: Option<String>,
+    /// Path to Netscape cookie file (aria2: --load-cookies).
+    pub cookie_file: Option<PathBuf>,
+    /// RPC secret token (aria2: --rpc-secret). When set, all RPC
+    /// requests must include "token:<secret>" as the first parameter.
+    pub rpc_secret: Option<String>,
+    /// File allocation strategy (aria2: --file-allocation).
+    pub file_allocation: FileAllocation,
+    /// Max connections per server (aria2: --max-connection-per-server / -x).
+    pub max_connection_per_server: u32,
+    /// Number of segments for splitting (aria2: --split / -s).
+    pub split: u32,
+    /// Continue downloading a partially downloaded file (aria2: --continue / -c).
+    pub continue_download: bool,
+    /// Maximum retries per download (aria2: --max-tries, 0 = infinite).
+    pub max_tries: u32,
+    /// Seconds to wait between retries (aria2: --retry-wait).
+    pub retry_wait: u32,
 }
 
 impl Default for GlobalConfig {
@@ -58,6 +76,14 @@ impl Default for GlobalConfig {
             check_certificate: true,
             ca_certificate: None,
             user_agent: None,
+            cookie_file: None,
+            rpc_secret: None,
+            file_allocation: FileAllocation::None,
+            max_connection_per_server: 16,
+            split: 5,
+            continue_download: false,
+            max_tries: 5,
+            retry_wait: 0,
         }
     }
 }

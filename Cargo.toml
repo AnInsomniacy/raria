@@ -70,6 +70,8 @@ console = "0.15"
 bytes = "1"
 rand = "0.9"
 hex = "0.4"
+base64 = "0.22"
+tokio-tungstenite = "0.24"
 
 # === Workspace Crates ===
 raria-core = { path = "crates/raria-core" }

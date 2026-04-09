@@ -22,17 +22,17 @@ mod tests {
         let config = RpcServerConfig {
             listen_addr: SocketAddr::from(([127, 0, 0, 1], 0)),
         };
-        let addr = start_rpc_server(engine, &config, cancel.clone())
+        let addrs = start_rpc_server(engine, &config, cancel.clone())
             .await
             .unwrap();
-        (addr, cancel)
+        (addrs.rpc, cancel)
     }
 
     /// system.multicall should execute multiple aria2 methods in a single request.
     /// This is the exact format AriaNg sends.
     #[tokio::test]
     async fn multicall_executes_batch() {
-        let (addr, cancel) = start_test_server().await;
+        let (rpc_addr, cancel) = start_test_server().await;
 
         let client = reqwest::Client::new();
         let body = serde_json::json!({
@@ -46,7 +46,7 @@ mod tests {
         });
 
         let resp = client
-            .post(format!("http://{addr}"))
+            .post(format!("http://{rpc_addr}"))
             .json(&body)
             .send()
             .await
@@ -77,7 +77,7 @@ mod tests {
     /// not fail the entire batch.
     #[tokio::test]
     async fn multicall_partial_error() {
-        let (addr, cancel) = start_test_server().await;
+        let (rpc_addr, cancel) = start_test_server().await;
 
         let client = reqwest::Client::new();
         let body = serde_json::json!({
@@ -91,7 +91,7 @@ mod tests {
         });
 
         let resp = client
-            .post(format!("http://{addr}"))
+            .post(format!("http://{rpc_addr}"))
             .json(&body)
             .send()
             .await
@@ -118,7 +118,7 @@ mod tests {
     /// system.listMethods should return a list of all registered RPC methods.
     #[tokio::test]
     async fn list_methods_returns_method_names() {
-        let (addr, cancel) = start_test_server().await;
+        let (rpc_addr, cancel) = start_test_server().await;
 
         let client = reqwest::Client::new();
         let body = serde_json::json!({
@@ -129,7 +129,7 @@ mod tests {
         });
 
         let resp = client
-            .post(format!("http://{addr}"))
+            .post(format!("http://{rpc_addr}"))
             .json(&body)
             .send()
             .await
@@ -155,7 +155,7 @@ mod tests {
     /// system.listNotifications should return aria2 notification method names.
     #[tokio::test]
     async fn list_notifications_returns_notification_names() {
-        let (addr, cancel) = start_test_server().await;
+        let (rpc_addr, cancel) = start_test_server().await;
 
         let client = reqwest::Client::new();
         let body = serde_json::json!({
@@ -166,7 +166,7 @@ mod tests {
         });
 
         let resp = client
-            .post(format!("http://{addr}"))
+            .post(format!("http://{rpc_addr}"))
             .json(&body)
             .send()
             .await

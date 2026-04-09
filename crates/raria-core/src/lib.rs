@@ -3,6 +3,8 @@ pub mod checksum;
 pub mod config;
 pub mod config_file;
 pub mod engine;
+pub mod file_alloc;
+pub mod input_file;
 pub mod job;
 pub mod limiter;
 pub mod persist;

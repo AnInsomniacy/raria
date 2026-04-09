@@ -140,6 +140,22 @@ enum Commands {
         /// Custom user-agent string
         #[arg(long)]
         user_agent: Option<String>,
+
+        /// Input file containing URIs to download (one per line)
+        #[arg(short = 'i', long)]
+        input_file: Option<PathBuf>,
+
+        /// RPC secret token for authentication
+        #[arg(long)]
+        rpc_secret: Option<String>,
+
+        /// Path to Netscape cookie file
+        #[arg(long)]
+        load_cookies: Option<PathBuf>,
+
+        /// File allocation strategy: none, prealloc, trunc, falloc
+        #[arg(long, default_value = "none")]
+        file_allocation: String,
     },
 }
 
@@ -153,6 +169,20 @@ async fn main() -> Result<()> {
                 .unwrap_or_else(|_| EnvFilter::new(&cli.log_level)),
         )
         .init();
+
+    // Load configuration file if --conf-path was specified.
+    // Config file values are loaded first; CLI args override them later.
+    let mut base_config = GlobalConfig::default();
+    if let Some(ref conf_path) = cli.conf_path {
+        use raria_core::config_file::load_config_file;
+        match load_config_file(&mut base_config, conf_path) {
+            Ok(()) => info!(path = %conf_path.display(), "loaded configuration file"),
+            Err(e) => warn!(
+                path = %conf_path.display(), error = %e,
+                "failed to load configuration file"
+            ),
+        }
+    }
 
     match cli.command {
         Commands::Download {
@@ -192,24 +222,43 @@ async fn main() -> Result<()> {
             check_certificate,
             ca_certificate,
             user_agent,
+            input_file,
+            rpc_secret,
+            load_cookies,
+            file_allocation,
         } => {
-            let config = GlobalConfig {
-                dir: dir.clone(),
-                max_concurrent_downloads: cli.max_concurrent,
-                max_overall_download_limit: max_download_limit,
-                rpc_listen_port: rpc_port,
-                enable_rpc: true,
-                session_file: session_file.clone(),
-                all_proxy,
-                http_proxy,
-                https_proxy,
-                no_proxy,
-                check_certificate,
-                ca_certificate,
-                user_agent,
-                ..Default::default()
+            // Start from base_config (populated by --conf-path if present).
+            // CLI arguments override config file values.
+            let mut config = base_config.clone();
+            config.dir = dir.clone();
+            config.max_concurrent_downloads = cli.max_concurrent;
+            config.max_overall_download_limit = max_download_limit;
+            config.rpc_listen_port = rpc_port;
+            config.enable_rpc = true;
+            config.session_file = session_file.clone();
+            // Only override if CLI explicitly set these (Some means set by user).
+            if all_proxy.is_some() { config.all_proxy = all_proxy; }
+            if http_proxy.is_some() { config.http_proxy = http_proxy; }
+            if https_proxy.is_some() { config.https_proxy = https_proxy; }
+            if no_proxy.is_some() { config.no_proxy = no_proxy; }
+            config.check_certificate = check_certificate;
+            if ca_certificate.is_some() { config.ca_certificate = ca_certificate; }
+            if user_agent.is_some() { config.user_agent = user_agent; }
+            if rpc_secret.is_some() { config.rpc_secret = rpc_secret; }
+            if load_cookies.is_some() { config.cookie_file = load_cookies; }
+            config.file_allocation = raria_core::file_alloc::FileAllocation::parse(&file_allocation)
+                .context("invalid --file-allocation value")?;
+
+            // Load URIs from --input-file if provided.
+            let input_uris = if let Some(ref path) = input_file {
+                let uris = raria_core::input_file::load_input_file(path)?;
+                info!(count = uris.len(), path = %path.display(), "loaded URIs from input file");
+                uris
+            } else {
+                Vec::new()
             };
-            run_daemon_with_config(config, &session_file).await?;
+
+            run_daemon_with_config(config, &session_file, input_uris, dir.clone()).await?;
         }
     }
 
@@ -451,6 +500,8 @@ async fn run_download(
 async fn run_daemon_with_config(
     config: GlobalConfig,
     session_file: &std::path::Path,
+    input_uris: Vec<String>,
+    download_dir: PathBuf,
 ) -> Result<()> {
     let rpc_port = config.rpc_listen_port;
     let max_download_limit = config.max_overall_download_limit;
@@ -471,6 +522,22 @@ async fn run_daemon_with_config(
         info!(count = restored, "restored jobs from session");
     }
 
+    // Add jobs from --input-file.
+    for uri_line in &input_uris {
+        // Tab-separated URIs = multi-source mirrors for a single file.
+        let uris: Vec<String> = uri_line.split('\t').map(|s| s.to_string()).collect();
+        let spec = AddUriSpec {
+            uris,
+            filename: None,
+            dir: download_dir.clone(),
+            connections: 1,
+        };
+        match engine.add_uri(&spec) {
+            Ok(handle) => info!(gid = %handle.gid, "added job from input file"),
+            Err(e) => warn!(uri = %uri_line, error = %e, "failed to add URI from input file"),
+        }
+    }
+
     // Wire Ctrl+C to engine shutdown.
     let shutdown_token = engine.shutdown_token();
     let shutdown_clone = shutdown_token.clone();
@@ -485,9 +552,10 @@ async fn run_daemon_with_config(
     let rpc_config = RpcServerConfig {
         listen_addr: std::net::SocketAddr::from(([0, 0, 0, 0], rpc_port)),
     };
-    let rpc_addr = start_rpc_server(Arc::clone(&engine), &rpc_config, rpc_cancel.clone()).await?;
+    let rpc_addrs = start_rpc_server(Arc::clone(&engine), &rpc_config, rpc_cancel.clone()).await?;
+    let rpc_addr = rpc_addrs.rpc;
     info!(%rpc_addr, "RPC server ready");
-    println!("raria daemon running — RPC at http://{rpc_addr}/jsonrpc");
+    println!("raria daemon running — RPC at http://{}/jsonrpc", rpc_addrs.rpc);
 
     // Build rate limiter (B3).
     let rate_limiter = if max_download_limit > 0 {
@@ -521,11 +589,28 @@ async fn run_daemon_with_config(
             let engine_ref = Arc::clone(&engine);
             let limiter_ref = rate_limiter.clone();
             let download_dir = config.dir.clone();
-            tokio::spawn(async move {
-                if let Err(e) = run_job_download(engine_ref, gid, token, limiter_ref, download_dir).await {
-                    error!(%gid, error = %e, "job download task failed");
+
+            // Check job kind to determine dispatch strategy.
+            let job_kind = engine.registry.get(gid)
+                .map(|j| j.kind)
+                .unwrap_or(raria_core::job::JobKind::Range);
+
+            match job_kind {
+                raria_core::job::JobKind::Range => {
+                    tokio::spawn(async move {
+                        if let Err(e) = run_job_download(engine_ref, gid, token, limiter_ref, download_dir).await {
+                            error!(%gid, error = %e, "job download task failed");
+                        }
+                    });
                 }
-            });
+                raria_core::job::JobKind::Bt => {
+                    tokio::spawn(async move {
+                        if let Err(e) = run_bt_download(engine_ref, gid, token, download_dir).await {
+                            error!(%gid, error = %e, "BT download task failed");
+                        }
+                    });
+                }
+            }
         }
 
         // Wait for new work or shutdown.
@@ -552,6 +637,88 @@ async fn run_daemon_with_config(
     Ok(())
 }
 
+/// Execute a BitTorrent download job within the daemon.
+///
+/// BT jobs use librqbit (via BtService) instead of the SegmentExecutor.
+async fn run_bt_download(
+    engine: Arc<Engine>,
+    gid: Gid,
+    cancel: CancellationToken,
+    download_dir: PathBuf,
+) -> Result<()> {
+    use raria_bt::service::{BtService, BtSource};
+
+    let job = engine
+        .registry
+        .get(gid)
+        .context("BT job not found in registry")?;
+
+    let uri_str = job.uris.first().context("BT job has no URIs")?;
+    info!(%gid, "daemon: starting BT download");
+
+    // Determine BT source from the URI.
+    let source = if uri_str.starts_with("magnet:") {
+        BtSource::Magnet(uri_str.clone())
+    } else if uri_str.starts_with("torrent:base64:") {
+        use base64::Engine as Base64Engine;
+        let b64 = &uri_str["torrent:base64:".len()..];
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(b64)
+            .context("failed to decode torrent base64")?;
+        BtSource::TorrentBytes(bytes)
+    } else {
+        BtSource::TorrentFile(std::path::PathBuf::from(uri_str))
+    };
+
+    // Initialize BtService and add the torrent.
+    let bt_service = BtService::new(download_dir)
+        .context("failed to create BtService")?;
+
+    let handle = bt_service
+        .add(source, gid)
+        .await
+        .context("failed to add torrent to BtService")?;
+
+    info!(%gid, torrent_id = handle.torrent_id, "BT download started");
+
+    // Poll status until complete, error, or cancelled.
+    loop {
+        tokio::select! {
+            _ = cancel.cancelled() => {
+                info!(%gid, "BT download cancelled");
+                let _ = bt_service.pause(&handle).await;
+                engine.fail_job(gid, "cancelled by user");
+                return Ok(());
+            }
+            _ = tokio::time::sleep(std::time::Duration::from_secs(2)) => {
+                match bt_service.status(&handle).await {
+                    Ok(status) => {
+                        engine.registry.update(gid, |job| {
+                            job.downloaded = status.downloaded;
+                            job.download_speed = status.download_speed;
+                            job.upload_speed = status.upload_speed;
+                            if job.total_size.is_none() && status.total_size > 0 {
+                                job.total_size = Some(status.total_size);
+                            }
+                        });
+
+                        if status.is_complete {
+                            info!(%gid, "BT download complete");
+                            engine.complete_job(gid);
+                            return Ok(());
+                        }
+                    }
+                    Err(e) => {
+                        warn!(%gid, error = %e, "BT status check failed");
+                        engine.fail_job(gid, &e.to_string());
+                        return Ok(());
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// Execute a single job within the daemon run loop.
 ///
 /// This is spawned as a tokio task for each activated job.
@@ -572,7 +739,18 @@ async fn run_job_download(
 
     info!(%gid, uri = %parsed_url, "daemon: starting download");
 
-    let backend = create_backend(uri_str)?;
+    // Build HTTP backend config from global config.
+    let http_cfg = raria_http::backend::HttpBackendConfig {
+        all_proxy: engine.config.all_proxy.clone(),
+        http_proxy: engine.config.http_proxy.clone(),
+        https_proxy: engine.config.https_proxy.clone(),
+        no_proxy: engine.config.no_proxy.clone(),
+        check_certificate: engine.config.check_certificate,
+        ca_certificate: engine.config.ca_certificate.clone(),
+        user_agent: engine.config.user_agent.clone(),
+        cookie_file: engine.config.cookie_file.clone(),
+    };
+    let backend = create_backend_with_config(uri_str, Some(&http_cfg))?;
     let probe_ctx = ProbeContext::default();
 
     let probe = backend

@@ -232,6 +232,18 @@ impl ByteSourceBackend for HttpBackend {
             .error_for_status()
             .context("HTTP GET returned error status")?;
 
+        // Detect resource change: if we requested a range but got 200 OK
+        // instead of 206 Partial Content, the resource has changed and
+        // our partial data is stale.
+        let status_code = resp.status().as_u16();
+        if Self::is_resource_changed(status_code, offset > 0) {
+            return Err(anyhow::anyhow!(
+                "resource changed on server (got {} instead of 206): partial data is stale, \
+                 download must restart from the beginning",
+                status_code
+            ));
+        }
+
         // Convert reqwest's bytes stream into AsyncRead via StreamReader.
         let byte_stream = resp
             .bytes_stream()
@@ -243,6 +255,17 @@ impl ByteSourceBackend for HttpBackend {
 
     fn name(&self) -> &'static str {
         "http"
+    }
+}
+
+impl HttpBackend {
+    /// Check whether a range request was silently replaced with a full response.
+    ///
+    /// Returns `true` when we sent a `Range` header but the server responded
+    /// with `200 OK` instead of `206 Partial Content`, indicating the
+    /// resource has changed (e.g., ETag mismatch) and our partial data is stale.
+    pub fn is_resource_changed(status_code: u16, was_range_request: bool) -> bool {
+        was_range_request && status_code == 200
     }
 }
 

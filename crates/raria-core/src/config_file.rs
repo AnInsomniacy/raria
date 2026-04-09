@@ -97,6 +97,36 @@ pub fn apply_config_map(config: &mut GlobalConfig, map: &HashMap<String, String>
             "user-agent" => {
                 config.user_agent = if value.is_empty() { None } else { Some(value.clone()) };
             }
+            "load-cookies" => {
+                config.cookie_file = if value.is_empty() {
+                    None
+                } else {
+                    Some(PathBuf::from(value))
+                };
+            }
+            "rpc-secret" => {
+                config.rpc_secret = if value.is_empty() { None } else { Some(value.clone()) };
+            }
+            "file-allocation" => {
+                if let Ok(mode) = crate::file_alloc::FileAllocation::parse(value) {
+                    config.file_allocation = mode;
+                }
+            }
+            "max-connection-per-server" => {
+                if let Ok(n) = value.parse() { config.max_connection_per_server = n; }
+            }
+            "split" => {
+                if let Ok(n) = value.parse() { config.split = n; }
+            }
+            "continue" => {
+                config.continue_download = value == "true" || value.is_empty();
+            }
+            "max-tries" => {
+                if let Ok(n) = value.parse() { config.max_tries = n; }
+            }
+            "retry-wait" => {
+                if let Ok(n) = value.parse() { config.retry_wait = n; }
+            }
             _ => {
                 // Unknown key — silently ignore for forward compatibility.
             }

@@ -27,18 +27,29 @@ impl Default for RpcServerConfig {
     }
 }
 
+/// Addresses returned by `start_rpc_server`.
+#[derive(Debug, Clone)]
+pub struct RpcServerAddrs {
+    /// JSON-RPC HTTP/WS address.
+    pub rpc: SocketAddr,
+    /// WebSocket notification push address.
+    pub ws_notify: SocketAddr,
+}
+
 /// Start the JSON-RPC server and run until the cancel token is triggered.
 ///
-/// Returns the local address the server is bound to.
+/// Returns the RPC and WS notification addresses.
 ///
 /// Also spawns a WebSocket event push task that broadcasts aria2-compatible
 /// notifications (`aria2.onDownloadStart`, `aria2.onDownloadComplete`, etc.)
-/// to all connected WebSocket clients.
+/// to all connected WebSocket clients on the notification endpoint.
 pub async fn start_rpc_server(
     engine: Arc<Engine>,
     config: &RpcServerConfig,
     cancel: CancellationToken,
-) -> Result<SocketAddr> {
+) -> Result<RpcServerAddrs> {
+    let rpc_secret = engine.config.rpc_secret.clone();
+
     let server = Server::builder()
         .build(config.listen_addr)
         .await
@@ -51,17 +62,40 @@ pub async fn start_rpc_server(
     let mut module = handler.into_rpc();
 
     // Register system.multicall — required for AriaNg compatibility.
-    // aria2 multicall format: params = [[{methodName, params}, ...]]
-    // Returns: [[result1], [result2], ...] or {code, message} for errors.
     register_system_methods(&mut module)?;
 
+    // If rpc_secret is set, wrap the module with token validation.
+    // Convert to RpcModule<()> for uniform handling.
+    let module = if let Some(secret) = rpc_secret {
+        let untyped = module.remove_context();
+        wrap_module_with_auth(untyped, &secret)?
+    } else {
+        module.remove_context()
+    };
+
     let handle = server.start(module);
+
+    // Create the notification broadcast channel.
+    let (notify_tx, _) = tokio::sync::broadcast::channel::<String>(256);
+
+    // Start WS notification server on port+1 (or OS-assigned if port is 0).
+    let notify_port = if config.listen_addr.port() == 0 {
+        0
+    } else {
+        config.listen_addr.port() + 1
+    };
+    let notify_addr = SocketAddr::from((config.listen_addr.ip(), notify_port));
+
+    let ws_notify_addr = start_ws_notify_listener(notify_addr, notify_tx.clone(), cancel.clone())
+        .await
+        .context("failed to start WS notify server")?;
+    info!(%ws_notify_addr, "WS notification server ready");
 
     // Spawn WebSocket event push loop.
     let ws_cancel = cancel.clone();
     let ws_engine = Arc::clone(&engine);
     tokio::spawn(async move {
-        ws_event_push_loop(ws_engine, ws_cancel).await;
+        ws_event_push_loop(ws_engine, ws_cancel, notify_tx).await;
     });
 
     // Spawn a task that stops the server when cancel is triggered.
@@ -71,7 +105,109 @@ pub async fn start_rpc_server(
         handle.stop().unwrap();
     });
 
-    Ok(addr)
+    Ok(RpcServerAddrs {
+        rpc: addr,
+        ws_notify: ws_notify_addr,
+    })
+}
+
+/// Wrap an RpcModule with token-based authentication.
+///
+/// Creates a proxy module that intercepts every method call, validates
+/// the `token:<secret>` first parameter (as per aria2 convention),
+/// strips it, and forwards the cleaned request to the original module.
+fn wrap_module_with_auth(
+    inner: jsonrpsee::RpcModule<()>,
+    secret: &str,
+) -> Result<jsonrpsee::RpcModule<()>> {
+    use jsonrpsee::types::ErrorObjectOwned;
+
+    let inner = Arc::new(inner);
+    let secret_str = secret.to_string();
+    let mut outer: jsonrpsee::RpcModule<()> = jsonrpsee::RpcModule::new(());
+
+    let method_names: Vec<String> = inner.method_names().map(|s| s.to_string()).collect();
+    info!(count = method_names.len(), "wrapping RPC methods with auth");
+
+    for name in method_names {
+        let inner_clone = Arc::clone(&inner);
+        let secret_clone = secret_str.clone();
+        let method_name = name.clone();
+        // jsonrpsee requires &'static str for method names.
+        let static_name: &'static str = Box::leak(name.into_boxed_str());
+
+        outer.register_async_method(static_name, move |params, _ctx, _ext| {
+            let inner = Arc::clone(&inner_clone);
+            let secret = secret_clone.clone();
+            let method = method_name.clone();
+
+            async move {
+                // Parse raw params as an array of JSON values.
+                let param_array: Vec<serde_json::Value> = match params.parse() {
+                    Ok(arr) => arr,
+                    Err(_) => {
+                        // Might be empty params — reject since we need a token.
+                        return Err(ErrorObjectOwned::owned(
+                            -32600_i32,
+                            "Unauthorized: missing token parameter".to_string(),
+                            None::<()>,
+                        ));
+                    }
+                };
+
+                // First param must be "token:<secret>".
+                let token_valid = param_array.first()
+                    .and_then(|v| v.as_str())
+                    .and_then(|s| s.strip_prefix("token:"))
+                    .map(|t| t == secret)
+                    .unwrap_or(false);
+
+                if !token_valid {
+                    return Err(ErrorObjectOwned::owned(
+                        -32600_i32,
+                        "Unauthorized: invalid or missing token".to_string(),
+                        None::<()>,
+                    ));
+                }
+
+                // Strip the token and forward to the real handler.
+                let stripped_params = &param_array[1..];
+                let request = serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": method,
+                    "params": stripped_params,
+                });
+
+                let (response_str, _rx) = inner
+                    .raw_json_request(&request.to_string(), 10 * 1024 * 1024)
+                    .await
+                    .map_err(|e| ErrorObjectOwned::owned(
+                        -32603_i32,
+                        format!("internal dispatch error: {e}"),
+                        None::<()>,
+                    ))?;
+
+                // Parse response and extract result or error.
+                let resp: serde_json::Value = serde_json::from_str(&response_str)
+                    .map_err(|e| ErrorObjectOwned::owned(
+                        -32603_i32,
+                        format!("internal response parse error: {e}"),
+                        None::<()>,
+                    ))?;
+
+                if let Some(error) = resp.get("error") {
+                    let code = error["code"].as_i64().unwrap_or(-32000) as i32;
+                    let msg = error["message"].as_str().unwrap_or("unknown error");
+                    return Err(ErrorObjectOwned::owned(code, msg.to_string(), None::<()>));
+                }
+
+                Ok(resp["result"].clone())
+            }
+        })?;
+    }
+
+    Ok(outer)
 }
 
 /// Notification method names that aria2 supports.
@@ -208,20 +344,18 @@ fn event_to_aria2_method(event: &raria_core::progress::DownloadEvent) -> Option<
     }
 }
 
-/// Continuously subscribes to engine events and logs them.
+/// Continuously subscribes to engine events and broadcasts them as
+/// JSON-RPC 2.0 notifications to all connected WebSocket clients.
 ///
-/// In a full WebSocket push implementation, each connected WS client would
-/// receive these notifications as JSON-RPC 2.0 notification messages.
-/// For now, events are logged at debug level — the jsonrpsee WS layer
-/// handles the transport, and we rely on clients polling via tellStatus.
-///
-/// A complete implementation would maintain a list of active WS connections
-/// and send:
-///
+/// Format sent:
 /// ```json
-/// {"jsonrpc":"2.0","method":"aria2.onDownloadStart","params":[{"gid":"..."}]}
+/// {"jsonrpc":"2.0","method":"aria2.onDownloadStart","params":[{"gid":"0000000000000001"}]}
 /// ```
-async fn ws_event_push_loop(engine: Arc<Engine>, cancel: CancellationToken) {
+async fn ws_event_push_loop(
+    engine: Arc<Engine>,
+    cancel: CancellationToken,
+    notify_tx: tokio::sync::broadcast::Sender<String>,
+) {
     let mut rx = engine.event_bus.subscribe();
     info!("WebSocket event push loop started");
 
@@ -235,7 +369,16 @@ async fn ws_event_push_loop(engine: Arc<Engine>, cancel: CancellationToken) {
                 match result {
                     Ok(event) => {
                         if let Some(method) = event_to_aria2_method(&event) {
-                            tracing::debug!(method, ?event, "WS push notification");
+                            let gid_str = format!("{:016x}", event_gid(&event).as_raw());
+                            let notification = serde_json::json!({
+                                "jsonrpc": "2.0",
+                                "method": method,
+                                "params": [{"gid": gid_str}],
+                            });
+                            let msg = notification.to_string();
+                            tracing::debug!(%method, %gid_str, "broadcasting WS notification");
+                            // Ignore send errors (no receivers connected).
+                            let _ = notify_tx.send(msg);
                         }
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
@@ -245,6 +388,99 @@ async fn ws_event_push_loop(engine: Arc<Engine>, cancel: CancellationToken) {
                         tracing::debug!("event bus closed");
                         break;
                     }
+                }
+            }
+        }
+    }
+}
+
+/// Extract the GID from a DownloadEvent.
+fn event_gid(event: &raria_core::progress::DownloadEvent) -> raria_core::job::Gid {
+    use raria_core::progress::DownloadEvent;
+    match event {
+        DownloadEvent::Started { gid } => *gid,
+        DownloadEvent::Paused { gid } => *gid,
+        DownloadEvent::Stopped { gid } => *gid,
+        DownloadEvent::Complete { gid } => *gid,
+        DownloadEvent::Error { gid, .. } => *gid,
+        DownloadEvent::Progress { gid, .. } => *gid,
+        DownloadEvent::StatusChanged { gid, .. } => *gid,
+    }
+}
+
+/// Start the WebSocket notification server.
+///
+/// Listens on `addr` and forwards all messages from `notify_rx` to
+/// connected WebSocket clients. Each client gets its own subscriber.
+async fn start_ws_notify_listener(
+    addr: SocketAddr,
+    notify_tx: tokio::sync::broadcast::Sender<String>,
+    cancel: CancellationToken,
+) -> Result<SocketAddr> {
+    let listener = tokio::net::TcpListener::bind(addr)
+        .await
+        .context("failed to bind WS notify listener")?;
+    let bound_addr = listener.local_addr()?;
+    info!(%bound_addr, "WS notification server listening");
+
+    tokio::spawn(async move {
+        loop {
+            tokio::select! {
+                _ = cancel.cancelled() => break,
+                accept = listener.accept() => {
+                    match accept {
+                        Ok((stream, peer)) => {
+                            tracing::debug!(%peer, "WS notify client connected");
+                            let rx = notify_tx.subscribe();
+                            let cancel_clone = cancel.clone();
+                            tokio::spawn(handle_ws_notify_client(stream, rx, cancel_clone));
+                        }
+                        Err(e) => {
+                            tracing::warn!(error = %e, "WS notify accept failed");
+                        }
+                    }
+                }
+            }
+        }
+    });
+
+    Ok(bound_addr)
+}
+
+/// Handle a single WS notification client connection.
+async fn handle_ws_notify_client(
+    stream: tokio::net::TcpStream,
+    mut rx: tokio::sync::broadcast::Receiver<String>,
+    cancel: CancellationToken,
+) {
+    use futures::SinkExt;
+    use tokio_tungstenite::tungstenite::Message;
+
+    let ws_stream = match tokio_tungstenite::accept_async(stream).await {
+        Ok(ws) => ws,
+        Err(e) => {
+            tracing::warn!(error = %e, "WS handshake failed");
+            return;
+        }
+    };
+
+    let (mut write, _read) = futures::StreamExt::split(ws_stream);
+
+    loop {
+        tokio::select! {
+            _ = cancel.cancelled() => break,
+            msg = rx.recv() => {
+                match msg {
+                    Ok(text) => {
+                        if write.send(Message::Text(text.into())).await.is_err() {
+                            tracing::debug!("WS notify client disconnected");
+                            break;
+                        }
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                        tracing::warn!(n, "WS notify client lagged");
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                 }
             }
         }
@@ -266,11 +502,11 @@ mod tests {
             listen_addr: SocketAddr::from(([127, 0, 0, 1], 0)),
         };
 
-        let addr = start_rpc_server(Arc::clone(&engine), &config, cancel.clone())
+        let addrs = start_rpc_server(Arc::clone(&engine), &config, cancel.clone())
             .await
             .unwrap();
 
-        assert_ne!(addr.port(), 0); // OS assigned a real port.
+        assert_ne!(addrs.rpc.port(), 0); // OS assigned a real port.
 
         // Stop the server.
         cancel.cancel();

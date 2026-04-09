@@ -28,7 +28,7 @@ use raria_core::job::Status;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::Arc;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 /// aria2-style request options (per-download overrides).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -249,20 +249,101 @@ impl Aria2RpcServer for RpcHandler {
 
     async fn add_torrent(
         &self,
-        _torrent_base64: String,
+        torrent_base64: String,
         _uris: Option<Vec<String>>,
         _options: Option<RpcOptions>,
     ) -> RpcResult<String> {
-        // BT not yet implemented — return a stub GID after adding to engine.
-        Err(rpc_err(1, "BitTorrent not yet implemented"))
+        use base64::Engine as Base64Engine;
+        use raria_core::job::{Gid, Job};
+
+        // Decode base64 → torrent bytes.
+        let torrent_bytes = base64::engine::general_purpose::STANDARD
+            .decode(&torrent_base64)
+            .map_err(|e| rpc_err(1, &format!("invalid base64: {e}")))?;
+
+        if torrent_bytes.is_empty() {
+            return Err(rpc_err(1, "empty torrent data"));
+        }
+
+        // Store the raw torrent bytes as a base64 data URI so the daemon
+        // can retrieve them when it activates this job.
+        let torrent_uri = format!("torrent:base64:{torrent_base64}");
+
+        let _gid = Gid::new();
+        let out_path = self.engine.config.dir.join("bt_download");
+        let job = Job::new_bt(vec![torrent_uri], out_path);
+        let actual_gid = job.gid;
+
+        self.engine.cancel_registry.register(actual_gid);
+        self.engine
+            .registry
+            .insert(job)
+            .map_err(|e| rpc_err(1, &e.to_string()))?;
+        self.engine.scheduler.enqueue(actual_gid);
+        self.engine.work_notify().notify_one();
+
+        let gid_str = format!("{:016x}", actual_gid.as_raw());
+        debug!(gid = %gid_str, "addTorrent: BT job created");
+        Ok(gid_str)
     }
 
     async fn add_metalink(
         &self,
-        _metalink_base64: String,
+        metalink_base64: String,
         _options: Option<RpcOptions>,
     ) -> RpcResult<Vec<String>> {
-        Err(rpc_err(1, "Metalink RPC not yet implemented"))
+        use base64::Engine as Base64Engine;
+        use raria_core::engine::AddUriSpec;
+        use raria_metalink::parser::parse_metalink;
+
+        // Decode base64 → XML bytes.
+        let xml_bytes = base64::engine::general_purpose::STANDARD
+            .decode(&metalink_base64)
+            .map_err(|e| rpc_err(1, &format!("invalid base64: {e}")))?;
+
+        let xml_str = String::from_utf8(xml_bytes)
+            .map_err(|e| rpc_err(1, &format!("metalink is not valid UTF-8: {e}")))?;
+
+        // Parse the Metalink XML.
+        let metalink = parse_metalink(&xml_str)
+            .map_err(|e| rpc_err(1, &format!("failed to parse metalink: {e}")))?;
+
+        if metalink.files.is_empty() {
+            return Err(rpc_err(1, "metalink contains no files"));
+        }
+
+        // Create a job for each file in the metalink.
+        let mut gids = Vec::new();
+        for file in &metalink.files {
+            let uris: Vec<String> = file.urls.iter().map(|u| u.url.clone()).collect();
+            if uris.is_empty() {
+                continue;
+            }
+
+            let spec = AddUriSpec {
+                uris: uris.clone(),
+                filename: Some(file.name.clone()),
+                dir: self.engine.config.dir.clone(),
+                connections: 16,
+            };
+
+            match self.engine.add_uri(&spec) {
+                Ok(handle) => {
+                    let gid_str = format!("{:016x}", handle.gid.as_raw());
+                    debug!(gid = %gid_str, name = %file.name, "metalink: added job");
+                    gids.push(gid_str);
+                }
+                Err(e) => {
+                    warn!(name = %file.name, error = %e, "metalink: failed to add job");
+                }
+            }
+        }
+
+        if gids.is_empty() {
+            return Err(rpc_err(1, "no downloadable files found in metalink"));
+        }
+
+        Ok(gids)
     }
 
     async fn remove(&self, gid: String) -> RpcResult<String> {
