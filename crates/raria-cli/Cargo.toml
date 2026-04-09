@@ -1,0 +1,32 @@
+[package]
+name = "raria-cli"
+description = "CLI binary for raria download utility"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "raria"
+path = "src/main.rs"
+
+[dependencies]
+raria-core = { workspace = true }
+raria-range = { workspace = true }
+raria-http = { workspace = true }
+raria-rpc = { workspace = true }
+raria-metalink = { workspace = true }
+raria-bt = { workspace = true }
+tokio = { workspace = true }
+clap = { workspace = true }
+clap_complete = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+anyhow = { workspace = true }
+url = { workspace = true }
+tokio-util = { workspace = true }
+indicatif = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

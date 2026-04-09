@@ -1,0 +1,24 @@
+# Build artifacts
+/target/
+
+# IDE / Editor
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Rust
+**/*.rs.bk
+Cargo.lock
+
+# Session / Database files (generated at runtime)
+*.redb
+*.session
+
+# Logs
+*.log
+
+# Test artifacts
+/tmp/

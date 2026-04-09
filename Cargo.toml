@@ -1,0 +1,90 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/raria-core",
+    "crates/raria-range",
+    "crates/raria-http",
+    "crates/raria-ftp",
+    "crates/raria-sftp",
+    "crates/raria-metalink",
+    "crates/raria-bt",
+    "crates/raria-rpc",
+    "crates/raria-cli",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+repository = "https://github.com/AnInsomniacy/raria"
+rust-version = "1.85"
+
+[workspace.dependencies]
+# === Async Runtime ===
+tokio = { version = "1", features = ["full"] }
+tokio-util = { version = "0.7", features = ["io"] }
+futures = "0.3"
+pin-project-lite = "0.2"
+async-trait = "0.1"
+
+# === HTTP ===
+reqwest = { version = "0.12", features = [
+    "stream", "gzip", "brotli", "cookies", "socks", "rustls-tls"
+] }
+reqwest_cookie_store = "0.8"
+
+# === RPC ===
+jsonrpsee = { version = "0.24", features = ["server", "macros"] }
+
+# === Rate Limiting ===
+governor = "0.8"
+
+# === Persistence ===
+redb = "2"
+
+# === Serialization ===
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+
+# === XML / Metalink ===
+quick-xml = { version = "0.37", features = ["serialize"] }
+
+# === CLI ===
+clap = { version = "4", features = ["derive"] }
+clap_complete = "4"
+
+# === Logging ===
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# === Utilities ===
+url = "2"
+sha2 = "0.10"
+anyhow = "1"
+thiserror = "2"
+chrono = { version = "0.4", features = ["serde"] }
+indicatif = "0.17"
+console = "0.15"
+bytes = "1"
+rand = "0.9"
+hex = "0.4"
+
+# === Workspace Crates ===
+raria-core = { path = "crates/raria-core" }
+raria-range = { path = "crates/raria-range" }
+raria-http = { path = "crates/raria-http" }
+raria-ftp = { path = "crates/raria-ftp" }
+raria-sftp = { path = "crates/raria-sftp" }
+raria-metalink = { path = "crates/raria-metalink" }
+raria-bt = { path = "crates/raria-bt" }
+raria-rpc = { path = "crates/raria-rpc" }
+
+# === Test Dependencies ===
+tempfile = "3"
+tokio-test = "0.4"
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true

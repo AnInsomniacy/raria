@@ -1,0 +1,21 @@
+[package]
+name = "raria-metalink"
+description = "Metalink v3/v4 parser and normalizer for raria"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+raria-core = { workspace = true }
+quick-xml = { workspace = true }
+serde = { workspace = true }
+url = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+serde_json = { workspace = true }
