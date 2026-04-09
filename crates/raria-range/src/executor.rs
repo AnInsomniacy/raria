@@ -24,7 +24,7 @@ use tracing::{debug, error, warn};
 use url::Url;
 
 /// Configuration for the segment executor.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct ExecutorConfig {
     /// Maximum number of concurrent connections.
     pub max_connections: u32,
@@ -37,6 +37,23 @@ pub struct ExecutorConfig {
     /// Optional rate limiter for throttling download speed.
     /// Shared across all concurrent segment tasks.
     pub rate_limiter: Option<Arc<RateLimiter>>,
+    /// Optional checkpoint callback. Called periodically with
+    /// (segment_id, bytes_downloaded_this_segment) so the engine
+    /// can persist segment-level progress to redb.
+    pub on_checkpoint: Option<Arc<dyn Fn(u32, u64) + Send + Sync>>,
+}
+
+impl std::fmt::Debug for ExecutorConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ExecutorConfig")
+            .field("max_connections", &self.max_connections)
+            .field("buffer_size", &self.buffer_size)
+            .field("max_retries", &self.max_retries)
+            .field("retry_base_delay_ms", &self.retry_base_delay_ms)
+            .field("rate_limiter", &self.rate_limiter.is_some())
+            .field("on_checkpoint", &self.on_checkpoint.is_some())
+            .finish()
+    }
 }
 
 impl Default for ExecutorConfig {
@@ -47,6 +64,7 @@ impl Default for ExecutorConfig {
             max_retries: 5,
             retry_base_delay_ms: 500,
             rate_limiter: None,
+            on_checkpoint: None,
         }
     }
 }
@@ -233,6 +251,7 @@ impl SegmentExecutor {
                 cancel,
                 on_progress,
                 config.rate_limiter.as_ref().map(|l| l.as_ref()),
+                config.on_checkpoint.as_ref().map(|c| c.as_ref()),
             )
             .await
             {
@@ -352,6 +371,7 @@ impl SegmentExecutor {
         cancel: &CancellationToken,
         on_progress: &(dyn Fn(u32, u64) + Send + Sync),
         rate_limiter: Option<&RateLimiter>,
+        on_checkpoint: Option<&(dyn Fn(u32, u64) + Send + Sync)>,
     ) -> Result<u64> {
         debug!(seg_id, offset, remaining, "starting segment attempt");
 
@@ -373,6 +393,9 @@ impl SegmentExecutor {
 
         let mut buf = vec![0u8; buffer_size];
         let mut bytes_this_attempt = 0u64;
+        let mut bytes_since_checkpoint = 0u64;
+        // Checkpoint every 1 MiB to avoid excessive I/O.
+        const CHECKPOINT_INTERVAL: u64 = 1024 * 1024;
 
         loop {
             if cancel.is_cancelled() {
@@ -391,6 +414,7 @@ impl SegmentExecutor {
 
             file.write_all(&buf[..n]).await?;
             bytes_this_attempt += n as u64;
+            bytes_since_checkpoint += n as u64;
 
             // Rate limiting: consume bytes from the shared limiter.
             if let Some(limiter) = rate_limiter {
@@ -398,6 +422,14 @@ impl SegmentExecutor {
             }
 
             on_progress(seg_id, n as u64);
+
+            // Periodic checkpoint for crash recovery.
+            if bytes_since_checkpoint >= CHECKPOINT_INTERVAL {
+                if let Some(checkpoint) = on_checkpoint {
+                    checkpoint(seg_id, bytes_this_attempt);
+                }
+                bytes_since_checkpoint = 0;
+            }
         }
 
         file.flush().await?;

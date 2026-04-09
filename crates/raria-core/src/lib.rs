@@ -9,3 +9,4 @@ pub mod progress;
 pub mod registry;
 pub mod scheduler;
 pub mod segment;
+pub mod speed;

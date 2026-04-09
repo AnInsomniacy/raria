@@ -13,6 +13,7 @@ raria-range = { workspace = true }
 suppaftp = { version = "8", features = ["tokio", "tokio-async-native-tls"] }
 tokio = { workspace = true }
 async-trait = { workspace = true }
+async-stream = "0.3"
 anyhow = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }

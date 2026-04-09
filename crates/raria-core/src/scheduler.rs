@@ -64,17 +64,40 @@ impl Scheduler {
     }
 
     /// Move a GID to a different position in the queue.
-    /// Returns `false` if the GID is not in the queue.
-    pub fn change_position(&self, gid: Gid, new_position: usize) -> bool {
+    ///
+    /// Supports aria2-compatible position semantics:
+    /// - `PositionHow::Set`: absolute position from beginning
+    /// - `PositionHow::Cur`: relative to current position
+    /// - `PositionHow::End`: position from end
+    ///
+    /// Returns the new position index, or error if GID not found.
+    pub fn change_position(
+        &self,
+        gid: Gid,
+        pos: i32,
+        how: crate::engine::PositionHow,
+    ) -> anyhow::Result<usize> {
+        use crate::engine::PositionHow;
         let mut queue = self.queue.write().unwrap();
-        if let Some(pos) = queue.iter().position(|g| *g == gid) {
-            queue.remove(pos);
-            let new_pos = new_position.min(queue.len());
-            queue.insert(new_pos, gid);
-            true
-        } else {
-            false
-        }
+        let cur_pos = queue
+            .iter()
+            .position(|g| *g == gid)
+            .ok_or_else(|| anyhow::anyhow!("GID {gid} not in queue"))?;
+        queue.remove(cur_pos);
+        let len = queue.len();
+        let new_pos = match how {
+            PositionHow::Set => (pos.max(0) as usize).min(len),
+            PositionHow::Cur => {
+                let target = cur_pos as i64 + pos as i64;
+                target.max(0).min(len as i64) as usize
+            }
+            PositionHow::End => {
+                let target = len as i64 + pos as i64;
+                target.max(0).min(len as i64) as usize
+            }
+        };
+        queue.insert(new_pos, gid);
+        Ok(new_pos)
     }
 
     /// Determine which GIDs should be promoted from Waiting → Active.
@@ -195,15 +218,53 @@ mod tests {
         sched.enqueue(g2);
         sched.enqueue(g3);
 
-        // Move g3 to front.
-        assert!(sched.change_position(g3, 0));
+        // Move g3 to front (POS_SET=0).
+        use crate::engine::PositionHow;
+        let new_pos = sched.change_position(g3, 0, PositionHow::Set).unwrap();
+        assert_eq!(new_pos, 0);
         assert_eq!(sched.waiting_queue(), vec![g3, g1, g2]);
     }
 
     #[test]
-    fn change_position_nonexistent_returns_false() {
+    fn change_position_nonexistent_returns_error() {
         let sched = Scheduler::new(5);
-        assert!(!sched.change_position(Gid::from_raw(99), 0));
+        use crate::engine::PositionHow;
+        let result = sched.change_position(Gid::from_raw(99), 0, PositionHow::Set);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn change_position_cur_moves_relative() {
+        let sched = Scheduler::new(5);
+        let g1 = Gid::from_raw(1);
+        let g2 = Gid::from_raw(2);
+        let g3 = Gid::from_raw(3);
+        sched.enqueue(g1);
+        sched.enqueue(g2);
+        sched.enqueue(g3);
+
+        // g1 is at pos 0; move +1 relative → pos 1.
+        use crate::engine::PositionHow;
+        let new_pos = sched.change_position(g1, 1, PositionHow::Cur).unwrap();
+        assert_eq!(new_pos, 1);
+        assert_eq!(sched.waiting_queue(), vec![g2, g1, g3]);
+    }
+
+    #[test]
+    fn change_position_end_moves_from_tail() {
+        let sched = Scheduler::new(5);
+        let g1 = Gid::from_raw(1);
+        let g2 = Gid::from_raw(2);
+        let g3 = Gid::from_raw(3);
+        sched.enqueue(g1);
+        sched.enqueue(g2);
+        sched.enqueue(g3);
+
+        // Move g1 to end (POS_END=0 → len).
+        use crate::engine::PositionHow;
+        let new_pos = sched.change_position(g1, 0, PositionHow::End).unwrap();
+        assert_eq!(new_pos, 2);
+        assert_eq!(sched.waiting_queue(), vec![g2, g3, g1]);
     }
 
     #[test]

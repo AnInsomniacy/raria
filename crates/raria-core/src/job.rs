@@ -171,6 +171,18 @@ impl Job {
         }
     }
 
+    /// Human-readable string representation of the current status.
+    pub fn status_str(&self) -> &'static str {
+        match self.status {
+            Status::Active => "active",
+            Status::Waiting => "waiting",
+            Status::Paused => "paused",
+            Status::Complete => "complete",
+            Status::Error => "error",
+            Status::Removed => "removed",
+        }
+    }
+
     /// Check if a status transition is valid according to the state machine.
     ///
     /// Valid transitions:

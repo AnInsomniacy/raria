@@ -9,9 +9,17 @@
 // persistence (fastresume). raria-core only manages the GID mapping
 // and status aggregation.
 
-use anyhow::Result;
+use anyhow::{Context, Result};
+use librqbit::api::TorrentIdOrHash;
+use librqbit::{
+    AddTorrent, AddTorrentOptions, AddTorrentResponse, ManagedTorrent, Session,
+    SessionOptions,
+};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::{Arc, RwLock};
+use tracing::{debug, info, warn};
 
 /// Source for a BitTorrent download.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -20,7 +28,7 @@ pub enum BtSource {
     Magnet(String),
     /// Path to a .torrent file.
     TorrentFile(PathBuf),
-    /// Raw torrent bytes (e.g., received via RPC).
+    /// Raw torrent bytes (e.g., received via RPC as base64).
     TorrentBytes(Vec<u8>),
 }
 
@@ -79,53 +87,231 @@ pub struct BtFileInfo {
 pub struct BtService {
     /// Output directory for downloads.
     output_dir: PathBuf,
-    // session: Option<librqbit::Session>,
-    // TODO: Initialize librqbit::Session in new().
+    /// librqbit session (initialized lazily on first use).
+    session: Arc<RwLock<Option<Arc<Session>>>>,
+    /// Map from raria GID → librqbit Arc<ManagedTorrent> for active torrents.
+    handles: Arc<RwLock<HashMap<raria_core::job::Gid, Arc<ManagedTorrent>>>>,
 }
 
 impl BtService {
     /// Create a new BT service.
+    ///
+    /// The librqbit session is NOT started here — it's initialized lazily
+    /// on the first `add()` call. This keeps startup fast when BT isn't used.
     pub fn new(output_dir: PathBuf) -> Result<Self> {
-        // TODO: Initialize librqbit::Session with SessionOptions.
         Ok(Self {
             output_dir,
+            session: Arc::new(RwLock::new(None)),
+            handles: Arc::new(RwLock::new(HashMap::new())),
         })
     }
 
+    /// Ensure the librqbit session is initialized. Returns a clone of the Arc.
+    async fn ensure_session(&self) -> Result<Arc<Session>> {
+        // Fast path: session already initialized.
+        {
+            let guard = self.session.read().unwrap();
+            if let Some(ref session) = *guard {
+                return Ok(Arc::clone(session));
+            }
+        }
+
+        // Slow path: initialize.
+        info!(dir = %self.output_dir.display(), "initializing librqbit session");
+        let opts = SessionOptions {
+            disable_dht: false,
+            disable_dht_persistence: false,
+            ..Default::default()
+        };
+        let session = Session::new_with_opts(self.output_dir.clone(), opts)
+            .await
+            .context("failed to initialize librqbit session")?;
+
+        let mut guard = self.session.write().unwrap();
+        *guard = Some(Arc::clone(&session));
+        info!("librqbit session initialized");
+
+        Ok(session)
+    }
+
     /// Add a new torrent download.
-    pub async fn add(&self, _source: BtSource) -> Result<BtHandle> {
-        // TODO: Implement using librqbit Session::add_torrent.
-        anyhow::bail!("BT service not yet implemented")
+    pub async fn add(&self, source: BtSource, gid: raria_core::job::Gid) -> Result<BtHandle> {
+        let session = self.ensure_session().await?;
+
+        let add_torrent = match &source {
+            BtSource::Magnet(uri) => AddTorrent::Url(uri.into()),
+            BtSource::TorrentFile(path) => {
+                let bytes = tokio::fs::read(path)
+                    .await
+                    .with_context(|| format!("failed to read torrent file: {}", path.display()))?;
+                AddTorrent::TorrentFileBytes(bytes.into())
+            }
+            BtSource::TorrentBytes(bytes) => AddTorrent::TorrentFileBytes(bytes.clone().into()),
+        };
+
+        let opts = AddTorrentOptions {
+            output_folder: Some(self.output_dir.clone().to_string_lossy().to_string()),
+            ..Default::default()
+        };
+
+        let response = session
+            .add_torrent(add_torrent, Some(opts))
+            .await
+            .context("failed to add torrent")?;
+
+        let (torrent_id, handle) = match response {
+            AddTorrentResponse::Added(id, h) => {
+                info!(%gid, torrent_id = id, "torrent added");
+                (id, h)
+            }
+            AddTorrentResponse::AlreadyManaged(id, h) => {
+                warn!(%gid, torrent_id = id, "torrent already managed");
+                (id, h)
+            }
+            AddTorrentResponse::ListOnly(_) => {
+                anyhow::bail!("torrent was list-only, not added for download");
+            }
+        };
+
+        // Store the handle for later operations.
+        self.handles.write().unwrap().insert(gid, handle);
+
+        Ok(BtHandle {
+            torrent_id,
+            gid,
+        })
     }
 
     /// Pause a torrent.
-    pub async fn pause(&self, _handle: &BtHandle) -> Result<()> {
-        anyhow::bail!("BT service not yet implemented")
+    pub async fn pause(&self, handle: &BtHandle) -> Result<()> {
+        let session = self.ensure_session().await?;
+        let managed = self.get_managed_handle(handle)?;
+        session
+            .pause(&managed)
+            .await
+            .context("failed to pause torrent")?;
+        debug!(gid = %handle.gid, "torrent paused");
+        Ok(())
     }
 
     /// Resume a paused torrent.
-    pub async fn resume(&self, _handle: &BtHandle) -> Result<()> {
-        anyhow::bail!("BT service not yet implemented")
+    pub async fn resume(&self, handle: &BtHandle) -> Result<()> {
+        let session = self.ensure_session().await?;
+        let managed = self.get_managed_handle(handle)?;
+        session
+            .unpause(&managed)
+            .await
+            .context("failed to unpause torrent")?;
+        debug!(gid = %handle.gid, "torrent resumed");
+        Ok(())
     }
 
     /// Remove a torrent.
-    pub async fn remove(&self, _handle: &BtHandle, _delete_files: bool) -> Result<()> {
-        anyhow::bail!("BT service not yet implemented")
+    pub async fn remove(&self, handle: &BtHandle, delete_files: bool) -> Result<()> {
+        let session = self.ensure_session().await?;
+        session
+            .delete(
+                TorrentIdOrHash::Id(handle.torrent_id),
+                delete_files,
+            )
+            .await
+            .context("failed to remove torrent")?;
+
+        // Remove from our handle map.
+        self.handles.write().unwrap().remove(&handle.gid);
+        debug!(gid = %handle.gid, "torrent removed");
+        Ok(())
     }
 
     /// Get the current status of a torrent.
-    pub async fn status(&self, _handle: &BtHandle) -> Result<BtStatus> {
-        anyhow::bail!("BT service not yet implemented")
+    pub async fn status(&self, handle: &BtHandle) -> Result<BtStatus> {
+        let managed = self.get_managed_handle(handle)?;
+        let stats = managed.stats();
+
+        let (download_speed, upload_speed, num_peers, num_seeders) =
+            if let Some(ref live) = stats.live {
+                (
+                    // Speed is in Mbps (megabits/sec). Convert to bytes/sec:
+                    // Mbps * 1_000_000 / 8 = Mbps * 125_000
+                    (live.download_speed.mbps * 125_000.0) as u64,
+                    (live.upload_speed.mbps * 125_000.0) as u64,
+                    live.snapshot.peer_stats.live as u32,
+                    live.snapshot.peer_stats.queued as u32,
+                )
+            } else {
+                (0, 0, 0, 0)
+            };
+
+        // Id20 is [u8; 20] — format as hex.
+        let info_hash_bytes = managed.info_hash();
+        let info_hash = hex::encode(info_hash_bytes.0);
+
+        Ok(BtStatus {
+            total_size: stats.total_bytes,
+            downloaded: stats.progress_bytes,
+            download_speed,
+            upload_speed,
+            num_peers,
+            num_seeders,
+            is_complete: stats.finished,
+            info_hash,
+        })
     }
 
     /// List files in a torrent.
-    pub async fn file_list(&self, _handle: &BtHandle) -> Result<Vec<BtFileInfo>> {
-        anyhow::bail!("BT service not yet implemented")
+    pub async fn file_list(&self, handle: &BtHandle) -> Result<Vec<BtFileInfo>> {
+        let managed = self.get_managed_handle(handle)?;
+        let stats = managed.stats();
+
+        // Get file info from the torrent's metadata (loaded via ArcSwap).
+        let metadata_guard = managed.metadata.load();
+        let metadata = metadata_guard
+            .as_ref()
+            .context("torrent metadata not yet resolved (magnet still resolving?)")?;
+
+        let files: Vec<BtFileInfo> = metadata
+            .file_infos
+            .iter()
+            .enumerate()
+            .map(|(i, fi)| {
+                let progress = stats.file_progress.get(i).copied().unwrap_or(0);
+                BtFileInfo {
+                    index: i,
+                    path: fi.relative_filename.clone(),
+                    size: fi.len,
+                    selected: progress > 0 || !stats.finished,
+                }
+            })
+            .collect();
+
+        Ok(files)
     }
 
     /// Get the output directory.
     pub fn output_dir(&self) -> &PathBuf {
         &self.output_dir
+    }
+
+    /// Stop the librqbit session.
+    pub async fn shutdown(&self) {
+        let session = {
+            let guard = self.session.read().unwrap();
+            guard.clone()
+        };
+        if let Some(session) = session {
+            session.stop().await;
+            info!("librqbit session stopped");
+        }
+    }
+
+    /// Internal: get the Arc<ManagedTorrent> for a BtHandle.
+    fn get_managed_handle(&self, handle: &BtHandle) -> Result<Arc<ManagedTorrent>> {
+        self.handles
+            .read()
+            .unwrap()
+            .get(&handle.gid)
+            .cloned()
+            .with_context(|| format!("no managed handle for GID {}", handle.gid))
     }
 }
 
@@ -151,6 +337,17 @@ mod tests {
         let recovered: BtSource = serde_json::from_str(&json).unwrap();
         match recovered {
             BtSource::TorrentFile(path) => assert_eq!(path, PathBuf::from("/tmp/test.torrent")),
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn bt_source_torrent_bytes_serde() {
+        let source = BtSource::TorrentBytes(vec![1, 2, 3, 4]);
+        let json = serde_json::to_string(&source).unwrap();
+        let recovered: BtSource = serde_json::from_str(&json).unwrap();
+        match recovered {
+            BtSource::TorrentBytes(bytes) => assert_eq!(bytes, vec![1, 2, 3, 4]),
             _ => panic!("wrong variant"),
         }
     }
@@ -192,5 +389,19 @@ mod tests {
         let recovered: BtFileInfo = serde_json::from_str(&json).unwrap();
         assert_eq!(recovered.index, 0);
         assert!(recovered.selected);
+    }
+
+    #[test]
+    fn bt_service_session_starts_none() {
+        let svc = BtService::new(PathBuf::from("/tmp")).unwrap();
+        let guard = svc.session.read().unwrap();
+        assert!(guard.is_none(), "session should be lazy-initialized");
+    }
+
+    #[test]
+    fn bt_service_handles_starts_empty() {
+        let svc = BtService::new(PathBuf::from("/tmp")).unwrap();
+        let guard = svc.handles.read().unwrap();
+        assert!(guard.is_empty());
     }
 }

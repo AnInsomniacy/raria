@@ -356,6 +356,162 @@ impl Engine {
     }
 }
 
+// ═══════════════════════════════════════════════════════════════════════
+// Batch operations (aria2 RPC parity)
+// ═══════════════════════════════════════════════════════════════════════
+
+impl Engine {
+    /// Pause all active and waiting jobs.
+    ///
+    /// aria2 equivalent: `aria2.pauseAll`
+    /// Returns the number of jobs paused.
+    pub fn pause_all(&self) -> usize {
+        let active = self.registry.by_status(Status::Active);
+        let waiting = self.registry.by_status(Status::Waiting);
+        let mut count = 0;
+
+        for job in active.iter().chain(waiting.iter()) {
+            if self.pause(job.gid).is_ok() {
+                count += 1;
+            }
+        }
+        info!(count, "paused all jobs");
+        count
+    }
+
+    /// Unpause all paused jobs.
+    ///
+    /// aria2 equivalent: `aria2.unpauseAll`
+    /// Returns the number of jobs unpaused.
+    pub fn unpause_all(&self) -> usize {
+        let paused = self.registry.by_status(Status::Paused);
+        let mut count = 0;
+
+        for job in &paused {
+            if self.unpause(job.gid).is_ok() {
+                count += 1;
+            }
+        }
+        info!(count, "unpaused all jobs");
+        count
+    }
+
+    /// Force-remove a job. Unlike `remove()`, this also works on Active jobs
+    /// that haven't responded to a graceful cancel yet.
+    ///
+    /// aria2 equivalent: `aria2.forceRemove`
+    pub fn force_remove(&self, gid: Gid) -> Result<()> {
+        // Cancel first — even if the task is still running.
+        self.cancel_registry.cancel(gid);
+        self.scheduler.dequeue(gid);
+
+        // Force transition to Removed regardless of current state.
+        self.registry
+            .update(gid, |job| {
+                job.status = Status::Removed;
+            })
+            .context("job not found")?;
+
+        self.persist_job_by_gid(gid);
+        self.event_bus.publish(DownloadEvent::Stopped { gid });
+        info!(%gid, "job force-removed");
+        Ok(())
+    }
+
+    /// Remove a single download result (completed/error/removed job).
+    ///
+    /// aria2 equivalent: `aria2.removeDownloadResult`
+    pub fn remove_download_result(&self, gid: Gid) -> Result<()> {
+        let job = self.registry.get(gid).context("GID not found")?;
+        match job.status {
+            Status::Complete | Status::Error | Status::Removed => {
+                self.registry.remove(gid);
+                if let Some(ref store) = self.store {
+                    if let Err(e) = store.remove_job(gid) {
+                        warn!(%gid, error = %e, "failed to delete job from store");
+                    }
+                }
+                debug!(%gid, "download result removed");
+                Ok(())
+            }
+            _ => anyhow::bail!("cannot remove result: job {gid} is {}", job.status_str()),
+        }
+    }
+
+    /// Purge all completed/error/removed download results.
+    ///
+    /// aria2 equivalent: `aria2.purgeDownloadResult`
+    /// Returns the number of results purged.
+    pub fn purge_download_results(&self) -> usize {
+        let mut purged = 0;
+        let jobs = self.registry.snapshot();
+        for job in &jobs {
+            match job.status {
+                Status::Complete | Status::Error | Status::Removed => {
+                    self.registry.remove(job.gid);
+                    if let Some(ref store) = self.store {
+                        let _ = store.remove_job(job.gid);
+                    }
+                    purged += 1;
+                }
+                _ => {}
+            }
+        }
+        info!(purged, "purged download results");
+        purged
+    }
+
+    /// Change the position of a download in the waiting queue.
+    ///
+    /// aria2 equivalent: `aria2.changePosition`
+    ///
+    /// `how` semantics:
+    /// - `POS_SET`: Set position to `pos` from the beginning.
+    /// - `POS_CUR`: Move relative from current position.
+    /// - `POS_END`: Set position to `pos` from the end.
+    ///
+    /// Returns the new position (0-indexed).
+    pub fn change_position(&self, gid: Gid, pos: i32, how: PositionHow) -> Result<usize> {
+        let job = self.registry.get(gid).context("GID not found")?;
+        if job.status != Status::Waiting {
+            anyhow::bail!("changePosition: job {gid} is not waiting");
+        }
+        let new_pos = self.scheduler.change_position(gid, pos, how)?;
+        debug!(%gid, new_pos, "changed position");
+        Ok(new_pos)
+    }
+
+    /// Save the current session to the store.
+    ///
+    /// aria2 equivalent: `aria2.saveSession`
+    pub fn save_session(&self) -> Result<()> {
+        let store = self
+            .store
+            .as_ref()
+            .context("save_session called without a store")?;
+
+        let jobs = self.registry.snapshot();
+        for job in &jobs {
+            store
+                .put_job(job)
+                .with_context(|| format!("failed to persist job {}", job.gid))?;
+        }
+        info!(count = jobs.len(), "session saved");
+        Ok(())
+    }
+}
+
+/// Position mode for `change_position`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PositionHow {
+    /// Absolute position from beginning.
+    Set,
+    /// Relative to current position.
+    Cur,
+    /// Position from end.
+    End,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -784,5 +940,197 @@ mod tests {
         // Re-activate should give a new, non-cancelled token.
         let token2 = engine.activate_job(handle.gid).unwrap();
         assert!(!token2.is_cancelled());
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // Batch operation tests (aria2 RPC parity)
+    // ═══════════════════════════════════════════════════════════════════
+
+    #[test]
+    fn pause_all_pauses_active_and_waiting() {
+        let engine = Engine::new(default_config());
+        let h1 = engine.add_uri(&default_spec()).unwrap();
+        let h2 = engine.add_uri(&default_spec()).unwrap();
+        let _h3 = engine.add_uri(&default_spec()).unwrap();
+
+        engine.activate_job(h1.gid).unwrap();
+        engine.activate_job(h2.gid).unwrap();
+
+        // h1, h2 = Active, h3 = Waiting.
+        let paused = engine.pause_all();
+        assert_eq!(paused, 3); // All 3 should be paused.
+
+        assert_eq!(engine.registry.by_status(Status::Paused).len(), 3);
+        assert_eq!(engine.registry.by_status(Status::Active).len(), 0);
+        assert_eq!(engine.registry.by_status(Status::Waiting).len(), 0);
+    }
+
+    #[test]
+    fn unpause_all_unpauses_only_paused() {
+        let engine = Engine::new(default_config());
+        let h1 = engine.add_uri(&default_spec()).unwrap();
+        let h2 = engine.add_uri(&default_spec()).unwrap();
+        let h3 = engine.add_uri(&default_spec()).unwrap();
+
+        engine.activate_job(h1.gid).unwrap();
+        engine.activate_job(h2.gid).unwrap();
+
+        // Pause 2 Active, leave h3 Waiting.
+        engine.pause(h1.gid).unwrap();
+        engine.pause(h2.gid).unwrap();
+
+        // h1/h2 = Paused, h3 = Waiting.
+        let unpaused = engine.unpause_all();
+        assert_eq!(unpaused, 2);
+
+        // Now h1, h2 = Waiting (again), h3 = Waiting.
+        assert_eq!(engine.registry.by_status(Status::Waiting).len(), 3);
+    }
+
+    #[test]
+    fn force_remove_works_on_active() {
+        let engine = Engine::new(default_config());
+        let h = engine.add_uri(&default_spec()).unwrap();
+        engine.activate_job(h.gid).unwrap();
+
+        // Normal remove on Active should work through state machine, but
+        // force_remove bypasses it entirely.
+        engine.force_remove(h.gid).unwrap();
+
+        let job = engine.registry.get(h.gid).unwrap();
+        assert_eq!(job.status, Status::Removed);
+    }
+
+    #[test]
+    fn force_remove_works_on_waiting() {
+        let engine = Engine::new(default_config());
+        let h = engine.add_uri(&default_spec()).unwrap();
+
+        engine.force_remove(h.gid).unwrap();
+        let job = engine.registry.get(h.gid).unwrap();
+        assert_eq!(job.status, Status::Removed);
+    }
+
+    #[test]
+    fn force_remove_nonexistent_fails() {
+        let engine = Engine::new(default_config());
+        assert!(engine.force_remove(Gid::from_raw(999)).is_err());
+    }
+
+    #[test]
+    fn remove_download_result_removes_completed() {
+        let engine = Engine::new(default_config());
+        let h = engine.add_uri(&default_spec()).unwrap();
+        engine.activate_job(h.gid).unwrap();
+        engine.complete_job(h.gid).unwrap();
+
+        engine.remove_download_result(h.gid).unwrap();
+        assert!(engine.registry.get(h.gid).is_none());
+    }
+
+    #[test]
+    fn remove_download_result_removes_errored() {
+        let engine = Engine::new(default_config());
+        let h = engine.add_uri(&default_spec()).unwrap();
+        engine.activate_job(h.gid).unwrap();
+        engine.fail_job(h.gid, "oops").unwrap();
+
+        engine.remove_download_result(h.gid).unwrap();
+        assert!(engine.registry.get(h.gid).is_none());
+    }
+
+    #[test]
+    fn remove_download_result_rejects_active() {
+        let engine = Engine::new(default_config());
+        let h = engine.add_uri(&default_spec()).unwrap();
+        engine.activate_job(h.gid).unwrap();
+
+        assert!(engine.remove_download_result(h.gid).is_err());
+    }
+
+    #[test]
+    fn purge_download_results_purges_terminal_only() {
+        let engine = Engine::new(default_config());
+        let h1 = engine.add_uri(&default_spec()).unwrap();
+        let h2 = engine.add_uri(&default_spec()).unwrap();
+        let h3 = engine.add_uri(&default_spec()).unwrap();
+
+        engine.activate_job(h1.gid).unwrap();
+        engine.complete_job(h1.gid).unwrap(); // Complete.
+
+        engine.activate_job(h2.gid).unwrap();
+        engine.fail_job(h2.gid, "err").unwrap(); // Error.
+
+        // h3 stays Waiting.
+
+        let purged = engine.purge_download_results();
+        assert_eq!(purged, 2);
+        assert!(engine.registry.get(h1.gid).is_none());
+        assert!(engine.registry.get(h2.gid).is_none());
+        assert!(engine.registry.get(h3.gid).is_some()); // Waiting preserved.
+    }
+
+    #[test]
+    fn change_position_set_moves_to_front() {
+        let engine = Engine::new(default_config());
+        let h1 = engine.add_uri(&default_spec()).unwrap();
+        let h2 = engine.add_uri(&default_spec()).unwrap();
+        let h3 = engine.add_uri(&default_spec()).unwrap();
+
+        let new_pos = engine
+            .change_position(h3.gid, 0, PositionHow::Set)
+            .unwrap();
+        assert_eq!(new_pos, 0);
+
+        let queue = engine.scheduler.waiting_queue();
+        assert_eq!(queue[0], h3.gid);
+    }
+
+    #[test]
+    fn change_position_cur_moves_relative() {
+        let engine = Engine::new(default_config());
+        let h1 = engine.add_uri(&default_spec()).unwrap();
+        let h2 = engine.add_uri(&default_spec()).unwrap();
+        let h3 = engine.add_uri(&default_spec()).unwrap();
+
+        // h1 at pos 0, move +2 = pos 2.
+        let new_pos = engine
+            .change_position(h1.gid, 2, PositionHow::Cur)
+            .unwrap();
+        assert_eq!(new_pos, 2);
+
+        let queue = engine.scheduler.waiting_queue();
+        assert_eq!(queue, vec![h2.gid, h3.gid, h1.gid]);
+    }
+
+    #[test]
+    fn change_position_rejects_non_waiting() {
+        let engine = Engine::new(default_config());
+        let h = engine.add_uri(&default_spec()).unwrap();
+        engine.activate_job(h.gid).unwrap();
+
+        assert!(engine
+            .change_position(h.gid, 0, PositionHow::Set)
+            .is_err());
+    }
+
+    #[test]
+    fn save_session_persists_all_jobs() {
+        let (engine, _dir) = engine_with_store();
+        let h1 = engine.add_uri(&default_spec()).unwrap();
+        let h2 = engine.add_uri(&default_spec()).unwrap();
+
+        engine.save_session().unwrap();
+
+        // Verify by reading from store directly.
+        let store = engine.store.as_ref().unwrap();
+        assert!(store.get_job(h1.gid).unwrap().is_some());
+        assert!(store.get_job(h2.gid).unwrap().is_some());
+    }
+
+    #[test]
+    fn save_session_without_store_fails() {
+        let engine = Engine::new(default_config());
+        assert!(engine.save_session().is_err());
     }
 }

@@ -5,6 +5,8 @@
 
 use anyhow::{Context, Result};
 use sha2::{Digest, Sha256};
+use sha1::Sha1;
+use md5::Md5;
 use std::path::Path;
 use tokio::fs::File;
 use tokio::io::AsyncReadExt;
@@ -53,13 +55,13 @@ pub fn parse_checksum_spec(spec: &str) -> Result<(ChecksumAlgo, String)> {
     Ok((algo, hex))
 }
 
-/// Compute the SHA-256 digest of a file, returning the hex string.
-pub async fn sha256_file(path: &Path) -> Result<String> {
+/// Generic file hasher — works for any `Digest` implementation.
+async fn hash_file<D: Digest>(path: &Path) -> Result<String> {
     let mut file = File::open(path)
         .await
         .with_context(|| format!("failed to open file for checksum: {}", path.display()))?;
 
-    let mut hasher = Sha256::new();
+    let mut hasher = D::new();
     let mut buf = vec![0u8; 64 * 1024];
 
     loop {
@@ -73,6 +75,21 @@ pub async fn sha256_file(path: &Path) -> Result<String> {
     Ok(hex::encode(hasher.finalize()))
 }
 
+/// Compute the SHA-256 digest of a file, returning the hex string.
+pub async fn sha256_file(path: &Path) -> Result<String> {
+    hash_file::<Sha256>(path).await
+}
+
+/// Compute the SHA-1 digest of a file, returning the hex string.
+pub async fn sha1_file(path: &Path) -> Result<String> {
+    hash_file::<Sha1>(path).await
+}
+
+/// Compute the MD5 digest of a file, returning the hex string.
+pub async fn md5_file(path: &Path) -> Result<String> {
+    hash_file::<Md5>(path).await
+}
+
 /// Verify a file against a checksum specification.
 ///
 /// Returns `Ok(())` if the checksum matches, or an error otherwise.
@@ -81,11 +98,8 @@ pub async fn verify_checksum(path: &Path, spec: &str) -> Result<()> {
 
     let actual = match algo {
         ChecksumAlgo::Sha256 => sha256_file(path).await?,
-        // sha-1 and md5 share the same pattern but use different hashers.
-        // For now, only sha-256 is fully implemented.
-        ChecksumAlgo::Sha1 | ChecksumAlgo::Md5 => {
-            anyhow::bail!("{} is not yet implemented", algo.name());
-        }
+        ChecksumAlgo::Sha1 => sha1_file(path).await?,
+        ChecksumAlgo::Md5 => md5_file(path).await?,
     };
 
     if actual == expected {
@@ -225,5 +239,111 @@ mod tests {
         assert_eq!(ChecksumAlgo::Sha256.name(), "sha-256");
         assert_eq!(ChecksumAlgo::Sha1.name(), "sha-1");
         assert_eq!(ChecksumAlgo::Md5.name(), "md5");
+    }
+
+    // ── SHA-1 tests ──────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn sha1_of_known_content() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("sha1_test.txt");
+        {
+            let mut f = std::fs::File::create(&path).unwrap();
+            f.write_all(b"hello world\n").unwrap();
+        }
+
+        let hash = sha1_file(&path).await.unwrap();
+        // echo "hello world" | sha1sum = 22596363b3de40b06f981fb85d82312e8c0ed511
+        assert_eq!(hash, "22596363b3de40b06f981fb85d82312e8c0ed511");
+    }
+
+    #[tokio::test]
+    async fn sha1_of_empty_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("empty_sha1.txt");
+        std::fs::File::create(&path).unwrap();
+
+        let hash = sha1_file(&path).await.unwrap();
+        // sha1("") = da39a3ee5e6b4b0d3255bfef95601890afd80709
+        assert_eq!(hash, "da39a3ee5e6b4b0d3255bfef95601890afd80709");
+    }
+
+    #[tokio::test]
+    async fn verify_sha1_checksum_match() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("sha1_match.txt");
+        {
+            let mut f = std::fs::File::create(&path).unwrap();
+            f.write_all(b"hello world\n").unwrap();
+        }
+
+        let result = verify_checksum(
+            &path,
+            "sha-1=22596363b3de40b06f981fb85d82312e8c0ed511",
+        )
+        .await;
+        assert!(result.is_ok());
+    }
+
+    // ── MD5 tests ────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn md5_of_known_content() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("md5_test.txt");
+        {
+            let mut f = std::fs::File::create(&path).unwrap();
+            f.write_all(b"hello world\n").unwrap();
+        }
+
+        let hash = md5_file(&path).await.unwrap();
+        // echo "hello world" | md5sum = 6f5902ac237024bdd0c176cb93063dc4
+        assert_eq!(hash, "6f5902ac237024bdd0c176cb93063dc4");
+    }
+
+    #[tokio::test]
+    async fn md5_of_empty_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("empty_md5.txt");
+        std::fs::File::create(&path).unwrap();
+
+        let hash = md5_file(&path).await.unwrap();
+        // md5("") = d41d8cd98f00b204e9800998ecf8427e
+        assert_eq!(hash, "d41d8cd98f00b204e9800998ecf8427e");
+    }
+
+    #[tokio::test]
+    async fn verify_md5_checksum_match() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("md5_match.txt");
+        {
+            let mut f = std::fs::File::create(&path).unwrap();
+            f.write_all(b"hello world\n").unwrap();
+        }
+
+        let result = verify_checksum(
+            &path,
+            "md5=6f5902ac237024bdd0c176cb93063dc4",
+        )
+        .await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn verify_md5_checksum_mismatch() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("md5_mismatch.txt");
+        {
+            let mut f = std::fs::File::create(&path).unwrap();
+            f.write_all(b"hello world\n").unwrap();
+        }
+
+        let result = verify_checksum(
+            &path,
+            "md5=00000000000000000000000000000000",
+        )
+        .await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("checksum mismatch"));
     }
 }
