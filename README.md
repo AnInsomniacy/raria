@@ -4,7 +4,7 @@
 [![Rust](https://img.shields.io/badge/rust-1.85%2B-orange.svg)](https://www.rust-lang.org/)
 [![Tests](https://img.shields.io/badge/tests-205%20passing-brightgreen.svg)](#testing)
 
-A high-performance, multi-protocol download engine written in Rust. Designed as a native replacement for [aria2](https://aria2.github.io/) — the download engine powering [Motrix Next](https://github.com/AnInsomniacy/motrix-next).
+A high-performance, multi-protocol download engine written in Rust. 
 
 ## Features
 
