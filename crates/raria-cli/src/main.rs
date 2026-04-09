@@ -687,7 +687,7 @@ async fn run_bt_download(
             _ = cancel.cancelled() => {
                 info!(%gid, "BT download cancelled");
                 let _ = bt_service.pause(&handle).await;
-                engine.fail_job(gid, "cancelled by user");
+                let _ = engine.fail_job(gid, "cancelled by user");
                 return Ok(());
             }
             _ = tokio::time::sleep(std::time::Duration::from_secs(2)) => {
@@ -704,13 +704,13 @@ async fn run_bt_download(
 
                         if status.is_complete {
                             info!(%gid, "BT download complete");
-                            engine.complete_job(gid);
+                            let _ = engine.complete_job(gid);
                             return Ok(());
                         }
                     }
                     Err(e) => {
                         warn!(%gid, error = %e, "BT status check failed");
-                        engine.fail_job(gid, &e.to_string());
+                        let _ = engine.fail_job(gid, &e.to_string());
                         return Ok(());
                     }
                 }

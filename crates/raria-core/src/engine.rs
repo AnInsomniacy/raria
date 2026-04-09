@@ -988,7 +988,7 @@ mod tests {
         let engine = Engine::new(default_config());
         let h1 = engine.add_uri(&default_spec()).unwrap();
         let h2 = engine.add_uri(&default_spec()).unwrap();
-        let h3 = engine.add_uri(&default_spec()).unwrap();
+        let _h3 = engine.add_uri(&default_spec()).unwrap();
 
         engine.activate_job(h1.gid).unwrap();
         engine.activate_job(h2.gid).unwrap();
@@ -1091,8 +1091,8 @@ mod tests {
     #[test]
     fn change_position_set_moves_to_front() {
         let engine = Engine::new(default_config());
-        let h1 = engine.add_uri(&default_spec()).unwrap();
-        let h2 = engine.add_uri(&default_spec()).unwrap();
+        let _h1 = engine.add_uri(&default_spec()).unwrap();
+        let _h2 = engine.add_uri(&default_spec()).unwrap();
         let h3 = engine.add_uri(&default_spec()).unwrap();
 
         let new_pos = engine

@@ -7,7 +7,6 @@
 mod tests {
     use raria_core::config::GlobalConfig;
     use raria_core::engine::Engine;
-    use std::sync::Arc;
 
     /// Parse an input file and return URIs.
     fn parse_input_file(content: &str) -> Vec<String> {

@@ -10,7 +10,7 @@
 #[cfg(test)]
 mod tests {
     use raria_core::config::JobOptions;
-    use raria_core::job::{Gid, Job};
+    use raria_core::job::Job;
     use raria_core::persist::Store;
     use std::path::PathBuf;
     use tempfile::NamedTempFile;
@@ -53,7 +53,8 @@ mod tests {
     fn job_options_survive_serialization() {
         let mut opts = JobOptions::default();
         opts.max_connections = 8;
-        opts.headers.push(("Referer".into(), "https://example.com".into()));
+        opts.headers
+            .push(("Referer".into(), "https://example.com".into()));
 
         let job = Job::new_range_with_options(
             vec!["https://example.com/file.bin".into()],
@@ -79,7 +80,7 @@ mod tests {
         opts.max_connections = 2;
         opts.out = Some("output.tar.gz".into());
 
-        let mut job = Job::new_range_with_options(
+        let job = Job::new_range_with_options(
             vec!["https://example.com/archive.tar.gz".into()],
             PathBuf::from("/tmp/archive.tar.gz"),
             opts,
@@ -101,7 +102,10 @@ mod tests {
         let opts = JobOptions::default();
 
         assert!(opts.max_connections > 0, "max_connections must be positive");
-        assert!(opts.max_connections <= 16, "max_connections should not exceed 16 by default");
+        assert!(
+            opts.max_connections <= 16,
+            "max_connections should not exceed 16 by default"
+        );
         assert_eq!(opts.max_download_limit, 0, "default should be unlimited");
         assert_eq!(opts.max_upload_limit, 0, "default should be unlimited");
         assert!(opts.headers.is_empty(), "no headers by default");

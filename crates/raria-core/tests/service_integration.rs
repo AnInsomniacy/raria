@@ -9,9 +9,9 @@
 #[cfg(test)]
 mod tests {
     use raria_core::config::{GlobalConfig, JobOptions};
-    use raria_core::job::{Gid, Job, Status};
+    use raria_core::job::Job;
     use raria_core::persist::Store;
-    use raria_core::service::{detect_scheme, DownloadService, JobSource};
+    use raria_core::service::{DownloadService, JobSource, detect_scheme};
     use std::path::PathBuf;
     use std::sync::Arc;
     use tempfile::NamedTempFile;
