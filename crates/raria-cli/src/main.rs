@@ -49,6 +49,10 @@ struct Cli {
     /// Log level (trace, debug, info, warn, error)
     #[arg(long, default_value = "info", global = true)]
     log_level: String,
+
+    /// Path to configuration file (aria2-compatible format)
+    #[arg(long, global = true)]
+    conf_path: Option<PathBuf>,
 }
 
 #[derive(Subcommand)]
@@ -77,6 +81,18 @@ enum Commands {
         /// Checksum for verification (format: algo=hex, e.g. sha-256=abc...)
         #[arg(long)]
         checksum: Option<String>,
+
+        /// Proxy URL for all protocols
+        #[arg(long)]
+        all_proxy: Option<String>,
+
+        /// Disable TLS certificate verification
+        #[arg(long)]
+        check_certificate: Option<bool>,
+
+        /// Custom user-agent string
+        #[arg(long)]
+        user_agent: Option<String>,
     },
 
     /// Run as a persistent daemon with RPC server
@@ -96,6 +112,34 @@ enum Commands {
         /// Maximum download speed (bytes/sec, 0 = unlimited)
         #[arg(long, default_value_t = 0)]
         max_download_limit: u64,
+
+        /// Proxy URL for all protocols
+        #[arg(long)]
+        all_proxy: Option<String>,
+
+        /// Proxy URL for HTTP only
+        #[arg(long)]
+        http_proxy: Option<String>,
+
+        /// Proxy URL for HTTPS only
+        #[arg(long)]
+        https_proxy: Option<String>,
+
+        /// Comma-separated list of no-proxy domains
+        #[arg(long)]
+        no_proxy: Option<String>,
+
+        /// Disable TLS certificate verification
+        #[arg(long, default_value_t = true)]
+        check_certificate: bool,
+
+        /// Path to custom CA certificate
+        #[arg(long)]
+        ca_certificate: Option<PathBuf>,
+
+        /// Custom user-agent string
+        #[arg(long)]
+        user_agent: Option<String>,
     },
 }
 
@@ -118,6 +162,9 @@ async fn main() -> Result<()> {
             connections,
             max_download_limit,
             checksum,
+            all_proxy,
+            check_certificate,
+            user_agent,
         } => {
             run_download(
                 &url,
@@ -127,6 +174,9 @@ async fn main() -> Result<()> {
                 cli.max_concurrent,
                 max_download_limit,
                 checksum,
+                all_proxy,
+                check_certificate.unwrap_or(true),
+                user_agent,
             )
             .await?;
         }
@@ -135,15 +185,31 @@ async fn main() -> Result<()> {
             session_file,
             rpc_port,
             max_download_limit,
+            all_proxy,
+            http_proxy,
+            https_proxy,
+            no_proxy,
+            check_certificate,
+            ca_certificate,
+            user_agent,
         } => {
-            run_daemon(
-                &dir,
-                &session_file,
-                rpc_port,
-                cli.max_concurrent,
-                max_download_limit,
-            )
-            .await?;
+            let config = GlobalConfig {
+                dir: dir.clone(),
+                max_concurrent_downloads: cli.max_concurrent,
+                max_overall_download_limit: max_download_limit,
+                rpc_listen_port: rpc_port,
+                enable_rpc: true,
+                session_file: session_file.clone(),
+                all_proxy,
+                http_proxy,
+                https_proxy,
+                no_proxy,
+                check_certificate,
+                ca_certificate,
+                user_agent,
+                ..Default::default()
+            };
+            run_daemon_with_config(config, &session_file).await?;
         }
     }
 
@@ -163,9 +229,15 @@ async fn run_download(
     max_concurrent: u32,
     max_download_limit: u64,
     checksum_spec: Option<String>,
+    all_proxy: Option<String>,
+    check_certificate: bool,
+    user_agent: Option<String>,
 ) -> Result<()> {
     let config = GlobalConfig {
         max_concurrent_downloads: max_concurrent,
+        all_proxy: all_proxy.clone(),
+        check_certificate,
+        user_agent: user_agent.clone(),
         ..Default::default()
     };
     let engine = Engine::new(config);
@@ -375,24 +447,16 @@ async fn run_download(
 /// 5. Enters the scheduler run loop: poll for activatable jobs, spawn
 ///    SegmentExecutor tasks, collect results, repeat.
 /// 6. Shuts down gracefully on Ctrl+C.
-async fn run_daemon(
-    dir: &std::path::Path,
+/// Run raria as a persistent daemon with a fully constructed GlobalConfig.
+async fn run_daemon_with_config(
+    config: GlobalConfig,
     session_file: &std::path::Path,
-    rpc_port: u16,
-    max_concurrent: u32,
-    max_download_limit: u64,
 ) -> Result<()> {
-    let config = GlobalConfig {
-        dir: dir.to_path_buf(),
-        max_concurrent_downloads: max_concurrent,
-        enable_rpc: true,
-        rpc_listen_port: rpc_port,
-        session_file: session_file.to_path_buf(),
-        ..Default::default()
-    };
+    let rpc_port = config.rpc_listen_port;
+    let max_download_limit = config.max_overall_download_limit;
 
     // Ensure download directory exists.
-    std::fs::create_dir_all(dir).context("failed to create download directory")?;
+    std::fs::create_dir_all(&config.dir).context("failed to create download directory")?;
 
     // Open persistence store (B1).
     let store = Arc::new(Store::open(session_file)?);
@@ -456,7 +520,7 @@ async fn run_daemon(
             // Spawn a download task for this job.
             let engine_ref = Arc::clone(&engine);
             let limiter_ref = rate_limiter.clone();
-            let download_dir = dir.to_path_buf();
+            let download_dir = config.dir.clone();
             tokio::spawn(async move {
                 if let Err(e) = run_job_download(engine_ref, gid, token, limiter_ref, download_dir).await {
                     error!(%gid, error = %e, "job download task failed");
@@ -474,6 +538,13 @@ async fn run_daemon(
 
     // Graceful shutdown.
     info!("daemon shutting down...");
+
+    // Save session before stopping — persist all jobs for next startup.
+    match engine.save_session() {
+        Ok(()) => info!("session saved successfully"),
+        Err(e) => warn!(error = %e, "failed to save session on shutdown"),
+    }
+
     rpc_cancel.cancel();
     // Give in-flight tasks a moment to finish.
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
@@ -526,7 +597,33 @@ async fn run_job_download(
     } else {
         vec![(0u64, u64::MAX)]
     };
-    let segments = init_segment_states(&ranges);
+    let mut segments = init_segment_states(&ranges);
+
+    // Resume from checkpointed segment progress if available.
+    if let Some(store) = engine.store() {
+        match store.list_segments(gid) {
+            Ok(persisted) if !persisted.is_empty() => {
+                for (seg_id, persisted_state) in &persisted {
+                    if let Some(seg) = segments.get_mut(*seg_id as usize) {
+                        if persisted_state.downloaded > 0
+                            && persisted_state.downloaded <= seg.size()
+                        {
+                            seg.downloaded = persisted_state.downloaded;
+                            seg.status = SegmentStatus::Pending; // Will be retried from offset.
+                            info!(
+                                %gid, seg_id, resumed = persisted_state.downloaded,
+                                "resumed segment from checkpoint"
+                            );
+                        }
+                    }
+                }
+            }
+            Ok(_) => {} // No persisted segments — fresh start.
+            Err(e) => {
+                warn!(%gid, error = %e, "failed to load persisted segments, starting fresh");
+            }
+        }
+    }
 
     let engine_ref = Arc::clone(&engine);
     let progress_gid = gid;
@@ -540,10 +637,18 @@ async fn run_job_download(
         engine.store().map(|store| {
             let store = Arc::clone(store);
             let checkpoint_gid = gid;
+            let seg_ranges: Vec<(u64, u64)> = segments
+                .iter()
+                .map(|s| (s.start, s.end))
+                .collect();
             Arc::new(move |seg_id: u32, bytes_downloaded: u64| {
+                let (start, end) = seg_ranges
+                    .get(seg_id as usize)
+                    .copied()
+                    .unwrap_or((0, 0));
                 let seg = raria_core::segment::SegmentState {
-                    start: 0,
-                    end: 0,
+                    start,
+                    end,
                     downloaded: bytes_downloaded,
                     etag: None,
                     status: raria_core::segment::SegmentStatus::Active,
@@ -588,6 +693,12 @@ async fn run_job_download(
             job.downloaded = downloaded_total;
         });
         engine.complete_job(gid)?;
+        // Clean up persisted segment data — no longer needed.
+        if let Some(store) = engine.store() {
+            if let Err(e) = store.remove_segments(gid) {
+                tracing::warn!(%gid, error = %e, "failed to clean up segment checkpoints");
+            }
+        }
         info!(%gid, bytes = downloaded_total, "daemon: download complete");
     } else if !failed.is_empty() {
         let err_msg = failed
@@ -639,6 +750,14 @@ fn format_bytes(bytes: u64) -> String {
 ///
 /// Returns an error for unrecognized schemes.
 fn create_backend(uri: &str) -> anyhow::Result<Arc<dyn ByteSourceBackend>> {
+    create_backend_with_config(uri, None)
+}
+
+/// Create the appropriate ByteSourceBackend for a given URI with optional HTTP config.
+fn create_backend_with_config(
+    uri: &str,
+    http_config: Option<&raria_http::backend::HttpBackendConfig>,
+) -> anyhow::Result<Arc<dyn ByteSourceBackend>> {
     use raria_core::service::{detect_scheme, JobSource};
     use raria_ftp::backend::FtpBackend;
     use raria_sftp::backend::SftpBackend;
@@ -647,7 +766,13 @@ fn create_backend(uri: &str) -> anyhow::Result<Arc<dyn ByteSourceBackend>> {
         .ok_or_else(|| anyhow::anyhow!("unsupported or unrecognized URI scheme: {uri}"))?;
 
     match source {
-        JobSource::Http => Ok(Arc::new(HttpBackend::new()?)),
+        JobSource::Http => {
+            if let Some(config) = http_config {
+                Ok(Arc::new(HttpBackend::with_config(config)?))
+            } else {
+                Ok(Arc::new(HttpBackend::new()?))
+            }
+        }
         JobSource::Ftp | JobSource::Ftps => Ok(Arc::new(FtpBackend::new())),
         JobSource::Sftp => Ok(Arc::new(SftpBackend::new())),
         JobSource::Magnet => Err(anyhow::anyhow!(

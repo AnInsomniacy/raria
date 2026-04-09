@@ -1,6 +1,7 @@
 pub mod cancel;
 pub mod checksum;
 pub mod config;
+pub mod config_file;
 pub mod engine;
 pub mod job;
 pub mod limiter;

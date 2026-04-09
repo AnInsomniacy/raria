@@ -403,4 +403,113 @@ mod tests {
         let val = store.get_global("key").unwrap().unwrap();
         assert_eq!(val, "v2");
     }
+
+    /// Integration test: simulate checkpoint + resume cycle.
+    /// This validates the full crash recovery flow.
+    #[test]
+    fn segment_checkpoint_resume_cycle() {
+        use crate::segment::{init_segment_states, plan_segments};
+
+        let (store, _dir) = temp_store();
+        let gid = Gid::from_raw(42);
+        let total_size = 10_000u64;
+        let num_segments = 4;
+
+        // Plan segments.
+        let ranges = plan_segments(total_size, num_segments);
+        let segments = init_segment_states(&ranges);
+        assert_eq!(segments.len(), 4);
+
+        // Simulate partial download: segments 0 and 1 done, segment 2 partial.
+        store
+            .put_segment(
+                gid,
+                0,
+                &SegmentState {
+                    start: segments[0].start,
+                    end: segments[0].end,
+                    downloaded: segments[0].size(),
+                    etag: None,
+                    status: SegmentStatus::Done,
+                },
+            )
+            .unwrap();
+        store
+            .put_segment(
+                gid,
+                1,
+                &SegmentState {
+                    start: segments[1].start,
+                    end: segments[1].end,
+                    downloaded: segments[1].size(),
+                    etag: None,
+                    status: SegmentStatus::Done,
+                },
+            )
+            .unwrap();
+        store
+            .put_segment(
+                gid,
+                2,
+                &SegmentState {
+                    start: segments[2].start,
+                    end: segments[2].end,
+                    downloaded: 500,
+                    etag: Some("abc123".into()),
+                    status: SegmentStatus::Active,
+                },
+            )
+            .unwrap();
+
+        // Now simulate resume: re-plan segments and merge persisted state.
+        let fresh_ranges = plan_segments(total_size, num_segments);
+        let mut fresh_segments = init_segment_states(&fresh_ranges);
+
+        let persisted = store.list_segments(gid).unwrap();
+        assert_eq!(persisted.len(), 3); // Only 3 segments were checkpointed.
+
+        for (seg_id, persisted_state) in &persisted {
+            if let Some(seg) = fresh_segments.get_mut(*seg_id as usize) {
+                if persisted_state.downloaded > 0 && persisted_state.downloaded <= seg.size() {
+                    seg.downloaded = persisted_state.downloaded;
+                }
+            }
+        }
+
+        // Verify merged state.
+        assert_eq!(fresh_segments[0].downloaded, fresh_segments[0].size()); // Done.
+        assert_eq!(fresh_segments[1].downloaded, fresh_segments[1].size()); // Done.
+        assert_eq!(fresh_segments[2].downloaded, 500); // Partial.
+        assert_eq!(fresh_segments[3].downloaded, 0); // Not checkpointed.
+    }
+
+    /// Test that segment checkpoint updates are idempotent (overwrite works).
+    #[test]
+    fn segment_checkpoint_idempotent_update() {
+        let (store, _dir) = temp_store();
+        let gid = Gid::from_raw(1);
+
+        let seg_v1 = SegmentState {
+            start: 0,
+            end: 1000,
+            downloaded: 100,
+            etag: None,
+            status: SegmentStatus::Active,
+        };
+        store.put_segment(gid, 0, &seg_v1).unwrap();
+
+        // Update with more progress.
+        let seg_v2 = SegmentState {
+            start: 0,
+            end: 1000,
+            downloaded: 750,
+            etag: None,
+            status: SegmentStatus::Active,
+        };
+        store.put_segment(gid, 0, &seg_v2).unwrap();
+
+        // Should get the latest.
+        let recovered = store.get_segment(gid, 0).unwrap().unwrap();
+        assert_eq!(recovered.downloaded, 750);
+    }
 }

@@ -220,6 +220,29 @@ impl Aria2RpcServer for RpcHandler {
             .add_uri(&spec)
             .map_err(|e| rpc_err(1, &e.to_string()))?;
 
+        // Apply per-job options from RPC request.
+        let gid = handle.gid;
+        self.engine.registry.update(gid, |job| {
+            if let Some(ref limit) = opts.max_download_limit {
+                if let Ok(bps) = limit.parse::<u64>() {
+                    job.options.max_download_limit = bps;
+                }
+            }
+            if let Some(ref headers) = opts.header {
+                for h in headers {
+                    if let Some((key, value)) = h.split_once(':') {
+                        job.options.headers.push((
+                            key.trim().to_string(),
+                            value.trim().to_string(),
+                        ));
+                    }
+                }
+            }
+            if let Some(ref cksum) = opts.checksum {
+                job.options.checksum = Some(cksum.clone());
+            }
+        });
+
         debug!(gid = %handle.gid, "RPC addUri succeeded");
         Ok(format!("{}", handle.gid))
     }
@@ -393,9 +416,8 @@ impl Aria2RpcServer for RpcHandler {
     }
 
     async fn get_session_info(&self) -> RpcResult<serde_json::Value> {
-        // aria2 returns {"sessionId": "<hex>"}. We use a fixed session ID.
         Ok(serde_json::json!({
-            "sessionId": "raria-session-001"
+            "sessionId": self.engine.session_id
         }))
     }
 
@@ -409,16 +431,33 @@ impl Aria2RpcServer for RpcHandler {
         let parsed_gid = parse_gid(&gid)?;
         let _job = self.engine.registry.get(parsed_gid).ok_or_else(|| gid_not_found(&gid))?;
 
-        // Apply supported options.
-        if let Some(limit) = options.get("max-download-limit").and_then(|v| v.as_str()) {
-            if let Ok(bytes_per_sec) = limit.parse::<u64>() {
-                self.engine.registry.update(parsed_gid, |job| {
-                    // Store the limit — actual enforcement happens in the executor.
-                    job.download_speed = bytes_per_sec; // Overloaded field for now.
-                });
-                debug!(%gid, limit, "changed max-download-limit");
+        // Apply supported per-job options.
+        self.engine.registry.update(parsed_gid, |job| {
+            if let Some(limit) = options.get("max-download-limit").and_then(|v| v.as_str()) {
+                if let Ok(bps) = limit.parse::<u64>() {
+                    job.options.max_download_limit = bps;
+                    debug!(%gid, bps, "changed max-download-limit");
+                }
             }
-        }
+            if let Some(limit) = options.get("max-upload-limit").and_then(|v| v.as_str()) {
+                if let Ok(bps) = limit.parse::<u64>() {
+                    job.options.max_upload_limit = bps;
+                    debug!(%gid, bps, "changed max-upload-limit");
+                }
+            }
+            if let Some(conns) = options.get("max-connection-per-server").and_then(|v| v.as_str()) {
+                if let Ok(n) = conns.parse::<u32>() {
+                    job.options.max_connections = n;
+                    debug!(%gid, n, "changed max-connection-per-server");
+                }
+            }
+            if let Some(conns) = options.get("split").and_then(|v| v.as_str()) {
+                if let Ok(n) = conns.parse::<u32>() {
+                    job.options.max_connections = n;
+                    debug!(%gid, n, "changed split");
+                }
+            }
+        });
         Ok("OK".into())
     }
 
@@ -429,11 +468,15 @@ impl Aria2RpcServer for RpcHandler {
         Ok(serde_json::json!({
             "dir": job.out_path.parent().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default(),
             "out": job.out_path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
-            "max-download-limit": "0",
-            "max-upload-limit": "0",
-            "split": "16",
+            "max-download-limit": job.options.max_download_limit.to_string(),
+            "max-upload-limit": job.options.max_upload_limit.to_string(),
+            "split": job.options.max_connections.to_string(),
             "min-split-size": "1048576",
-            "max-connection-per-server": "16"
+            "max-connection-per-server": job.options.max_connections.to_string(),
+            "header": job.options.headers.iter()
+                .map(|(k, v)| format!("{k}: {v}"))
+                .collect::<Vec<_>>(),
+            "checksum": job.options.checksum.as_deref().unwrap_or(""),
         }))
     }
 
@@ -441,13 +484,14 @@ impl Aria2RpcServer for RpcHandler {
         if let Some(limit) = options.get("max-overall-download-limit").and_then(|v| v.as_str()) {
             if let Ok(_bytes) = limit.parse::<u64>() {
                 debug!(limit, "changed global download limit");
-                // TODO: propagate to rate limiter.
+                // TODO: propagate to rate limiter dynamically.
             }
         }
         if let Some(max) = options.get("max-concurrent-downloads").and_then(|v| v.as_str()) {
-            if let Ok(_n) = max.parse::<u32>() {
-                debug!(max, "changed max concurrent downloads");
-                // TODO: update scheduler.max_concurrent.
+            if let Ok(n) = max.parse::<u32>() {
+                self.engine.scheduler.set_max_concurrent(n);
+                self.engine.work_notify().notify_one();
+                debug!(max = n, "changed max concurrent downloads");
             }
         }
         Ok("OK".into())
@@ -460,6 +504,12 @@ impl Aria2RpcServer for RpcHandler {
             "max-overall-download-limit": self.engine.config.max_overall_download_limit.to_string(),
             "max-overall-upload-limit": self.engine.config.max_overall_upload_limit.to_string(),
             "log-level": self.engine.config.log_level,
+            "all-proxy": self.engine.config.all_proxy.as_deref().unwrap_or(""),
+            "http-proxy": self.engine.config.http_proxy.as_deref().unwrap_or(""),
+            "https-proxy": self.engine.config.https_proxy.as_deref().unwrap_or(""),
+            "no-proxy": self.engine.config.no_proxy.as_deref().unwrap_or(""),
+            "check-certificate": if self.engine.config.check_certificate { "true" } else { "false" },
+            "user-agent": self.engine.config.user_agent.as_deref().unwrap_or(concat!("raria/", env!("CARGO_PKG_VERSION"))),
         }))
     }
 

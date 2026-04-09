@@ -19,6 +19,29 @@ use tokio_util::io::StreamReader;
 use tracing::debug;
 use url::Url;
 
+/// Configuration for the HTTP backend.
+///
+/// Matches aria2's HTTP-related options: proxy, TLS, user-agent, cookies.
+#[derive(Debug, Clone, Default)]
+pub struct HttpBackendConfig {
+    /// Proxy URL for all protocols.
+    pub all_proxy: Option<String>,
+    /// Proxy URL for HTTP specifically (overrides all_proxy).
+    pub http_proxy: Option<String>,
+    /// Proxy URL for HTTPS specifically (overrides all_proxy).
+    pub https_proxy: Option<String>,
+    /// Comma-separated no-proxy domains.
+    pub no_proxy: Option<String>,
+    /// Whether to verify TLS certificates (default: true).
+    pub check_certificate: bool,
+    /// Path to custom CA certificate file.
+    pub ca_certificate: Option<std::path::PathBuf>,
+    /// Custom user-agent string.
+    pub user_agent: Option<String>,
+    /// Path to Netscape-format cookie file (aria2: --load-cookies).
+    pub cookie_file: Option<std::path::PathBuf>,
+}
+
 /// HTTP/HTTPS download backend.
 #[derive(Debug, Clone)]
 pub struct HttpBackend {
@@ -28,11 +51,72 @@ pub struct HttpBackend {
 impl HttpBackend {
     /// Create a new HTTP backend with default settings.
     pub fn new() -> Result<Self> {
-        let client = Client::builder()
-            .user_agent(concat!("raria/", env!("CARGO_PKG_VERSION")))
-            .build()
-            .context("failed to build reqwest client")?;
+        Self::with_config(&HttpBackendConfig {
+            check_certificate: true,
+            ..Default::default()
+        })
+    }
 
+    /// Create a new HTTP backend with the given configuration.
+    pub fn with_config(config: &HttpBackendConfig) -> Result<Self> {
+        let ua = config
+            .user_agent
+            .as_deref()
+            .unwrap_or(concat!("raria/", env!("CARGO_PKG_VERSION")));
+
+        let mut builder = Client::builder()
+            .user_agent(ua)
+            .danger_accept_invalid_certs(!config.check_certificate);
+
+        // Build the no_proxy exclusion list (applied to each proxy).
+        let no_proxy_list = config
+            .no_proxy
+            .as_ref()
+            .and_then(|s| reqwest::NoProxy::from_string(s));
+
+        // Configure proxy.
+        if let Some(ref proxy_url) = config.all_proxy {
+            let mut proxy = reqwest::Proxy::all(proxy_url)
+                .context("invalid all-proxy URL")?;
+            if let Some(ref np) = no_proxy_list {
+                proxy = proxy.no_proxy(Some(np.clone()));
+            }
+            builder = builder.proxy(proxy);
+        }
+        if let Some(ref proxy_url) = config.http_proxy {
+            let mut proxy = reqwest::Proxy::http(proxy_url)
+                .context("invalid http-proxy URL")?;
+            if let Some(ref np) = no_proxy_list {
+                proxy = proxy.no_proxy(Some(np.clone()));
+            }
+            builder = builder.proxy(proxy);
+        }
+        if let Some(ref proxy_url) = config.https_proxy {
+            let mut proxy = reqwest::Proxy::https(proxy_url)
+                .context("invalid https-proxy URL")?;
+            if let Some(ref np) = no_proxy_list {
+                proxy = proxy.no_proxy(Some(np.clone()));
+            }
+            builder = builder.proxy(proxy);
+        }
+
+        // Configure custom CA certificate.
+        if let Some(ref ca_path) = config.ca_certificate {
+            let cert_data = std::fs::read(ca_path)
+                .with_context(|| format!("failed to read CA cert: {}", ca_path.display()))?;
+            let cert = reqwest::Certificate::from_pem(&cert_data)
+                .context("failed to parse CA certificate")?;
+            builder = builder.add_root_certificate(cert);
+        }
+
+        // Load cookies from Netscape cookie file.
+        if let Some(ref cookie_path) = config.cookie_file {
+            let jar = crate::cookies::load_cookie_file(cookie_path)
+                .with_context(|| format!("failed to load cookies: {}", cookie_path.display()))?;
+            builder = builder.cookie_provider(jar);
+        }
+
+        let client = builder.build().context("failed to build reqwest client")?;
         Ok(Self { client })
     }
 
@@ -134,6 +218,11 @@ impl ByteSourceBackend for HttpBackend {
 
         if offset > 0 {
             request = request.header(RANGE, format!("bytes={offset}-"));
+            // Send If-Range with ETag for safe resume — if the resource changed,
+            // the server will send the full resource instead of a 206 partial.
+            if let Some(ref etag) = ctx.etag {
+                request = request.header("If-Range", etag.as_str());
+            }
         }
 
         let resp = request
@@ -182,5 +271,94 @@ mod tests {
             headers.get("accept").unwrap().to_str().unwrap(),
             "application/octet-stream"
         );
+    }
+
+    #[test]
+    fn backend_with_default_config() {
+        let config = HttpBackendConfig {
+            check_certificate: true,
+            ..Default::default()
+        };
+        let backend = HttpBackend::with_config(&config).unwrap();
+        assert_eq!(backend.name(), "http");
+    }
+
+    #[test]
+    fn backend_with_proxy_config() {
+        // Proxy URLs are validated during construction.
+        let config = HttpBackendConfig {
+            all_proxy: Some("http://proxy.example.com:8080".into()),
+            check_certificate: true,
+            ..Default::default()
+        };
+        let backend = HttpBackend::with_config(&config).unwrap();
+        assert_eq!(backend.name(), "http");
+    }
+
+    #[test]
+    fn backend_with_invalid_proxy_errors() {
+        let config = HttpBackendConfig {
+            all_proxy: Some("not a valid url".into()),
+            ..Default::default()
+        };
+        assert!(HttpBackend::with_config(&config).is_err());
+    }
+
+    #[test]
+    fn backend_with_disabled_cert_check() {
+        let config = HttpBackendConfig {
+            check_certificate: false,
+            ..Default::default()
+        };
+        // Should construct without error — dangerous but valid.
+        let backend = HttpBackend::with_config(&config).unwrap();
+        assert_eq!(backend.name(), "http");
+    }
+
+    #[test]
+    fn backend_with_custom_user_agent() {
+        let config = HttpBackendConfig {
+            user_agent: Some("Custom/1.0".into()),
+            check_certificate: true,
+            ..Default::default()
+        };
+        let backend = HttpBackend::with_config(&config).unwrap();
+        assert_eq!(backend.name(), "http");
+    }
+
+    #[test]
+    fn backend_with_no_proxy_list() {
+        let config = HttpBackendConfig {
+            all_proxy: Some("http://proxy.example.com:8080".into()),
+            no_proxy: Some("localhost,127.0.0.1,*.internal.corp".into()),
+            check_certificate: true,
+            ..Default::default()
+        };
+        let backend = HttpBackend::with_config(&config).unwrap();
+        assert_eq!(backend.name(), "http");
+    }
+
+    #[test]
+    fn backend_with_http_and_https_proxy() {
+        let config = HttpBackendConfig {
+            http_proxy: Some("http://http-proxy:3128".into()),
+            https_proxy: Some("http://https-proxy:3129".into()),
+            check_certificate: true,
+            ..Default::default()
+        };
+        let backend = HttpBackend::with_config(&config).unwrap();
+        assert_eq!(backend.name(), "http");
+    }
+
+    #[test]
+    fn backend_config_default() {
+        let config = HttpBackendConfig::default();
+        assert!(config.all_proxy.is_none());
+        assert!(config.http_proxy.is_none());
+        assert!(config.https_proxy.is_none());
+        assert!(config.no_proxy.is_none());
+        assert!(!config.check_certificate); // Default is false (struct default)
+        assert!(config.ca_certificate.is_none());
+        assert!(config.user_agent.is_none());
     }
 }

@@ -40,6 +40,8 @@ pub struct OpenContext {
     pub auth: Option<Credentials>,
     /// Read timeout per data chunk.
     pub timeout: Duration,
+    /// ETag from a previous probe, used for conditional resume (If-Range).
+    pub etag: Option<String>,
 }
 
 impl Default for OpenContext {
@@ -47,6 +49,7 @@ impl Default for OpenContext {
         Self {
             auth: None,
             timeout: Duration::from_secs(60),
+            etag: None,
         }
     }
 }

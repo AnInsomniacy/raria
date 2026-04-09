@@ -1,0 +1,307 @@
+// raria-core: Configuration file parser.
+//
+// Parses aria2-compatible configuration files. Format:
+// - Lines starting with # are comments.
+// - Options use key=value format (same as CLI without --)
+// - Empty lines are skipped.
+//
+// Example:
+//   dir=/home/user/downloads
+//   max-concurrent-downloads=5
+//   max-overall-download-limit=1048576
+//   all-proxy=http://proxy:8080
+
+use crate::config::GlobalConfig;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+
+/// Parse a configuration file and return a map of key-value pairs.
+///
+/// This is the low-level parser that doesn't know about GlobalConfig.
+/// Invalid lines are silently ignored (matches aria2 behavior).
+pub fn parse_config_file(content: &str) -> HashMap<String, String> {
+    let mut map = HashMap::new();
+    for line in content.lines() {
+        let line = line.trim();
+        // Skip empty lines and comments.
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        // Split on first '='.
+        if let Some((key, value)) = line.split_once('=') {
+            let key = key.trim();
+            let value = value.trim();
+            if !key.is_empty() {
+                map.insert(key.to_string(), value.to_string());
+            }
+        }
+    }
+    map
+}
+
+/// Apply parsed key-value options onto a GlobalConfig.
+///
+/// Unknown keys are silently ignored (forward compatibility).
+pub fn apply_config_map(config: &mut GlobalConfig, map: &HashMap<String, String>) {
+    for (key, value) in map {
+        match key.as_str() {
+            "dir" => config.dir = PathBuf::from(value),
+            "max-concurrent-downloads" => {
+                if let Ok(n) = value.parse() {
+                    config.max_concurrent_downloads = n;
+                }
+            }
+            "max-overall-download-limit" => {
+                if let Ok(n) = value.parse() {
+                    config.max_overall_download_limit = n;
+                }
+            }
+            "max-overall-upload-limit" => {
+                if let Ok(n) = value.parse() {
+                    config.max_overall_upload_limit = n;
+                }
+            }
+            "rpc-listen-port" => {
+                if let Ok(n) = value.parse() {
+                    config.rpc_listen_port = n;
+                }
+            }
+            "enable-rpc" | "rpc" => {
+                config.enable_rpc = value == "true" || value == "1";
+            }
+            "log-level" => {
+                config.log_level = value.clone();
+            }
+            "all-proxy" => {
+                config.all_proxy = if value.is_empty() { None } else { Some(value.clone()) };
+            }
+            "http-proxy" => {
+                config.http_proxy = if value.is_empty() { None } else { Some(value.clone()) };
+            }
+            "https-proxy" => {
+                config.https_proxy = if value.is_empty() { None } else { Some(value.clone()) };
+            }
+            "no-proxy" => {
+                config.no_proxy = if value.is_empty() { None } else { Some(value.clone()) };
+            }
+            "check-certificate" => {
+                config.check_certificate = value == "true" || value == "1";
+            }
+            "ca-certificate" => {
+                config.ca_certificate = if value.is_empty() {
+                    None
+                } else {
+                    Some(PathBuf::from(value))
+                };
+            }
+            "user-agent" => {
+                config.user_agent = if value.is_empty() { None } else { Some(value.clone()) };
+            }
+            _ => {
+                // Unknown key — silently ignore for forward compatibility.
+            }
+        }
+    }
+}
+
+/// Load and apply a configuration file onto an existing GlobalConfig.
+///
+/// Returns `Ok(())` if the file was loaded, `Err` if the file couldn't be read.
+/// If the file doesn't exist, returns `Ok(())` silently (no error).
+pub fn load_config_file(config: &mut GlobalConfig, path: &Path) -> std::io::Result<()> {
+    if !path.exists() {
+        return Ok(());
+    }
+    let content = std::fs::read_to_string(path)?;
+    let map = parse_config_file(&content);
+    apply_config_map(config, &map);
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_empty_content() {
+        let map = parse_config_file("");
+        assert!(map.is_empty());
+    }
+
+    #[test]
+    fn parse_comments_and_blank_lines() {
+        let content = r#"
+# This is a comment
+   # Another comment
+
+# Blank line above
+"#;
+        let map = parse_config_file(content);
+        assert!(map.is_empty());
+    }
+
+    #[test]
+    fn parse_basic_key_value() {
+        let content = "dir=/home/user/downloads\nmax-concurrent-downloads=5";
+        let map = parse_config_file(content);
+        assert_eq!(map.get("dir").unwrap(), "/home/user/downloads");
+        assert_eq!(map.get("max-concurrent-downloads").unwrap(), "5");
+    }
+
+    #[test]
+    fn parse_value_with_equals_sign() {
+        // Value might contain '=' (e.g., proxy URL with query param)
+        let content = "all-proxy=http://proxy:8080?auth=key123";
+        let map = parse_config_file(content);
+        assert_eq!(
+            map.get("all-proxy").unwrap(),
+            "http://proxy:8080?auth=key123"
+        );
+    }
+
+    #[test]
+    fn parse_trims_whitespace() {
+        let content = "  dir  =  /tmp/downloads  \n  log-level = debug  ";
+        let map = parse_config_file(content);
+        assert_eq!(map.get("dir").unwrap(), "/tmp/downloads");
+        assert_eq!(map.get("log-level").unwrap(), "debug");
+    }
+
+    #[test]
+    fn parse_empty_value() {
+        let content = "all-proxy=";
+        let map = parse_config_file(content);
+        assert_eq!(map.get("all-proxy").unwrap(), "");
+    }
+
+    #[test]
+    fn apply_config_dir() {
+        let mut config = GlobalConfig::default();
+        let mut map = HashMap::new();
+        map.insert("dir".into(), "/custom/path".into());
+        apply_config_map(&mut config, &map);
+        assert_eq!(config.dir, PathBuf::from("/custom/path"));
+    }
+
+    #[test]
+    fn apply_config_concurrent() {
+        let mut config = GlobalConfig::default();
+        let mut map = HashMap::new();
+        map.insert("max-concurrent-downloads".into(), "10".into());
+        apply_config_map(&mut config, &map);
+        assert_eq!(config.max_concurrent_downloads, 10);
+    }
+
+    #[test]
+    fn apply_config_proxy() {
+        let mut config = GlobalConfig::default();
+        let mut map = HashMap::new();
+        map.insert("all-proxy".into(), "http://proxy:8080".into());
+        map.insert("no-proxy".into(), "localhost,127.0.0.1".into());
+        apply_config_map(&mut config, &map);
+        assert_eq!(config.all_proxy, Some("http://proxy:8080".into()));
+        assert_eq!(config.no_proxy, Some("localhost,127.0.0.1".into()));
+    }
+
+    #[test]
+    fn apply_config_tls() {
+        let mut config = GlobalConfig::default();
+        let mut map = HashMap::new();
+        map.insert("check-certificate".into(), "false".into());
+        map.insert("ca-certificate".into(), "/etc/ssl/ca.pem".into());
+        apply_config_map(&mut config, &map);
+        assert!(!config.check_certificate);
+        assert_eq!(config.ca_certificate, Some(PathBuf::from("/etc/ssl/ca.pem")));
+    }
+
+    #[test]
+    fn apply_config_empty_proxy_clears_it() {
+        let mut config = GlobalConfig::default();
+        config.all_proxy = Some("http://old-proxy".into());
+        let mut map = HashMap::new();
+        map.insert("all-proxy".into(), "".into());
+        apply_config_map(&mut config, &map);
+        assert_eq!(config.all_proxy, None);
+    }
+
+    #[test]
+    fn apply_config_unknown_keys_ignored() {
+        let mut config = GlobalConfig::default();
+        let mut map = HashMap::new();
+        map.insert("unknown-key".into(), "some-value".into());
+        map.insert("another-unknown".into(), "data".into());
+        // Should not panic or error.
+        apply_config_map(&mut config, &map);
+    }
+
+    #[test]
+    fn apply_config_rpc_enable_variants() {
+        let mut config = GlobalConfig::default();
+        let mut map = HashMap::new();
+        map.insert("enable-rpc".into(), "true".into());
+        apply_config_map(&mut config, &map);
+        assert!(config.enable_rpc);
+
+        config.enable_rpc = false;
+        map.insert("enable-rpc".into(), "1".into());
+        apply_config_map(&mut config, &map);
+        assert!(config.enable_rpc);
+    }
+
+    #[test]
+    fn apply_config_speed_limits() {
+        let mut config = GlobalConfig::default();
+        let mut map = HashMap::new();
+        map.insert("max-overall-download-limit".into(), "1048576".into());
+        map.insert("max-overall-upload-limit".into(), "524288".into());
+        apply_config_map(&mut config, &map);
+        assert_eq!(config.max_overall_download_limit, 1048576);
+        assert_eq!(config.max_overall_upload_limit, 524288);
+    }
+
+    #[test]
+    fn apply_config_invalid_number_ignored() {
+        let mut config = GlobalConfig::default();
+        let original_concurrent = config.max_concurrent_downloads;
+        let mut map = HashMap::new();
+        map.insert("max-concurrent-downloads".into(), "not-a-number".into());
+        apply_config_map(&mut config, &map);
+        assert_eq!(config.max_concurrent_downloads, original_concurrent);
+    }
+
+    #[test]
+    fn load_nonexistent_file_returns_ok() {
+        let mut config = GlobalConfig::default();
+        let result = load_config_file(&mut config, Path::new("/nonexistent/path/config"));
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn full_config_file_roundtrip() {
+        let content = r#"
+# raria configuration
+dir=/home/user/downloads
+max-concurrent-downloads=8
+max-overall-download-limit=0
+rpc-listen-port=6800
+enable-rpc=true
+log-level=info
+all-proxy=http://proxy:3128
+check-certificate=true
+user-agent=raria/1.0
+"#;
+        let mut config = GlobalConfig::default();
+        let map = parse_config_file(content);
+        apply_config_map(&mut config, &map);
+
+        assert_eq!(config.dir, PathBuf::from("/home/user/downloads"));
+        assert_eq!(config.max_concurrent_downloads, 8);
+        assert_eq!(config.max_overall_download_limit, 0);
+        assert_eq!(config.rpc_listen_port, 6800);
+        assert!(config.enable_rpc);
+        assert_eq!(config.log_level, "info");
+        assert_eq!(config.all_proxy, Some("http://proxy:3128".into()));
+        assert!(config.check_certificate);
+        assert_eq!(config.user_agent, Some("raria/1.0".into()));
+    }
+}

@@ -24,6 +24,20 @@ pub struct GlobalConfig {
     pub session_file: PathBuf,
     /// Log level.
     pub log_level: String,
+    /// Proxy URL for all protocols (aria2: --all-proxy).
+    pub all_proxy: Option<String>,
+    /// Proxy URL for HTTP requests only (overrides all_proxy for HTTP).
+    pub http_proxy: Option<String>,
+    /// Proxy URL for HTTPS requests only (overrides all_proxy for HTTPS).
+    pub https_proxy: Option<String>,
+    /// Comma-separated list of domains that bypass the proxy.
+    pub no_proxy: Option<String>,
+    /// Whether to disable TLS certificate verification.
+    pub check_certificate: bool,
+    /// Path to custom CA certificate file.
+    pub ca_certificate: Option<PathBuf>,
+    /// User-Agent string override.
+    pub user_agent: Option<String>,
 }
 
 impl Default for GlobalConfig {
@@ -37,6 +51,13 @@ impl Default for GlobalConfig {
             enable_rpc: false,
             session_file: PathBuf::from("raria.session"),
             log_level: "info".into(),
+            all_proxy: None,
+            http_proxy: None,
+            https_proxy: None,
+            no_proxy: None,
+            check_certificate: true,
+            ca_certificate: None,
+            user_agent: None,
         }
     }
 }

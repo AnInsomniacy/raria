@@ -53,6 +53,8 @@ pub struct Engine {
     pub cancel_registry: CancelRegistry,
     pub event_bus: EventBus,
     pub config: GlobalConfig,
+    /// Unique session identifier (random hex, persisted for lifetime of process).
+    pub session_id: String,
     store: Option<Arc<Store>>,
     shutdown: CancellationToken,
     work_notify: Arc<Notify>,
@@ -68,6 +70,7 @@ impl Engine {
             cancel_registry: CancelRegistry::new(),
             event_bus: EventBus::new(256),
             config,
+            session_id: format!("{:016x}", rand::random::<u64>()),
             store: None,
             shutdown: CancellationToken::new(),
             work_notify: Arc::new(Notify::new()),
@@ -83,6 +86,7 @@ impl Engine {
             cancel_registry: CancelRegistry::new(),
             event_bus: EventBus::new(256),
             config,
+            session_id: format!("{:016x}", rand::random::<u64>()),
             store: Some(store),
             shutdown: CancellationToken::new(),
             work_notify: Arc::new(Notify::new()),
@@ -435,6 +439,7 @@ impl Engine {
                     if let Err(e) = store.remove_job(gid) {
                         warn!(%gid, error = %e, "failed to delete job from store");
                     }
+                    let _ = store.remove_segments(gid);
                 }
                 debug!(%gid, "download result removed");
                 Ok(())
@@ -456,6 +461,7 @@ impl Engine {
                     self.registry.remove(job.gid);
                     if let Some(ref store) = self.store {
                         let _ = store.remove_job(job.gid);
+                        let _ = store.remove_segments(job.gid);
                     }
                     purged += 1;
                 }

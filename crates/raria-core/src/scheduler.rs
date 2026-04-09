@@ -6,22 +6,32 @@
 use crate::job::{Gid, Status};
 use crate::registry::JobRegistry;
 use std::collections::VecDeque;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, RwLock};
 
 /// Controls the execution queue for download jobs.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct Scheduler {
     /// Maximum number of concurrently active jobs.
-    max_concurrent: u32,
+    max_concurrent: AtomicU32,
     /// Ordered queue of waiting GIDs. Front = next to activate.
     queue: Arc<RwLock<VecDeque<Gid>>>,
+}
+
+impl Clone for Scheduler {
+    fn clone(&self) -> Self {
+        Self {
+            max_concurrent: AtomicU32::new(self.max_concurrent.load(Ordering::Relaxed)),
+            queue: Arc::clone(&self.queue),
+        }
+    }
 }
 
 impl Scheduler {
     /// Create a new scheduler with the given concurrency limit.
     pub fn new(max_concurrent: u32) -> Self {
         Self {
-            max_concurrent: max_concurrent.max(1),
+            max_concurrent: AtomicU32::new(max_concurrent.max(1)),
             queue: Arc::new(RwLock::new(VecDeque::new())),
         }
     }
@@ -105,24 +115,26 @@ impl Scheduler {
     /// Checks the registry for the count of currently Active jobs,
     /// and returns GIDs from the front of the queue that can be activated.
     pub fn jobs_to_activate(&self, registry: &JobRegistry) -> Vec<Gid> {
+        let max = self.max_concurrent.load(Ordering::Relaxed);
         let active_count = registry.by_status(Status::Active).len() as u32;
-        if active_count >= self.max_concurrent {
+        if active_count >= max {
             return Vec::new();
         }
 
-        let slots = (self.max_concurrent - active_count) as usize;
+        let slots = (max - active_count) as usize;
         let queue = self.queue.read().unwrap();
         queue.iter().take(slots).copied().collect()
     }
 
     /// The maximum number of concurrent downloads.
     pub fn max_concurrent(&self) -> u32 {
-        self.max_concurrent
+        self.max_concurrent.load(Ordering::Relaxed)
     }
 
     /// Update the maximum concurrency.
-    pub fn set_max_concurrent(&mut self, max: u32) {
-        self.max_concurrent = max.max(1);
+    /// Update the maximum concurrency (thread-safe, no &mut needed).
+    pub fn set_max_concurrent(&self, max: u32) {
+        self.max_concurrent.store(max.max(1), Ordering::Relaxed);
     }
 }
 
@@ -323,7 +335,7 @@ mod tests {
 
     #[test]
     fn set_max_concurrent_updates() {
-        let mut sched = Scheduler::new(5);
+        let sched = Scheduler::new(5);
         sched.set_max_concurrent(10);
         assert_eq!(sched.max_concurrent(), 10);
 
