@@ -227,6 +227,41 @@ async fn wait_for_bt_download(
     (handle, first_peer)
 }
 
+async fn wait_for_partial_bt_download(
+    service: &BtService,
+    gid: Gid,
+    torrent_bytes: Vec<u8>,
+) -> (raria_bt::service::BtHandle, u64) {
+    let handle = service
+        .add(BtSource::TorrentBytes(torrent_bytes), gid, None, None)
+        .await
+        .expect("add torrent to BtService");
+
+    let downloaded = timeout(Duration::from_secs(60), async {
+        loop {
+            let status = service.status(&handle).await.expect("bt status");
+            if status.total_size > 0 && status.downloaded > 512 * 1024 && !status.is_complete {
+                return status.downloaded;
+            }
+            sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await
+    .expect("BT partial download timeout");
+
+    (handle, downloaded)
+}
+
+fn persistence_dir_has_state(path: &Path) -> bool {
+    fs::read_dir(path)
+        .ok()
+        .into_iter()
+        .flatten()
+        .filter_map(std::result::Result::ok)
+        .filter_map(|entry| entry.metadata().ok())
+        .any(|metadata| metadata.is_file() && metadata.len() > 0)
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn bt_service_downloads_real_torrent_from_seed_peer_and_exposes_peer_details() {
     let seed = start_seed_fixture(8 * 1024 * 1024)
@@ -300,4 +335,93 @@ async fn bt_service_attempts_peer_download_through_socks5_proxy() {
     );
 
     service.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn bt_service_persists_fastresume_state_and_resumes_after_restart() {
+    let seed = start_seed_fixture(64 * 1024 * 1024)
+        .await
+        .expect("seed fixture");
+    let download_dir = tempdir().expect("download tempdir");
+    let config = BtServiceConfig {
+        disable_dht: true,
+        disable_dht_persistence: true,
+        initial_peers: Some(vec![seed.seed_addr]),
+        ..Default::default()
+    };
+
+    let service = BtService::with_config(download_dir.path().to_path_buf(), config.clone())
+        .expect("create bt service");
+    let (_handle, partial_downloaded) = wait_for_partial_bt_download(
+        &service,
+        Gid::from_raw(3),
+        seed.torrent_bytes.clone(),
+    )
+    .await;
+    service.shutdown().await;
+
+    let persistence_dir = download_dir.path().join(".raria-bt-session");
+    timeout(Duration::from_secs(10), async {
+        loop {
+            if persistence_dir_has_state(&persistence_dir) {
+                return;
+            }
+            sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await
+    .expect("fastresume persistence dir should contain state after shutdown");
+
+    let resumed_service = BtService::with_config(download_dir.path().to_path_buf(), config)
+        .expect("create resumed bt service");
+    let resumed_handle = resumed_service
+        .add(
+            BtSource::TorrentBytes(seed.torrent_bytes.clone()),
+            Gid::from_raw(4),
+            None,
+            None,
+        )
+        .await
+        .expect("re-add torrent after restart");
+
+    let resumed_downloaded = timeout(Duration::from_secs(10), async {
+        loop {
+            let status = resumed_service
+                .status(&resumed_handle)
+                .await
+                .expect("resumed bt status");
+            if status.downloaded > 0 {
+                return status.downloaded;
+            }
+            sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await
+    .expect("resumed torrent should surface preserved progress");
+    assert!(
+        resumed_downloaded > 0 && partial_downloaded > 0,
+        "fastresume path should preserve non-zero progress across restart"
+    );
+
+    timeout(Duration::from_secs(60), async {
+        loop {
+            let status = resumed_service
+                .status(&resumed_handle)
+                .await
+                .expect("resumed completion status");
+            if status.is_complete {
+                return;
+            }
+            sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await
+    .expect("resumed BT completion timeout");
+
+    assert_eq!(
+        fs::read(download_dir.path().join(&seed.output_name)).expect("read resumed torrent"),
+        seed.payload
+    );
+
+    resumed_service.shutdown().await;
 }
