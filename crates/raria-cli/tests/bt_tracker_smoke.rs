@@ -221,7 +221,6 @@ async fn daemon_bt_tracker_option_announces_to_tracker_on_real_daemon_path() {
         .await
         .expect("parse addTorrent response");
     let gid = add_resp["result"].as_str().expect("gid").to_string();
-    let expected_port = fixture.seed_port.to_string();
 
     let deadline = Instant::now() + Duration::from_secs(30);
     loop {
@@ -319,6 +318,7 @@ async fn daemon_get_peers_exposes_live_bt_peer_details_over_rpc() {
         .await
         .expect("parse addTorrent response");
     let gid = add_resp["result"].as_str().expect("gid").to_string();
+    let expected_port = fixture.seed_port.to_string();
 
     let deadline = Instant::now() + Duration::from_secs(30);
     loop {
