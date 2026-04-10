@@ -9,6 +9,7 @@ pub mod job;
 pub mod limiter;
 pub mod persist;
 pub mod progress;
+pub mod rename;
 pub mod registry;
 pub mod scheduler;
 pub mod segment;

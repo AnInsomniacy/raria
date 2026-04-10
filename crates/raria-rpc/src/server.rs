@@ -10,7 +10,7 @@ use raria_core::engine::Engine;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
-use tracing::info;
+use tracing::{info, warn};
 
 /// Configuration for the RPC server.
 #[derive(Debug, Clone)]
@@ -78,17 +78,42 @@ pub async fn start_rpc_server(
     // Create the notification broadcast channel.
     let (notify_tx, _) = tokio::sync::broadcast::channel::<String>(256);
 
-    // Start WS notification server on port+1 (or OS-assigned if port is 0).
-    let notify_port = if config.listen_addr.port() == 0 {
+    // Prefer port+1 for parity with aria2-style tooling, but fall back to an
+    // OS-assigned port if that address is unavailable.
+    let preferred_notify_port = if config.listen_addr.port() == 0 {
         0
     } else {
         config.listen_addr.port() + 1
     };
-    let notify_addr = SocketAddr::from((config.listen_addr.ip(), notify_port));
+    let preferred_notify_addr =
+        SocketAddr::from((config.listen_addr.ip(), preferred_notify_port));
 
-    let ws_notify_addr = start_ws_notify_listener(notify_addr, notify_tx.clone(), cancel.clone())
-        .await
-        .context("failed to start WS notify server")?;
+    let ws_notify_addr = match start_ws_notify_listener(
+        preferred_notify_addr,
+        notify_tx.clone(),
+        cancel.clone(),
+    )
+    .await
+    {
+        Ok(addr) => addr,
+        Err(error) if preferred_notify_port != 0 => {
+            warn!(
+                preferred = %preferred_notify_addr,
+                error = %error,
+                "preferred WS notification port unavailable, falling back to an OS-assigned port"
+            );
+            start_ws_notify_listener(
+                SocketAddr::from((config.listen_addr.ip(), 0)),
+                notify_tx.clone(),
+                cancel.clone(),
+            )
+            .await
+            .context("failed to start WS notify server on fallback port")?
+        }
+        Err(error) => {
+            return Err(error).context("failed to start WS notify server");
+        }
+    };
     info!(%ws_notify_addr, "WS notification server ready");
 
     // Spawn WebSocket event push loop.

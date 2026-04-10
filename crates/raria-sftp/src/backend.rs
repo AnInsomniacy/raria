@@ -22,19 +22,40 @@ use raria_range::backend::{
     ByteSourceBackend, ByteStream, FileProbe, OpenContext, ProbeContext,
 };
 use russh::client;
+use russh::keys::{check_known_hosts_path, load_secret_key, PrivateKeyWithHashAlg};
 use russh_sftp::client::SftpSession;
+use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::io::AsyncSeekExt;
 use tracing::{debug, info};
 use url::Url;
 
+/// SFTP-specific backend configuration.
+#[derive(Debug, Clone, Default)]
+pub struct SftpBackendConfig {
+    /// When true, reject servers whose host key is not present in the known_hosts file.
+    pub strict_host_key_check: bool,
+    /// Optional non-default known_hosts file path.
+    pub known_hosts_path: Option<PathBuf>,
+    /// Optional private key path for public-key authentication.
+    pub private_key_path: Option<PathBuf>,
+    /// Optional passphrase for the private key.
+    pub private_key_passphrase: Option<String>,
+}
+
 /// SFTP download backend.
-#[derive(Debug)]
-pub struct SftpBackend;
+#[derive(Debug, Clone)]
+pub struct SftpBackend {
+    config: SftpBackendConfig,
+}
 
 impl SftpBackend {
     pub fn new() -> Self {
-        Self
+        Self::with_config(SftpBackendConfig::default())
+    }
+
+    pub fn with_config(config: SftpBackendConfig) -> Self {
+        Self { config }
     }
 }
 
@@ -63,10 +84,35 @@ fn parse_sftp_url(uri: &Url) -> Result<(String, u16, String, String, String)> {
     Ok((host, port, user, password, path))
 }
 
-/// Minimal SSH client handler.
-/// Accepts all host keys (like aria2's default behavior).
-/// Production deployments should add known_hosts verification.
-struct SshHandler;
+/// Minimal SSH client handler with optional known_hosts verification.
+struct SshHandler {
+    host: String,
+    port: u16,
+    config: SftpBackendConfig,
+}
+
+impl SshHandler {
+    fn new(host: String, port: u16, config: SftpBackendConfig) -> Self {
+        Self { host, port, config }
+    }
+}
+
+fn verify_known_host(
+    host: &str,
+    port: u16,
+    server_public_key: &russh::keys::PublicKey,
+    config: &SftpBackendConfig,
+) -> Result<bool> {
+    if !config.strict_host_key_check {
+        return Ok(true);
+    }
+
+    if let Some(ref path) = config.known_hosts_path {
+        Ok(check_known_hosts_path(host, port, server_public_key, path)?)
+    } else {
+        Ok(russh::keys::check_known_hosts(host, port, server_public_key)?)
+    }
+}
 
 impl client::Handler for SshHandler {
     type Error = anyhow::Error;
@@ -74,31 +120,45 @@ impl client::Handler for SshHandler {
     #[allow(clippy::manual_async_fn)]
     fn check_server_key(
         &mut self,
-        _server_public_key: &russh::keys::PublicKey,
+        server_public_key: &russh::keys::PublicKey,
     ) -> impl std::future::Future<Output = Result<bool, Self::Error>> + Send {
-        // Accept all host keys — matches aria2's default.
-        async { Ok(true) }
+        let host = self.host.clone();
+        let port = self.port;
+        let config = self.config.clone();
+        async move { verify_known_host(&host, port, server_public_key, &config) }
     }
 }
 
 /// Establish an SFTP session over SSH.
-async fn connect_sftp(uri: &Url) -> Result<(SftpSession, String)> {
+async fn connect_sftp(uri: &Url, backend_config: &SftpBackendConfig) -> Result<(SftpSession, String)> {
     let (host, port, user, password, path) = parse_sftp_url(uri)?;
 
     debug!(host = %host, port, user = %user, "connecting via SSH");
 
-    let config = Arc::new(client::Config::default());
-    let handler = SshHandler;
+    let ssh_config = Arc::new(client::Config::default());
+    let handler = SshHandler::new(host.clone(), port, backend_config.clone());
 
-    let mut session = client::connect(config, (host.as_str(), port), handler)
+    let mut session = client::connect(ssh_config, (host.as_str(), port), handler)
         .await
         .with_context(|| format!("SSH connection failed to {host}:{port}"))?;
 
-    // Authenticate with password.
-    let auth_result = session
-        .authenticate_password(&user, &password)
-        .await
-        .with_context(|| format!("SSH auth failed for user '{user}'"))?;
+    // Authenticate with private key when configured, otherwise fall back to password.
+    let auth_result = if let Some(ref private_key_path) = backend_config.private_key_path {
+        let key = load_secret_key(
+            private_key_path,
+            backend_config.private_key_passphrase.as_deref(),
+        )
+        .with_context(|| format!("failed to load SSH private key: {}", private_key_path.display()))?;
+        session
+            .authenticate_publickey(&user, PrivateKeyWithHashAlg::new(Arc::new(key), None))
+            .await
+            .with_context(|| format!("SSH public-key auth failed for user '{user}'"))?
+    } else {
+        session
+            .authenticate_password(&user, &password)
+            .await
+            .with_context(|| format!("SSH auth failed for user '{user}'"))?
+    };
 
     if !auth_result.success() {
         anyhow::bail!("SSH password authentication rejected for user '{user}'");
@@ -128,7 +188,7 @@ impl ByteSourceBackend for SftpBackend {
     async fn probe(&self, uri: &Url, _ctx: &ProbeContext) -> Result<FileProbe> {
         debug!(uri = %uri, "probing SFTP resource");
 
-        let (sftp, path) = connect_sftp(uri).await?;
+        let (sftp, path) = connect_sftp(uri, &self.config).await?;
 
         // stat() to get file metadata.
         let metadata = sftp
@@ -146,13 +206,14 @@ impl ByteSourceBackend for SftpBackend {
             last_modified: None,
             content_type: None,
             suggested_filename: None,
+            not_modified: false,
         })
     }
 
     async fn open_from(&self, uri: &Url, offset: u64, _ctx: &OpenContext) -> Result<ByteStream> {
         debug!(uri = %uri, offset, "opening SFTP stream");
 
-        let (sftp, path) = connect_sftp(uri).await?;
+        let (sftp, path) = connect_sftp(uri, &self.config).await?;
 
         // Open the remote file for reading.
         let mut file = sftp
@@ -180,11 +241,26 @@ impl ByteSourceBackend for SftpBackend {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use russh::keys::parse_public_key_base64;
 
     #[test]
     fn sftp_backend_creates_successfully() {
         let backend = SftpBackend::new();
         assert_eq!(backend.name(), "sftp");
+    }
+
+    #[test]
+    fn sftp_backend_with_config_preserves_settings() {
+        let backend = SftpBackend::with_config(SftpBackendConfig {
+            strict_host_key_check: true,
+            known_hosts_path: Some(PathBuf::from("/tmp/known_hosts")),
+            private_key_path: Some(PathBuf::from("/tmp/id_ed25519")),
+            private_key_passphrase: Some("secret".into()),
+        });
+        assert!(backend.config.strict_host_key_check);
+        assert_eq!(backend.config.known_hosts_path, Some(PathBuf::from("/tmp/known_hosts")));
+        assert_eq!(backend.config.private_key_path, Some(PathBuf::from("/tmp/id_ed25519")));
+        assert_eq!(backend.config.private_key_passphrase.as_deref(), Some("secret"));
     }
 
     #[test]
@@ -226,5 +302,82 @@ mod tests {
         let url: Url = "sftp://user@host/file".parse().unwrap();
         let (_, _, _, pass, _) = parse_sftp_url(&url).unwrap();
         assert_eq!(pass, "");
+    }
+
+    #[test]
+    fn verify_known_host_accepts_all_when_strict_check_is_disabled() {
+        let key = parse_public_key_base64(
+            "AAAAC3NzaC1lZDI1NTE5AAAAIJdD7y3aLq454yWBdwLWbieU1ebz9/cu7/QEXn9OIeZJ",
+        )
+        .unwrap();
+        let allowed = verify_known_host(
+            "localhost",
+            22,
+            &key,
+            &SftpBackendConfig {
+                strict_host_key_check: false,
+                known_hosts_path: None,
+                private_key_path: None,
+                private_key_passphrase: None,
+            },
+        )
+        .unwrap();
+        assert!(allowed);
+    }
+
+    #[test]
+    fn verify_known_host_checks_custom_known_hosts_file_when_enabled() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("known_hosts");
+        std::fs::write(
+            &path,
+            "localhost ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJdD7y3aLq454yWBdwLWbieU1ebz9/cu7/QEXn9OIeZJ\n",
+        )
+        .unwrap();
+        let key = parse_public_key_base64(
+            "AAAAC3NzaC1lZDI1NTE5AAAAIJdD7y3aLq454yWBdwLWbieU1ebz9/cu7/QEXn9OIeZJ",
+        )
+        .unwrap();
+        let allowed = verify_known_host(
+            "localhost",
+            22,
+            &key,
+            &SftpBackendConfig {
+                strict_host_key_check: true,
+                known_hosts_path: Some(path),
+                private_key_path: None,
+                private_key_passphrase: None,
+            },
+        )
+        .unwrap();
+        assert!(allowed);
+    }
+
+    #[test]
+    fn verify_known_host_rejects_missing_entry_when_enabled() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("known_hosts");
+        std::fs::write(
+            &path,
+            "otherhost ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJdD7y3aLq454yWBdwLWbieU1ebz9/cu7/QEXn9OIeZJ\n",
+        )
+        .unwrap();
+        let key = parse_public_key_base64(
+            "AAAAC3NzaC1lZDI1NTE5AAAAIJdD7y3aLq454yWBdwLWbieU1ebz9/cu7/QEXn9OIeZJ",
+        )
+        .unwrap();
+        let allowed = verify_known_host(
+            "localhost",
+            22,
+            &key,
+            &SftpBackendConfig {
+                strict_host_key_check: true,
+                known_hosts_path: Some(path),
+                private_key_path: None,
+                private_key_passphrase: None,
+            },
+        )
+        .unwrap();
+        assert!(!allowed);
     }
 }

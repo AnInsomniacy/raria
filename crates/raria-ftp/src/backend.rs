@@ -148,6 +148,7 @@ impl ByteSourceBackend for FtpBackend {
             last_modified: None,
             content_type: None,
             suggested_filename: None,
+            not_modified: false,
         })
     }
 

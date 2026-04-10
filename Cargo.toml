@@ -72,6 +72,7 @@ rand = "0.9"
 hex = "0.4"
 base64 = "0.22"
 tokio-tungstenite = "0.24"
+netrc = { package = "rust-netrc", version = "0.1.2" }
 
 # === Workspace Crates ===
 raria-core = { path = "crates/raria-core" }
@@ -86,6 +87,7 @@ raria-rpc = { path = "crates/raria-rpc" }
 # === Test Dependencies ===
 tempfile = "3"
 tokio-test = "0.4"
+wiremock = "0.6"
 
 [profile.release]
 lto = true

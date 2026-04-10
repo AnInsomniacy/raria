@@ -6,87 +6,88 @@
 
 | Status | Meaning |
 |--------|---------|
-| ✅ done | Implemented and returning correct response format |
-| 🔧 partial | Registered but missing fields or incomplete behavior |
-| ❌ stub | Returns error or placeholder |
-| ⏸️ deferred | Will not implement in v1 |
+| `has_code` | Method or support code exists but is not fully wired into real behavior |
+| `wired` | Available on the real server path, but behavior is still incomplete |
+| `tested` | Automated coverage exists and is passing |
+| `client_verified` | Verified through real daemon/RPC/WebSocket smoke or client flows |
+| `gap` | Known incompatibility or intentionally unsupported |
 
 ---
 
 ## Download Control Methods
 
-| Method | aria2 | raria | Status | Test Coverage |
-|--------|-------|-------|--------|---------------|
-| `aria2.addUri` | ✅ | ✅ | ✅ done | Unit + RPC integration |
-| `aria2.addTorrent` | ✅ | ❌ | ❌ stub | Returns "not implemented" |
-| `aria2.addMetalink` | ✅ | ❌ | ❌ stub | Returns "not implemented" |
-| `aria2.remove` | ✅ | ✅ | ✅ done | Unit test |
-| `aria2.forceRemove` | ✅ | ✅ | ✅ done | Unit test |
-| `aria2.pause` | ✅ | ✅ | ✅ done | Unit test |
-| `aria2.pauseAll` | ✅ | ✅ | ✅ done | Unit test |
-| `aria2.forcePause` | ✅ | ✅ | ✅ done | Unit test |
-| `aria2.forcePauseAll` | ✅ | ✅ | ✅ done | Unit test |
-| `aria2.unpause` | ✅ | ✅ | ✅ done | Unit test |
-| `aria2.unpauseAll` | ✅ | ✅ | ✅ done | Unit test |
+| Method | aria2 | raria | Status | Notes |
+|--------|-------|-------|--------|-------|
+| `aria2.addUri` | ✅ | ✅ | `client_verified` | Covered by daemon RPC smoke |
+| `aria2.addTorrent` | ✅ | ✅ | `tested` | BT dispatch tests exercise job creation |
+| `aria2.addMetalink` | ✅ | ✅ | `tested` | Metalink dispatch tests exist |
+| `aria2.remove` | ✅ | ✅ | `tested` | Unit coverage |
+| `aria2.forceRemove` | ✅ | ✅ | `tested` | Unit coverage |
+| `aria2.pause` | ✅ | ✅ | `tested` | Unit coverage |
+| `aria2.pauseAll` | ✅ | ✅ | `tested` | Unit coverage |
+| `aria2.forcePause` | ✅ | ✅ | `tested` | Unit coverage |
+| `aria2.forcePauseAll` | ✅ | ✅ | `tested` | Unit coverage |
+| `aria2.unpause` | ✅ | ✅ | `tested` | Unit coverage |
+| `aria2.unpauseAll` | ✅ | ✅ | `tested` | Unit coverage |
 
 ## Query Methods
 
 | Method | aria2 | raria | Status | Notes |
 |--------|-------|-------|--------|-------|
-| `aria2.tellStatus` | ✅ | ✅ | ✅ done | String-typed numbers verified |
-| `aria2.getUris` | ✅ | ✅ | ✅ done | |
-| `aria2.getFiles` | ✅ | ✅ | ✅ done | |
-| `aria2.getPeers` | ✅ | 🔧 | 🔧 partial | Returns empty for non-BT |
-| `aria2.getServers` | ✅ | 🔧 | 🔧 partial | |
-| `aria2.tellActive` | ✅ | ✅ | ✅ done | |
-| `aria2.tellWaiting` | ✅ | ✅ | ✅ done | With offset/num |
-| `aria2.tellStopped` | ✅ | ✅ | ✅ done | |
-| `aria2.getGlobalStat` | ✅ | ✅ | ✅ done | String-typed numbers verified |
-| `aria2.getVersion` | ✅ | ✅ | ✅ done | Returns raria version |
-| `aria2.getSessionInfo` | ✅ | ✅ | ✅ done | |
+| `aria2.tellStatus` | ✅ | ✅ | `client_verified` | RPC smoke and parity tests |
+| `aria2.getUris` | ✅ | ✅ | `tested` | RPC tests |
+| `aria2.getFiles` | ✅ | ✅ | `tested` | RPC tests |
+| `aria2.getPeers` | ✅ | ✅ | `wired` | Returns empty for non-BT; BT detail parity incomplete |
+| `aria2.getServers` | ✅ | ✅ | `tested` | RPC tests |
+| `aria2.tellActive` | ✅ | ✅ | `tested` | RPC tests |
+| `aria2.tellWaiting` | ✅ | ✅ | `tested` | RPC tests |
+| `aria2.tellStopped` | ✅ | ✅ | `tested` | RPC tests |
+| `aria2.getGlobalStat` | ✅ | ✅ | `tested` | Parity tests |
+| `aria2.getVersion` | ✅ | ✅ | `tested` | RPC tests |
+| `aria2.getSessionInfo` | ✅ | ✅ | `tested` | RPC tests |
 
 ## Configuration Methods
 
 | Method | aria2 | raria | Status | Notes |
 |--------|-------|-------|--------|-------|
-| `aria2.changeOption` | ✅ | 🔧 | 🔧 partial | Registered but TODO: doesn't actually apply |
-| `aria2.getOption` | ✅ | ✅ | ✅ done | |
-| `aria2.changeGlobalOption` | ✅ | 🔧 | 🔧 partial | TODO: doesn't actually apply |
-| `aria2.getGlobalOption` | ✅ | ✅ | ✅ done | |
-| `aria2.changePosition` | ✅ | ✅ | ✅ done | POS_SET/POS_CUR/POS_END |
+| `aria2.changeOption` | ✅ | ✅ | `wired` | Some runtime mutation exists, broader parity still incomplete |
+| `aria2.getOption` | ✅ | ✅ | `tested` | Options parity tests |
+| `aria2.changeGlobalOption` | ✅ | ✅ | `wired` | Scheduler mutation works; dynamic limiter update incomplete |
+| `aria2.getGlobalOption` | ✅ | ✅ | `tested` | Options parity tests |
+| `aria2.changePosition` | ✅ | ✅ | `tested` | RPC tests |
 
 ## Session Methods
 
 | Method | aria2 | raria | Status | Notes |
 |--------|-------|-------|--------|-------|
-| `aria2.purgeDownloadResult` | ✅ | ✅ | ✅ done | |
-| `aria2.removeDownloadResult` | ✅ | ✅ | ✅ done | |
-| `aria2.saveSession` | ✅ | 🔧 | 🔧 partial | Returns OK but no actual save |
-| `aria2.shutdown` | ✅ | ✅ | ✅ done | |
-| `aria2.forceShutdown` | ✅ | ✅ | ✅ done | |
+| `aria2.purgeDownloadResult` | ✅ | ✅ | `tested` | RPC tests |
+| `aria2.removeDownloadResult` | ✅ | ✅ | `tested` | RPC tests |
+| `aria2.saveSession` | ✅ | ✅ | `wired` | Actual persistence exists; parity still evolving |
+| `aria2.shutdown` | ✅ | ✅ | `client_verified` | Daemon smoke verifies graceful shutdown |
+| `aria2.forceShutdown` | ✅ | ✅ | `tested` | RPC tests |
 
 ## System Methods
 
 | Method | aria2 | raria | Status | Notes |
 |--------|-------|-------|--------|-------|
-| `system.multicall` | ✅ | ❌ | ❌ stub | Critical for AriaNg |
-| `system.listMethods` | ✅ | ❌ | ❌ stub | |
-| `system.listNotifications` | ✅ | ❌ | ❌ stub | |
+| `system.multicall` | ✅ | ✅ | `tested` | Multicall parity tests |
+| `system.listMethods` | ✅ | ✅ | `tested` | Multicall parity tests |
+| `system.listNotifications` | ✅ | ✅ | `tested` | Multicall parity tests |
 
 ## WebSocket Notifications
 
 | Notification | aria2 | raria | Status | Notes |
 |-------------|-------|-------|--------|-------|
-| `aria2.onDownloadStart` | ✅ | 🔧 | 🔧 partial | Event mapped, not yet pushed to WS |
-| `aria2.onDownloadPause` | ✅ | 🔧 | 🔧 partial | Event mapped, not yet pushed to WS |
-| `aria2.onDownloadStop` | ✅ | 🔧 | 🔧 partial | Event mapped, not yet pushed to WS |
-| `aria2.onDownloadComplete` | ✅ | 🔧 | 🔧 partial | Event mapped, not yet pushed to WS |
-| `aria2.onDownloadError` | ✅ | 🔧 | 🔧 partial | Event mapped, not yet pushed to WS |
-| `aria2.onBtDownloadComplete` | ✅ | ❌ | ❌ stub | BT-GAP-005 |
+| `aria2.onDownloadStart` | ✅ | ✅ | `tested` | WS push tests and parity tests |
+| `aria2.onDownloadPause` | ✅ | ✅ | `tested` | Event mapping tests |
+| `aria2.onDownloadStop` | ✅ | ✅ | `tested` | Event mapping tests |
+| `aria2.onDownloadComplete` | ✅ | ✅ | `tested` | WS push and mapping tests |
+| `aria2.onDownloadError` | ✅ | ✅ | `tested` | Event mapping tests |
+| `aria2.onBtDownloadComplete` | ✅ | ❌ | `gap` | BT-GAP-005 |
 
 ## Security
 
 | Feature | aria2 | raria | Status | Notes |
 |---------|-------|-------|--------|-------|
-| RPC secret token | ✅ | ❌ | ❌ stub | --rpc-secret |
-| Token-free methods | ✅ | ❌ | ❌ stub | listMethods, listNotifications |
+| RPC secret token | ✅ | ✅ | `tested` | Dedicated RPC secret tests |
+| Token-free system methods when no secret is configured | ✅ | ✅ | `tested` | Server parity tests |

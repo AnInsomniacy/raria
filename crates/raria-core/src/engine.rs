@@ -15,6 +15,7 @@
 
 use crate::cancel::CancelRegistry;
 use crate::config::GlobalConfig;
+use crate::config::JobOptions;
 use crate::job::{Gid, Job, Status};
 use crate::persist::Store;
 use crate::progress::{DownloadEvent, EventBus};
@@ -162,14 +163,20 @@ impl Engine {
             })
             .unwrap_or_else(|| "download".to_string());
 
-        let out_path = spec.dir.join(&filename);
+        let mut out_path = spec.dir.join(&filename);
+        if self.config.auto_file_renaming && !self.config.allow_overwrite && out_path.exists() {
+            out_path = crate::rename::auto_rename(&out_path);
+        }
 
         // Detect whether this is a BT job (magnet URI) or a range-based download.
         let is_bt = spec.uris.iter().any(|u| u.starts_with("magnet:"));
+        let mut options = JobOptions::default();
+        options.out = spec.filename.clone();
+
         let job = if is_bt {
-            Job::new_bt(spec.uris.clone(), out_path)
+            Job::new_bt_with_options(spec.uris.clone(), out_path, options)
         } else {
-            Job::new_range(spec.uris.clone(), out_path)
+            Job::new_range_with_options(spec.uris.clone(), out_path, options)
         };
         let gid = job.gid;
 

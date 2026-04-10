@@ -45,6 +45,10 @@ pub struct RpcOptions {
     pub header: Option<Vec<String>>,
     #[serde(default, rename = "checksum")]
     pub checksum: Option<String>,
+    #[serde(default, rename = "http-user")]
+    pub http_user: Option<String>,
+    #[serde(default, rename = "http-passwd")]
+    pub http_passwd: Option<String>,
 }
 
 /// JSON-RPC interface definition — full aria2 parity.
@@ -240,6 +244,12 @@ impl Aria2RpcServer for RpcHandler {
             }
             if let Some(ref cksum) = opts.checksum {
                 job.options.checksum = Some(cksum.clone());
+            }
+            if let Some(ref user) = opts.http_user {
+                job.options.http_user = Some(user.clone());
+            }
+            if let Some(ref passwd) = opts.http_passwd {
+                job.options.http_passwd = Some(passwd.clone());
             }
         });
 
@@ -558,6 +568,8 @@ impl Aria2RpcServer for RpcHandler {
                 .map(|(k, v)| format!("{k}: {v}"))
                 .collect::<Vec<_>>(),
             "checksum": job.options.checksum.as_deref().unwrap_or(""),
+            "http-user": job.options.http_user.as_deref().unwrap_or(""),
+            "http-passwd": job.options.http_passwd.as_deref().unwrap_or(""),
         }))
     }
 

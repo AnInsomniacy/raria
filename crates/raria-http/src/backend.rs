@@ -8,6 +8,8 @@
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use futures::TryStreamExt;
+use netrc::Netrc;
+use reqwest::StatusCode;
 use raria_range::backend::{
     ByteSourceBackend, ByteStream, FileProbe, OpenContext, ProbeContext,
 };
@@ -15,6 +17,9 @@ use reqwest::header::{
     HeaderMap, HeaderName, HeaderValue, CONTENT_LENGTH, CONTENT_TYPE, ETAG, LAST_MODIFIED, RANGE,
 };
 use reqwest::Client;
+use reqwest::redirect::Policy;
+use std::collections::HashMap;
+use std::sync::Arc;
 use tokio_util::io::StreamReader;
 use tracing::debug;
 use url::Url;
@@ -40,12 +45,21 @@ pub struct HttpBackendConfig {
     pub user_agent: Option<String>,
     /// Path to Netscape-format cookie file (aria2: --load-cookies).
     pub cookie_file: Option<std::path::PathBuf>,
+    /// Maximum number of redirects to follow. `Some(0)` disables redirects.
+    pub max_redirects: Option<usize>,
+    /// Connection establishment timeout in seconds.
+    pub connect_timeout: Option<u64>,
+    /// Path to a netrc file for host-based credentials.
+    pub netrc_path: Option<std::path::PathBuf>,
+    /// Disable loading any netrc credentials.
+    pub no_netrc: bool,
 }
 
 /// HTTP/HTTPS download backend.
 #[derive(Debug, Clone)]
 pub struct HttpBackend {
     client: Client,
+    netrc_auth: Option<Arc<HashMap<String, (String, String)>>>,
 }
 
 impl HttpBackend {
@@ -67,6 +81,13 @@ impl HttpBackend {
         let mut builder = Client::builder()
             .user_agent(ua)
             .danger_accept_invalid_certs(!config.check_certificate);
+
+        if let Some(limit) = config.max_redirects {
+            builder = builder.redirect(Policy::limited(limit));
+        }
+        if let Some(connect_timeout) = config.connect_timeout {
+            builder = builder.connect_timeout(std::time::Duration::from_secs(connect_timeout));
+        }
 
         // Build the no_proxy exclusion list (applied to each proxy).
         let no_proxy_list = config
@@ -117,12 +138,21 @@ impl HttpBackend {
         }
 
         let client = builder.build().context("failed to build reqwest client")?;
-        Ok(Self { client })
+        let netrc_auth = if config.no_netrc {
+            None
+        } else {
+            load_netrc_auth(config.netrc_path.as_deref())?
+        };
+
+        Ok(Self { client, netrc_auth })
     }
 
     /// Create a new HTTP backend with a custom client.
     pub fn with_client(client: Client) -> Self {
-        Self { client }
+        Self {
+            client,
+            netrc_auth: None,
+        }
     }
 
     fn build_headers(ctx: &ProbeContext) -> HeaderMap {
@@ -136,6 +166,14 @@ impl HttpBackend {
             }
         }
         headers
+    }
+
+    fn netrc_credentials_for(&self, uri: &Url) -> Option<(String, String)> {
+        let host = uri.host_str()?;
+        self.netrc_auth
+            .as_ref()
+            .and_then(|entries| entries.get(host))
+            .cloned()
     }
 }
 
@@ -154,6 +192,8 @@ impl ByteSourceBackend for HttpBackend {
 
         if let Some(ref creds) = ctx.auth {
             request = request.basic_auth(&creds.username, Some(&creds.password));
+        } else if let Some((username, password)) = self.netrc_credentials_for(uri) {
+            request = request.basic_auth(username, Some(password));
         }
 
         request = request.headers(Self::build_headers(ctx));
@@ -161,7 +201,21 @@ impl ByteSourceBackend for HttpBackend {
         let resp = request
             .send()
             .await
-            .context("HTTP HEAD request failed")?
+            .context("HTTP HEAD request failed")?;
+
+        if resp.status() == StatusCode::NOT_MODIFIED {
+            return Ok(FileProbe {
+                size: None,
+                supports_range: false,
+                etag: None,
+                last_modified: None,
+                content_type: None,
+                suggested_filename: None,
+                not_modified: true,
+            });
+        }
+
+        let resp = resp
             .error_for_status()
             .context("HTTP HEAD returned error status")?;
 
@@ -204,6 +258,7 @@ impl ByteSourceBackend for HttpBackend {
             last_modified,
             content_type,
             suggested_filename,
+            not_modified: false,
         })
     }
 
@@ -214,6 +269,12 @@ impl ByteSourceBackend for HttpBackend {
 
         if let Some(ref creds) = ctx.auth {
             request = request.basic_auth(&creds.username, Some(&creds.password));
+        } else if let Some((username, password)) = self.netrc_credentials_for(uri) {
+            request = request.basic_auth(username, Some(password));
+        }
+
+        for (name, value) in &ctx.headers {
+            request = request.header(name, value);
         }
 
         if offset > 0 {
@@ -267,6 +328,22 @@ impl HttpBackend {
     pub fn is_resource_changed(status_code: u16, was_range_request: bool) -> bool {
         was_range_request && status_code == 200
     }
+}
+
+fn load_netrc_auth(path: Option<&std::path::Path>) -> Result<Option<Arc<HashMap<String, (String, String)>>>> {
+    let parsed = match path {
+        Some(path) => Netrc::from_file(path)
+            .with_context(|| format!("failed to load netrc file: {}", path.display()))?,
+        None => return Ok(None),
+    };
+
+    let entries = parsed
+        .hosts
+        .into_iter()
+        .map(|(host, auth)| (host, (auth.login, auth.password)))
+        .collect::<HashMap<_, _>>();
+
+    Ok(Some(Arc::new(entries)))
 }
 
 #[cfg(test)]

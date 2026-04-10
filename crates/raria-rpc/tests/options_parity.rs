@@ -117,6 +117,30 @@ mod tests {
         cancel.cancel();
     }
 
+    #[tokio::test]
+    async fn add_uri_with_http_basic_auth_stores_in_job_options() {
+        let (engine, url, cancel) = spawn_server().await;
+        let resp = rpc_call(
+            &url,
+            "aria2.addUri",
+            serde_json::json!([
+                ["https://example.com/protected.bin"],
+                {
+                    "http-user": "rpc-user",
+                    "http-passwd": "rpc-pass"
+                }
+            ]),
+        )
+        .await;
+        assert!(resp.get("error").is_none());
+        let gid_str = resp["result"].as_str().unwrap();
+        let gid = raria_core::job::Gid::from_raw(u64::from_str_radix(gid_str, 16).unwrap());
+        let job = engine.registry.get(gid).unwrap();
+        assert_eq!(job.options.http_user.as_deref(), Some("rpc-user"));
+        assert_eq!(job.options.http_passwd.as_deref(), Some("rpc-pass"));
+        cancel.cancel();
+    }
+
     // ── changeOption ────────────────────────────────────────────────
 
     #[tokio::test]
@@ -206,6 +230,30 @@ mod tests {
         // header should be an array with our value.
         let headers = result["header"].as_array().unwrap();
         assert!(headers.iter().any(|h| h.as_str() == Some("Referer: https://test.com")));
+        cancel.cancel();
+    }
+
+    #[tokio::test]
+    async fn get_option_returns_http_basic_auth_fields() {
+        let (_engine, url, cancel) = spawn_server().await;
+        let add_resp = rpc_call(
+            &url,
+            "aria2.addUri",
+            serde_json::json!([
+                ["https://example.com/private.bin"],
+                {
+                    "http-user": "rpc-user",
+                    "http-passwd": "rpc-pass"
+                }
+            ]),
+        )
+        .await;
+        let gid_str = add_resp["result"].as_str().unwrap();
+
+        let opt_resp = rpc_call(&url, "aria2.getOption", serde_json::json!([gid_str])).await;
+        let result = &opt_resp["result"];
+        assert_eq!(result["http-user"], "rpc-user");
+        assert_eq!(result["http-passwd"], "rpc-pass");
         cancel.cancel();
     }
 

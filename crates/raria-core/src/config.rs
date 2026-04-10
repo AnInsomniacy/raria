@@ -25,6 +25,8 @@ pub struct GlobalConfig {
     pub session_file: PathBuf,
     /// Log level.
     pub log_level: String,
+    /// Suppress normal user-facing output.
+    pub quiet: bool,
     /// Proxy URL for all protocols (aria2: --all-proxy).
     pub all_proxy: Option<String>,
     /// Proxy URL for HTTP requests only (overrides all_proxy for HTTP).
@@ -39,6 +41,10 @@ pub struct GlobalConfig {
     pub ca_certificate: Option<PathBuf>,
     /// User-Agent string override.
     pub user_agent: Option<String>,
+    /// Global HTTP Basic auth username.
+    pub http_user: Option<String>,
+    /// Global HTTP Basic auth password.
+    pub http_passwd: Option<String>,
     /// Path to Netscape cookie file (aria2: --load-cookies).
     pub cookie_file: Option<PathBuf>,
     /// RPC secret token (aria2: --rpc-secret). When set, all RPC
@@ -56,6 +62,30 @@ pub struct GlobalConfig {
     pub max_tries: u32,
     /// Seconds to wait between retries (aria2: --retry-wait).
     pub retry_wait: u32,
+    /// Maximum number of HTTP redirects to follow.
+    pub max_redirects: Option<usize>,
+    /// Auto-rename output files on collision instead of overwriting them.
+    pub auto_file_renaming: bool,
+    /// Path to a netrc file for credential lookup.
+    pub netrc_path: Option<PathBuf>,
+    /// Disable all netrc credential loading.
+    pub no_netrc: bool,
+    /// Default timeout for HTTP requests in seconds.
+    pub timeout: Option<u64>,
+    /// Connection establishment timeout for HTTP requests in seconds.
+    pub connect_timeout: Option<u64>,
+    /// Only download when the remote resource is newer than the local file.
+    pub conditional_get: bool,
+    /// Allow existing output files to be overwritten.
+    pub allow_overwrite: bool,
+    /// Enable strict SFTP host key verification.
+    pub sftp_strict_host_key_check: bool,
+    /// Optional known_hosts path for SFTP host verification.
+    pub sftp_known_hosts: Option<PathBuf>,
+    /// Optional SSH private key path used for SFTP authentication.
+    pub sftp_private_key: Option<PathBuf>,
+    /// Optional SSH private key passphrase used for SFTP authentication.
+    pub sftp_private_key_passphrase: Option<String>,
 }
 
 impl Default for GlobalConfig {
@@ -69,6 +99,7 @@ impl Default for GlobalConfig {
             enable_rpc: false,
             session_file: PathBuf::from("raria.session"),
             log_level: "info".into(),
+            quiet: false,
             all_proxy: None,
             http_proxy: None,
             https_proxy: None,
@@ -76,6 +107,8 @@ impl Default for GlobalConfig {
             check_certificate: true,
             ca_certificate: None,
             user_agent: None,
+            http_user: None,
+            http_passwd: None,
             cookie_file: None,
             rpc_secret: None,
             file_allocation: FileAllocation::None,
@@ -84,6 +117,18 @@ impl Default for GlobalConfig {
             continue_download: false,
             max_tries: 5,
             retry_wait: 0,
+            max_redirects: None,
+            auto_file_renaming: true,
+            netrc_path: None,
+            no_netrc: false,
+            timeout: None,
+            connect_timeout: None,
+            conditional_get: false,
+            allow_overwrite: false,
+            sftp_strict_host_key_check: false,
+            sftp_known_hosts: None,
+            sftp_private_key: None,
+            sftp_private_key_passphrase: None,
         }
     }
 }

@@ -61,7 +61,7 @@ impl SpeedTracker {
         self.total_bytes.fetch_add(bytes, Ordering::Relaxed);
 
         let now = Instant::now();
-        let now_nanos = now.duration_since(self.created_at).as_nanos() as u64;
+        let now_nanos = (now.duration_since(self.created_at).as_nanos() as u64).max(1);
         let prev_nanos = self.last_sample_nanos.swap(now_nanos, Ordering::Relaxed);
 
         if prev_nanos == 0 {
@@ -80,7 +80,11 @@ impl SpeedTracker {
         // EWMA update: speed = α * instant_speed + (1 - α) * prev_speed.
         let prev_speed = self.current_speed.load(Ordering::Relaxed);
         let alpha = self.alpha_x1000 as u64;
-        let new_speed = (alpha * instant_speed + (1000 - alpha) * prev_speed) / 1000;
+        let new_speed = if prev_speed == 0 {
+            instant_speed.max(1)
+        } else {
+            (alpha * instant_speed + (1000 - alpha) * prev_speed) / 1000
+        };
 
         self.current_speed.store(new_speed, Ordering::Relaxed);
     }

@@ -10,8 +10,9 @@
 //
 // The old executor was sequential. This one is truly concurrent.
 
-use crate::backend::{ByteSourceBackend, OpenContext};
+use crate::backend::{ByteSourceBackend, Credentials, OpenContext};
 use anyhow::{Context, Result};
+use raria_core::file_alloc::{preallocate, FileAllocation};
 use raria_core::limiter::RateLimiter;
 use raria_core::segment::{SegmentState, SegmentStatus};
 use std::path::Path;
@@ -41,6 +42,14 @@ pub struct ExecutorConfig {
     /// (segment_id, bytes_downloaded_this_segment) so the engine
     /// can persist segment-level progress to redb.
     pub on_checkpoint: Option<Arc<dyn Fn(u32, u64) + Send + Sync>>,
+    /// File allocation strategy used before the first write.
+    pub file_allocation: FileAllocation,
+    /// Timeout used when opening and reading protocol streams.
+    pub request_timeout: std::time::Duration,
+    /// Custom request headers passed to stream-opening backends.
+    pub request_headers: Vec<(String, String)>,
+    /// Optional per-request credentials passed to stream-opening backends.
+    pub request_auth: Option<Credentials>,
 }
 
 impl std::fmt::Debug for ExecutorConfig {
@@ -52,6 +61,10 @@ impl std::fmt::Debug for ExecutorConfig {
             .field("retry_base_delay_ms", &self.retry_base_delay_ms)
             .field("rate_limiter", &self.rate_limiter.is_some())
             .field("on_checkpoint", &self.on_checkpoint.is_some())
+            .field("file_allocation", &self.file_allocation)
+            .field("request_timeout", &self.request_timeout)
+            .field("request_headers", &self.request_headers.len())
+            .field("request_auth", &self.request_auth.is_some())
             .finish()
     }
 }
@@ -65,6 +78,10 @@ impl Default for ExecutorConfig {
             retry_base_delay_ms: 500,
             rate_limiter: None,
             on_checkpoint: None,
+            file_allocation: FileAllocation::None,
+            request_timeout: std::time::Duration::from_secs(60),
+            request_headers: Vec::new(),
+            request_auth: None,
         }
     }
 }
@@ -111,20 +128,8 @@ impl SegmentExecutor {
     ) -> Result<Vec<SegmentResult>> {
         let semaphore = Arc::new(Semaphore::new(self.config.max_connections as usize));
 
-        // Pre-allocate the output file if we know the total size.
-        // Skip pre-allocation for streaming downloads (end == u64::MAX).
-        if let Some(last_seg) = segments.last() {
-            if last_seg.end > 0 && last_seg.end < u64::MAX {
-                let file = OpenOptions::new()
-                    .create(true)
-                    .write(true)
-                    .truncate(false)
-                    .open(out_path)
-                    .await
-                    .context("failed to pre-allocate output file")?;
-                file.set_len(last_seg.end).await?;
-            }
-        }
+        let total_size = segments.last().map(|last_seg| last_seg.end);
+        prepare_output_file(out_path, total_size, self.config.file_allocation).await?;
 
         // Collect work items: (segment_id, resume_offset, remaining_bytes).
         let mut work = Vec::new();
@@ -248,6 +253,9 @@ impl SegmentExecutor {
                 current_offset,
                 current_remaining,
                 config.buffer_size,
+                config.request_timeout,
+                &config.request_headers,
+                config.request_auth.as_ref(),
                 cancel,
                 on_progress,
                 config.rate_limiter.as_ref().map(|l| l.as_ref()),
@@ -368,6 +376,9 @@ impl SegmentExecutor {
         offset: u64,
         remaining: u64,
         buffer_size: usize,
+        request_timeout: std::time::Duration,
+        request_headers: &[(String, String)],
+        request_auth: Option<&Credentials>,
         cancel: &CancellationToken,
         on_progress: &(dyn Fn(u32, u64) + Send + Sync),
         rate_limiter: Option<&RateLimiter>,
@@ -375,7 +386,12 @@ impl SegmentExecutor {
     ) -> Result<u64> {
         debug!(seg_id, offset, remaining, "starting segment attempt");
 
-        let ctx = OpenContext::default();
+        let ctx = OpenContext {
+            timeout: request_timeout,
+            headers: request_headers.to_vec(),
+            auth: request_auth.cloned(),
+            ..OpenContext::default()
+        };
         let mut stream = backend
             .open_from(uri, offset, &ctx)
             .await
@@ -438,6 +454,56 @@ impl SegmentExecutor {
     }
 }
 
+async fn prepare_output_file(
+    out_path: &Path,
+    total_size: Option<u64>,
+    allocation: FileAllocation,
+) -> Result<()> {
+    let existed = out_path.exists();
+    OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(false)
+        .open(out_path)
+        .await
+        .with_context(|| format!("failed to create output file {}", out_path.display()))?;
+
+    let Some(total_size) = total_size else {
+        return Ok(());
+    };
+
+    if total_size == 0 || total_size == u64::MAX {
+        return Ok(());
+    }
+
+    if allocation == FileAllocation::None {
+        if existed {
+            let file = OpenOptions::new()
+                .write(true)
+                .truncate(false)
+                .open(out_path)
+                .await
+                .with_context(|| format!("failed to reopen output file {}", out_path.display()))?;
+            file.set_len(total_size)
+                .await
+                .with_context(|| format!("failed to resize output file {}", out_path.display()))?;
+        }
+        return Ok(());
+    }
+
+    if let Err(error) = preallocate(out_path, total_size, allocation) {
+        warn!(
+            path = %out_path.display(),
+            size = total_size,
+            ?allocation,
+            error = %error,
+            "file allocation failed, falling back to growing file"
+        );
+    }
+
+    Ok(())
+}
+
 /// Convenience function to apply SegmentResults back to SegmentStates.
 pub fn apply_results(segments: &mut [SegmentState], results: &[SegmentResult]) {
     for result in results {
@@ -458,6 +524,7 @@ pub fn total_downloaded(results: &[SegmentResult]) -> u64 {
 mod tests {
     use super::*;
     use crate::backend::{ByteStream, FileProbe, ProbeContext};
+    use raria_core::file_alloc::FileAllocation;
     use raria_core::segment::{init_segment_states, plan_segments};
     use std::io::Cursor;
     use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
@@ -483,6 +550,7 @@ mod tests {
                 last_modified: None,
                 content_type: None,
                 suggested_filename: None,
+                not_modified: false,
             })
         }
 
@@ -525,6 +593,7 @@ mod tests {
                 last_modified: None,
                 content_type: None,
                 suggested_filename: None,
+                not_modified: false,
             })
         }
 
@@ -614,6 +683,7 @@ mod tests {
                 last_modified: None,
                 content_type: None,
                 suggested_filename: None,
+                not_modified: false,
             })
         }
 
@@ -645,6 +715,59 @@ mod tests {
 
     fn noop_progress() -> Arc<dyn Fn(u32, u64) + Send + Sync> {
         Arc::new(|_, _| {})
+    }
+
+    #[tokio::test]
+    async fn prepare_output_file_skips_unknown_length_streams() {
+        let dir = tempfile::tempdir().unwrap();
+        let out_path = dir.path().join("stream.bin");
+
+        prepare_output_file(&out_path, Some(u64::MAX), FileAllocation::Prealloc)
+            .await
+            .unwrap();
+
+        let metadata = tokio::fs::metadata(&out_path).await.unwrap();
+        assert_eq!(metadata.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn prepare_output_file_respects_none_allocation() {
+        let dir = tempfile::tempdir().unwrap();
+        let out_path = dir.path().join("none.bin");
+
+        prepare_output_file(&out_path, Some(4096), FileAllocation::None)
+            .await
+            .unwrap();
+
+        let metadata = tokio::fs::metadata(&out_path).await.unwrap();
+        assert_eq!(metadata.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn prepare_output_file_truncates_existing_file_for_none_allocation() {
+        let dir = tempfile::tempdir().unwrap();
+        let out_path = dir.path().join("existing-none.bin");
+        std::fs::write(&out_path, b"stale-data").unwrap();
+
+        prepare_output_file(&out_path, Some(4), FileAllocation::None)
+            .await
+            .unwrap();
+
+        let metadata = tokio::fs::metadata(&out_path).await.unwrap();
+        assert_eq!(metadata.len(), 4);
+    }
+
+    #[tokio::test]
+    async fn prepare_output_file_preallocates_when_strategy_requests_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let out_path = dir.path().join("prealloc.bin");
+
+        prepare_output_file(&out_path, Some(4096), FileAllocation::Prealloc)
+            .await
+            .unwrap();
+
+        let metadata = tokio::fs::metadata(&out_path).await.unwrap();
+        assert_eq!(metadata.len(), 4096);
     }
 
     // ═══════════════════════════════════════════════════════════════════

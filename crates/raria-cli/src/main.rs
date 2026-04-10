@@ -1,39 +1,14 @@
-// raria-cli: Command-line interface for the raria download utility.
-//
-// Two modes of operation:
-//
-// 1. `raria download <URL>` — single-shot download (add → activate → download → exit).
-// 2. `raria daemon`        — persistent process that:
-//    - Starts the Engine with Store persistence
-//    - Starts the JSON-RPC server on port 6800
-//    - Runs a scheduler loop that activates waiting jobs
-//    - Downloads are submitted via RPC and executed concurrently
-//
-// Integration checklist (Phase B):
-// - B1: Engine ↔ Store persistence
-// - B2: CancelToken from engine → executor
-// - B3: RateLimiter in executor
-// - B4: Checksum verification after download
-// - B5: Daemon mode with run loop
-// - B6: RPC server startup
+mod backend_factory;
+mod bt_runtime;
+mod daemon;
+mod single;
+mod util;
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use clap::{Parser, Subcommand};
-use raria_core::checksum;
 use raria_core::config::GlobalConfig;
-use raria_core::engine::{AddUriSpec, Engine};
-use raria_core::job::Gid;
-use raria_core::limiter::RateLimiter;
-use raria_core::persist::Store;
-use raria_core::segment::{init_segment_states, plan_segments, SegmentStatus};
-use raria_http::backend::HttpBackend;
-use raria_range::backend::{ByteSourceBackend, ProbeContext};
-use raria_range::executor::{apply_results, total_downloaded, ExecutorConfig, SegmentExecutor};
-use raria_rpc::server::{start_rpc_server, RpcServerConfig};
 use std::path::PathBuf;
-use std::sync::Arc;
-use tokio_util::sync::CancellationToken;
-use tracing::{error, info, warn};
+use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
 
 #[derive(Parser)]
@@ -49,6 +24,10 @@ struct Cli {
     /// Log level (trace, debug, info, warn, error)
     #[arg(long, default_value = "info", global = true)]
     log_level: String,
+
+    /// Suppress normal user-facing output
+    #[arg(long, short = 'q', default_value_t = false, global = true)]
+    quiet: bool,
 
     /// Path to configuration file (aria2-compatible format)
     #[arg(long, global = true)]
@@ -93,6 +72,62 @@ enum Commands {
         /// Custom user-agent string
         #[arg(long)]
         user_agent: Option<String>,
+
+        /// HTTP Basic auth username
+        #[arg(long)]
+        http_user: Option<String>,
+
+        /// HTTP Basic auth password
+        #[arg(long)]
+        http_passwd: Option<String>,
+
+        /// Maximum number of redirects to follow (0 disables redirects)
+        #[arg(long)]
+        max_redirect: Option<usize>,
+
+        /// Path to a netrc file for host credential lookup
+        #[arg(long)]
+        netrc_path: Option<PathBuf>,
+
+        /// Disable all netrc credential loading
+        #[arg(long, default_value_t = false)]
+        no_netrc: bool,
+
+        /// Custom request header. May be specified multiple times.
+        #[arg(long)]
+        header: Vec<String>,
+
+        /// Request timeout in seconds.
+        #[arg(long)]
+        timeout: Option<u64>,
+
+        /// Connection establishment timeout in seconds.
+        #[arg(long)]
+        connect_timeout: Option<u64>,
+
+        /// Only download when the remote resource is newer than the local file.
+        #[arg(long, default_value_t = false)]
+        conditional_get: bool,
+
+        /// Allow overwriting an existing output file.
+        #[arg(long, default_value_t = false)]
+        allow_overwrite: bool,
+
+        /// Enable strict SFTP host key verification.
+        #[arg(long, default_value_t = false)]
+        sftp_strict_host_key_check: bool,
+
+        /// Path to a known_hosts file for SFTP host verification.
+        #[arg(long)]
+        sftp_known_hosts: Option<PathBuf>,
+
+        /// Path to an SSH private key used for SFTP authentication.
+        #[arg(long)]
+        sftp_private_key: Option<PathBuf>,
+
+        /// Passphrase for the SSH private key used for SFTP authentication.
+        #[arg(long)]
+        sftp_private_key_passphrase: Option<String>,
     },
 
     /// Run as a persistent daemon with RPC server
@@ -141,6 +176,14 @@ enum Commands {
         #[arg(long)]
         user_agent: Option<String>,
 
+        /// HTTP Basic auth username
+        #[arg(long)]
+        http_user: Option<String>,
+
+        /// HTTP Basic auth password
+        #[arg(long)]
+        http_passwd: Option<String>,
+
         /// Input file containing URIs to download (one per line)
         #[arg(short = 'i', long)]
         input_file: Option<PathBuf>,
@@ -156,6 +199,54 @@ enum Commands {
         /// File allocation strategy: none, prealloc, trunc, falloc
         #[arg(long, default_value = "none")]
         file_allocation: String,
+
+        /// Maximum number of redirects to follow (0 disables redirects)
+        #[arg(long)]
+        max_redirect: Option<usize>,
+
+        /// Path to a netrc file for host credential lookup
+        #[arg(long)]
+        netrc_path: Option<PathBuf>,
+
+        /// Disable all netrc credential loading
+        #[arg(long, default_value_t = false)]
+        no_netrc: bool,
+
+        /// Custom request header. May be specified multiple times.
+        #[arg(long)]
+        header: Vec<String>,
+
+        /// Request timeout in seconds.
+        #[arg(long)]
+        timeout: Option<u64>,
+
+        /// Connection establishment timeout in seconds.
+        #[arg(long)]
+        connect_timeout: Option<u64>,
+
+        /// Only download when the remote resource is newer than the local file.
+        #[arg(long, default_value_t = false)]
+        conditional_get: bool,
+
+        /// Allow overwriting an existing output file.
+        #[arg(long, default_value_t = false)]
+        allow_overwrite: bool,
+
+        /// Enable strict SFTP host key verification.
+        #[arg(long, default_value_t = false)]
+        sftp_strict_host_key_check: bool,
+
+        /// Path to a known_hosts file for SFTP host verification.
+        #[arg(long)]
+        sftp_known_hosts: Option<PathBuf>,
+
+        /// Path to an SSH private key used for SFTP authentication.
+        #[arg(long)]
+        sftp_private_key: Option<PathBuf>,
+
+        /// Passphrase for the SSH private key used for SFTP authentication.
+        #[arg(long)]
+        sftp_private_key_passphrase: Option<String>,
     },
 }
 
@@ -163,15 +254,15 @@ enum Commands {
 async fn main() -> Result<()> {
     let cli = Cli::parse();
 
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| EnvFilter::new(&cli.log_level)),
-        )
-        .init();
+    let env_filter = EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| EnvFilter::new(&cli.log_level));
+    let subscriber = tracing_subscriber::fmt().with_env_filter(env_filter);
+    if cli.quiet {
+        subscriber.with_writer(std::io::sink).init();
+    } else {
+        subscriber.init();
+    }
 
-    // Load configuration file if --conf-path was specified.
-    // Config file values are loaded first; CLI args override them later.
     let mut base_config = GlobalConfig::default();
     if let Some(ref conf_path) = cli.conf_path {
         use raria_core::config_file::load_config_file;
@@ -195,8 +286,22 @@ async fn main() -> Result<()> {
             all_proxy,
             check_certificate,
             user_agent,
+            http_user,
+            http_passwd,
+            max_redirect,
+            netrc_path,
+            no_netrc,
+            header,
+            timeout,
+            connect_timeout,
+            conditional_get,
+            allow_overwrite,
+            sftp_strict_host_key_check,
+            sftp_known_hosts,
+            sftp_private_key,
+            sftp_private_key_passphrase,
         } => {
-            run_download(
+            single::run_download(
                 &url,
                 &dir,
                 out,
@@ -207,6 +312,21 @@ async fn main() -> Result<()> {
                 all_proxy,
                 check_certificate.unwrap_or(true),
                 user_agent,
+                http_user,
+                http_passwd,
+                max_redirect,
+                netrc_path,
+                no_netrc,
+                header,
+                timeout,
+                connect_timeout,
+                conditional_get,
+                allow_overwrite,
+                sftp_strict_host_key_check,
+                sftp_known_hosts,
+                sftp_private_key,
+                sftp_private_key_passphrase,
+                cli.quiet,
             )
             .await?;
         }
@@ -222,34 +342,87 @@ async fn main() -> Result<()> {
             check_certificate,
             ca_certificate,
             user_agent,
+            http_user,
+            http_passwd,
             input_file,
             rpc_secret,
             load_cookies,
             file_allocation,
+            max_redirect,
+            netrc_path,
+            no_netrc,
+            header,
+            timeout,
+            connect_timeout,
+            conditional_get,
+            allow_overwrite,
+            sftp_strict_host_key_check,
+            sftp_known_hosts,
+            sftp_private_key,
+            sftp_private_key_passphrase,
         } => {
-            // Start from base_config (populated by --conf-path if present).
-            // CLI arguments override config file values.
             let mut config = base_config.clone();
             config.dir = dir.clone();
             config.max_concurrent_downloads = cli.max_concurrent;
             config.max_overall_download_limit = max_download_limit;
+            config.quiet = cli.quiet;
             config.rpc_listen_port = rpc_port;
             config.enable_rpc = true;
             config.session_file = session_file.clone();
-            // Only override if CLI explicitly set these (Some means set by user).
-            if all_proxy.is_some() { config.all_proxy = all_proxy; }
-            if http_proxy.is_some() { config.http_proxy = http_proxy; }
-            if https_proxy.is_some() { config.https_proxy = https_proxy; }
-            if no_proxy.is_some() { config.no_proxy = no_proxy; }
+            if all_proxy.is_some() {
+                config.all_proxy = all_proxy;
+            }
+            if http_proxy.is_some() {
+                config.http_proxy = http_proxy;
+            }
+            if https_proxy.is_some() {
+                config.https_proxy = https_proxy;
+            }
+            if no_proxy.is_some() {
+                config.no_proxy = no_proxy;
+            }
             config.check_certificate = check_certificate;
-            if ca_certificate.is_some() { config.ca_certificate = ca_certificate; }
-            if user_agent.is_some() { config.user_agent = user_agent; }
-            if rpc_secret.is_some() { config.rpc_secret = rpc_secret; }
-            if load_cookies.is_some() { config.cookie_file = load_cookies; }
-            config.file_allocation = raria_core::file_alloc::FileAllocation::parse(&file_allocation)
-                .context("invalid --file-allocation value")?;
+            if ca_certificate.is_some() {
+                config.ca_certificate = ca_certificate;
+            }
+            if user_agent.is_some() {
+                config.user_agent = user_agent;
+            }
+            if http_user.is_some() {
+                config.http_user = http_user;
+            }
+            if http_passwd.is_some() {
+                config.http_passwd = http_passwd;
+            }
+            if rpc_secret.is_some() {
+                config.rpc_secret = rpc_secret;
+            }
+            if load_cookies.is_some() {
+                config.cookie_file = load_cookies;
+            }
+            if max_redirect.is_some() {
+                config.max_redirects = max_redirect;
+            }
+            if netrc_path.is_some() {
+                config.netrc_path = netrc_path;
+            }
+            config.no_netrc = no_netrc;
+            config.timeout = timeout;
+            config.connect_timeout = connect_timeout;
+            config.conditional_get = conditional_get;
+            config.allow_overwrite = allow_overwrite;
+            config.sftp_strict_host_key_check = sftp_strict_host_key_check;
+            if sftp_known_hosts.is_some() {
+                config.sftp_known_hosts = sftp_known_hosts;
+            }
+            if sftp_private_key.is_some() {
+                config.sftp_private_key = sftp_private_key;
+            }
+            if sftp_private_key_passphrase.is_some() {
+                config.sftp_private_key_passphrase = sftp_private_key_passphrase;
+            }
+            config.file_allocation = raria_core::file_alloc::FileAllocation::parse(&file_allocation)?;
 
-            // Load URIs from --input-file if provided.
             let input_uris = if let Some(ref path) = input_file {
                 let uris = raria_core::input_file::load_input_file(path)?;
                 info!(count = uris.len(), path = %path.display(), "loaded URIs from input file");
@@ -258,794 +431,16 @@ async fn main() -> Result<()> {
                 Vec::new()
             };
 
-            run_daemon_with_config(config, &session_file, input_uris, dir.clone()).await?;
+            daemon::run_daemon_with_config(
+                config,
+                &session_file,
+                input_uris,
+                dir.clone(),
+                header,
+            )
+            .await?;
         }
     }
 
     Ok(())
 }
-
-// ═══════════════════════════════════════════════════════════════════════
-// Single-shot download mode
-// ═══════════════════════════════════════════════════════════════════════
-
-/// Execute a single download job end-to-end.
-async fn run_download(
-    url: &str,
-    dir: &std::path::Path,
-    filename: Option<String>,
-    connections: u32,
-    max_concurrent: u32,
-    max_download_limit: u64,
-    checksum_spec: Option<String>,
-    all_proxy: Option<String>,
-    check_certificate: bool,
-    user_agent: Option<String>,
-) -> Result<()> {
-    let config = GlobalConfig {
-        max_concurrent_downloads: max_concurrent,
-        all_proxy: all_proxy.clone(),
-        check_certificate,
-        user_agent: user_agent.clone(),
-        ..Default::default()
-    };
-    let engine = Engine::new(config);
-
-    let handle = engine.add_uri(&AddUriSpec {
-        uris: vec![url.into()],
-        dir: dir.to_path_buf(),
-        filename,
-        connections,
-    })?;
-
-    let gid = handle.gid;
-    let cancel = engine.activate_job(gid)?;
-
-    let job = engine
-        .registry
-        .get(gid)
-        .context("job vanished from registry")?;
-
-    info!(
-        %gid,
-        url,
-        out = %job.out_path.display(),
-        "starting download"
-    );
-
-    // Probe the file.
-    let backend = create_backend(url)?;
-    let probe_ctx = ProbeContext::default();
-    let parsed_url: url::Url = url.parse().context("invalid URL")?;
-
-    let probe = backend
-        .probe(&parsed_url, &probe_ctx)
-        .await
-        .context("failed to probe URL")?;
-
-    let file_size = probe.size.unwrap_or(0);
-    let effective_connections = if probe.supports_range && file_size > 0 {
-        connections.min((file_size / 1024).max(1) as u32)
-    } else {
-        1
-    };
-
-    info!(
-        file_size,
-        supports_range = probe.supports_range,
-        connections = effective_connections,
-        "probe complete"
-    );
-
-    engine.registry.update(gid, |job| {
-        job.total_size = Some(file_size);
-    });
-
-    let ranges = if file_size > 0 {
-        plan_segments(file_size, effective_connections)
-    } else {
-        vec![(0u64, u64::MAX)]
-    };
-    let mut segments = init_segment_states(&ranges);
-
-    // Wire Ctrl+C to the engine's cancel registry (B2).
-    let cancel_registry = engine.cancel_registry.clone();
-    let ctrl_c_gid = gid;
-    tokio::spawn(async move {
-        tokio::signal::ctrl_c().await.ok();
-        info!("received Ctrl+C, shutting down gracefully...");
-        cancel_registry.cancel(ctrl_c_gid);
-    });
-
-    // Progress callback.
-    let downloaded = Arc::new(std::sync::atomic::AtomicU64::new(0));
-    let downloaded_clone = Arc::clone(&downloaded);
-    let total = file_size;
-
-    let on_progress: Arc<dyn Fn(u32, u64) + Send + Sync> =
-        Arc::new(move |_seg_id, bytes| {
-            let prev = downloaded_clone.fetch_add(bytes, std::sync::atomic::Ordering::Relaxed);
-            let current = prev + bytes;
-            if current / (1024 * 1024) > prev / (1024 * 1024) {
-                if total > 0 {
-                    let pct = (current as f64 / total as f64) * 100.0;
-                    eprint!(
-                        "\r  {:.1}% ({}/{})",
-                        pct,
-                        format_bytes(current),
-                        format_bytes(total)
-                    );
-                } else {
-                    eprint!("\r  downloaded: {}", format_bytes(current));
-                }
-            }
-        });
-
-    // Build rate limiter (B3).
-    let rate_limiter = if max_download_limit > 0 {
-        Some(Arc::new(RateLimiter::new(max_download_limit)))
-    } else {
-        None
-    };
-
-    // Execute download.
-    let executor = SegmentExecutor::new(ExecutorConfig {
-        max_connections: effective_connections,
-        max_retries: 5,
-        rate_limiter,
-        ..Default::default()
-    });
-
-    let results = executor
-        .execute(
-            backend as Arc<dyn ByteSourceBackend>,
-            &parsed_url,
-            &job.out_path,
-            &segments,
-            cancel,
-            on_progress,
-        )
-        .await?;
-
-    apply_results(&mut segments, &results);
-    let downloaded_total = total_downloaded(&results);
-
-    eprintln!();
-
-    let all_done = segments.iter().all(|s| s.status == SegmentStatus::Done);
-    let failed: Vec<_> = results
-        .iter()
-        .filter(|r| r.status == SegmentStatus::Failed)
-        .collect();
-
-    if all_done {
-        engine.complete_job(gid)?;
-        engine.registry.update(gid, |job| {
-            job.downloaded = downloaded_total;
-        });
-
-        // Checksum verification (B4).
-        if let Some(ref spec) = checksum_spec {
-            info!("verifying checksum...");
-            match checksum::verify_checksum(&job.out_path, spec).await {
-                Ok(()) => {
-                    info!("checksum verified successfully");
-                    println!("Checksum OK");
-                }
-                Err(e) => {
-                    error!(error = %e, "checksum verification failed");
-                    anyhow::bail!("checksum verification failed: {e}");
-                }
-            }
-        }
-
-        info!(
-            %gid,
-            bytes = downloaded_total,
-            path = %job.out_path.display(),
-            "download complete"
-        );
-        println!(
-            "Download complete: {} ({})",
-            job.out_path.display(),
-            format_bytes(downloaded_total)
-        );
-    } else if !failed.is_empty() {
-        let err_msg = failed
-            .iter()
-            .map(|r| {
-                format!(
-                    "segment {}: {}",
-                    r.segment_id,
-                    r.error.as_deref().unwrap_or("unknown error")
-                )
-            })
-            .collect::<Vec<_>>()
-            .join("; ");
-        engine.fail_job(gid, &err_msg)?;
-        error!(%gid, err_msg, "download failed");
-        anyhow::bail!("download failed: {err_msg}");
-    } else {
-        engine.registry.update(gid, |job| {
-            job.downloaded = downloaded_total;
-        });
-        info!(
-            %gid,
-            downloaded = downloaded_total,
-            "download interrupted — can be resumed"
-        );
-        println!(
-            "Download interrupted: {} downloaded so far",
-            format_bytes(downloaded_total)
-        );
-    }
-
-    Ok(())
-}
-
-// ═══════════════════════════════════════════════════════════════════════
-// Daemon mode — persistent run loop with RPC (B5 + B6)
-// ═══════════════════════════════════════════════════════════════════════
-
-/// Run raria as a persistent daemon.
-///
-/// 1. Opens the Store (redb) for persistence.
-/// 2. Creates the Engine with Store.
-/// 3. Restores any previously-persisted jobs.
-/// 4. Starts the RPC server.
-/// 5. Enters the scheduler run loop: poll for activatable jobs, spawn
-///    SegmentExecutor tasks, collect results, repeat.
-/// 6. Shuts down gracefully on Ctrl+C.
-/// Run raria as a persistent daemon with a fully constructed GlobalConfig.
-async fn run_daemon_with_config(
-    config: GlobalConfig,
-    session_file: &std::path::Path,
-    input_uris: Vec<String>,
-    download_dir: PathBuf,
-) -> Result<()> {
-    let rpc_port = config.rpc_listen_port;
-    let max_download_limit = config.max_overall_download_limit;
-
-    // Ensure download directory exists.
-    std::fs::create_dir_all(&config.dir).context("failed to create download directory")?;
-
-    // Open persistence store (B1).
-    let store = Arc::new(Store::open(session_file)?);
-    let engine = Arc::new(Engine::with_store(config.clone(), Arc::clone(&store)));
-
-    // Restore previously-persisted jobs (B1).
-    let restored = engine.restore().unwrap_or_else(|e| {
-        warn!(error = %e, "failed to restore jobs from session");
-        0
-    });
-    if restored > 0 {
-        info!(count = restored, "restored jobs from session");
-    }
-
-    // Add jobs from --input-file.
-    for uri_line in &input_uris {
-        // Tab-separated URIs = multi-source mirrors for a single file.
-        let uris: Vec<String> = uri_line.split('\t').map(|s| s.to_string()).collect();
-        let spec = AddUriSpec {
-            uris,
-            filename: None,
-            dir: download_dir.clone(),
-            connections: 1,
-        };
-        match engine.add_uri(&spec) {
-            Ok(handle) => info!(gid = %handle.gid, "added job from input file"),
-            Err(e) => warn!(uri = %uri_line, error = %e, "failed to add URI from input file"),
-        }
-    }
-
-    // Wire Ctrl+C to engine shutdown.
-    let shutdown_token = engine.shutdown_token();
-    let shutdown_clone = shutdown_token.clone();
-    tokio::spawn(async move {
-        tokio::signal::ctrl_c().await.ok();
-        info!("received Ctrl+C, shutting down daemon...");
-        shutdown_clone.cancel();
-    });
-
-    // Start RPC server (B6).
-    let rpc_cancel = CancellationToken::new();
-    let rpc_config = RpcServerConfig {
-        listen_addr: std::net::SocketAddr::from(([0, 0, 0, 0], rpc_port)),
-    };
-    let rpc_addrs = start_rpc_server(Arc::clone(&engine), &rpc_config, rpc_cancel.clone()).await?;
-    let rpc_addr = rpc_addrs.rpc;
-    info!(%rpc_addr, "RPC server ready");
-    println!("raria daemon running — RPC at http://{}/jsonrpc", rpc_addrs.rpc);
-
-    // Build rate limiter (B3).
-    let rate_limiter = if max_download_limit > 0 {
-        Some(Arc::new(RateLimiter::new(max_download_limit)))
-    } else {
-        None
-    };
-
-    // ── Scheduler run loop ──────────────────────────────────────────
-    let work_notify = engine.work_notify();
-
-    loop {
-        // Check for shutdown.
-        if shutdown_token.is_cancelled() {
-            break;
-        }
-
-        // Find jobs that can be activated.
-        let to_activate = engine.activatable_jobs();
-
-        for gid in to_activate {
-            let token = match engine.activate_job(gid) {
-                Ok(t) => t,
-                Err(e) => {
-                    warn!(%gid, error = %e, "failed to activate job");
-                    continue;
-                }
-            };
-
-            // Spawn a download task for this job.
-            let engine_ref = Arc::clone(&engine);
-            let limiter_ref = rate_limiter.clone();
-            let download_dir = config.dir.clone();
-
-            // Check job kind to determine dispatch strategy.
-            let job_kind = engine.registry.get(gid)
-                .map(|j| j.kind)
-                .unwrap_or(raria_core::job::JobKind::Range);
-
-            match job_kind {
-                raria_core::job::JobKind::Range => {
-                    tokio::spawn(async move {
-                        if let Err(e) = run_job_download(engine_ref, gid, token, limiter_ref, download_dir).await {
-                            error!(%gid, error = %e, "job download task failed");
-                        }
-                    });
-                }
-                raria_core::job::JobKind::Bt => {
-                    tokio::spawn(async move {
-                        if let Err(e) = run_bt_download(engine_ref, gid, token, download_dir).await {
-                            error!(%gid, error = %e, "BT download task failed");
-                        }
-                    });
-                }
-            }
-        }
-
-        // Wait for new work or shutdown.
-        tokio::select! {
-            _ = work_notify.notified() => {}
-            _ = shutdown_token.cancelled() => { break; }
-            _ = tokio::time::sleep(std::time::Duration::from_secs(1)) => {}
-        }
-    }
-
-    // Graceful shutdown.
-    info!("daemon shutting down...");
-
-    // Save session before stopping — persist all jobs for next startup.
-    match engine.save_session() {
-        Ok(()) => info!("session saved successfully"),
-        Err(e) => warn!(error = %e, "failed to save session on shutdown"),
-    }
-
-    rpc_cancel.cancel();
-    // Give in-flight tasks a moment to finish.
-    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-    info!("daemon stopped");
-    Ok(())
-}
-
-/// Execute a BitTorrent download job within the daemon.
-///
-/// BT jobs use librqbit (via BtService) instead of the SegmentExecutor.
-async fn run_bt_download(
-    engine: Arc<Engine>,
-    gid: Gid,
-    cancel: CancellationToken,
-    download_dir: PathBuf,
-) -> Result<()> {
-    use raria_bt::service::{BtService, BtSource};
-
-    let job = engine
-        .registry
-        .get(gid)
-        .context("BT job not found in registry")?;
-
-    let uri_str = job.uris.first().context("BT job has no URIs")?;
-    info!(%gid, "daemon: starting BT download");
-
-    // Determine BT source from the URI.
-    let source = if uri_str.starts_with("magnet:") {
-        BtSource::Magnet(uri_str.clone())
-    } else if uri_str.starts_with("torrent:base64:") {
-        use base64::Engine as Base64Engine;
-        let b64 = &uri_str["torrent:base64:".len()..];
-        let bytes = base64::engine::general_purpose::STANDARD
-            .decode(b64)
-            .context("failed to decode torrent base64")?;
-        BtSource::TorrentBytes(bytes)
-    } else {
-        BtSource::TorrentFile(std::path::PathBuf::from(uri_str))
-    };
-
-    // Initialize BtService and add the torrent.
-    let bt_service = BtService::new(download_dir)
-        .context("failed to create BtService")?;
-
-    let handle = bt_service
-        .add(source, gid)
-        .await
-        .context("failed to add torrent to BtService")?;
-
-    info!(%gid, torrent_id = handle.torrent_id, "BT download started");
-
-    // Poll status until complete, error, or cancelled.
-    loop {
-        tokio::select! {
-            _ = cancel.cancelled() => {
-                info!(%gid, "BT download cancelled");
-                let _ = bt_service.pause(&handle).await;
-                let _ = engine.fail_job(gid, "cancelled by user");
-                return Ok(());
-            }
-            _ = tokio::time::sleep(std::time::Duration::from_secs(2)) => {
-                match bt_service.status(&handle).await {
-                    Ok(status) => {
-                        engine.registry.update(gid, |job| {
-                            job.downloaded = status.downloaded;
-                            job.download_speed = status.download_speed;
-                            job.upload_speed = status.upload_speed;
-                            if job.total_size.is_none() && status.total_size > 0 {
-                                job.total_size = Some(status.total_size);
-                            }
-                        });
-
-                        if status.is_complete {
-                            info!(%gid, "BT download complete");
-                            let _ = engine.complete_job(gid);
-                            return Ok(());
-                        }
-                    }
-                    Err(e) => {
-                        warn!(%gid, error = %e, "BT status check failed");
-                        let _ = engine.fail_job(gid, &e.to_string());
-                        return Ok(());
-                    }
-                }
-            }
-        }
-    }
-}
-
-/// Execute a single job within the daemon run loop.
-///
-/// This is spawned as a tokio task for each activated job.
-async fn run_job_download(
-    engine: Arc<Engine>,
-    gid: Gid,
-    cancel: CancellationToken,
-    rate_limiter: Option<Arc<RateLimiter>>,
-    _download_dir: PathBuf,
-) -> Result<()> {
-    let job = engine
-        .registry
-        .get(gid)
-        .context("job not found in registry")?;
-
-    let uri_str = job.uris.first().context("job has no URIs")?;
-    let parsed_url: url::Url = uri_str.parse().context("invalid URI")?;
-
-    info!(%gid, uri = %parsed_url, "daemon: starting download");
-
-    // Build HTTP backend config from global config.
-    let http_cfg = raria_http::backend::HttpBackendConfig {
-        all_proxy: engine.config.all_proxy.clone(),
-        http_proxy: engine.config.http_proxy.clone(),
-        https_proxy: engine.config.https_proxy.clone(),
-        no_proxy: engine.config.no_proxy.clone(),
-        check_certificate: engine.config.check_certificate,
-        ca_certificate: engine.config.ca_certificate.clone(),
-        user_agent: engine.config.user_agent.clone(),
-        cookie_file: engine.config.cookie_file.clone(),
-    };
-    let backend = create_backend_with_config(uri_str, Some(&http_cfg))?;
-    let probe_ctx = ProbeContext::default();
-
-    let probe = backend
-        .probe(&parsed_url, &probe_ctx)
-        .await
-        .with_context(|| format!("failed to probe {parsed_url}"))?;
-
-    let file_size = probe.size.unwrap_or(0);
-    let max_conn = job.options.max_connections;
-    let effective_connections = if probe.supports_range && file_size > 0 {
-        max_conn.min((file_size / 1024).max(1) as u32)
-    } else {
-        1
-    };
-
-    engine.registry.update(gid, |job| {
-        job.total_size = Some(file_size);
-    });
-
-    let ranges = if file_size > 0 {
-        plan_segments(file_size, effective_connections)
-    } else {
-        vec![(0u64, u64::MAX)]
-    };
-    let mut segments = init_segment_states(&ranges);
-
-    // Resume from checkpointed segment progress if available.
-    if let Some(store) = engine.store() {
-        match store.list_segments(gid) {
-            Ok(persisted) if !persisted.is_empty() => {
-                for (seg_id, persisted_state) in &persisted {
-                    if let Some(seg) = segments.get_mut(*seg_id as usize) {
-                        if persisted_state.downloaded > 0
-                            && persisted_state.downloaded <= seg.size()
-                        {
-                            seg.downloaded = persisted_state.downloaded;
-                            seg.status = SegmentStatus::Pending; // Will be retried from offset.
-                            info!(
-                                %gid, seg_id, resumed = persisted_state.downloaded,
-                                "resumed segment from checkpoint"
-                            );
-                        }
-                    }
-                }
-            }
-            Ok(_) => {} // No persisted segments — fresh start.
-            Err(e) => {
-                warn!(%gid, error = %e, "failed to load persisted segments, starting fresh");
-            }
-        }
-    }
-
-    let engine_ref = Arc::clone(&engine);
-    let progress_gid = gid;
-    let on_progress: Arc<dyn Fn(u32, u64) + Send + Sync> =
-        Arc::new(move |_seg_id, bytes| {
-            engine_ref.update_progress(progress_gid, bytes);
-        });
-
-    // Wire segment checkpoint to persist progress to redb for crash recovery.
-    let on_checkpoint: Option<Arc<dyn Fn(u32, u64) + Send + Sync>> =
-        engine.store().map(|store| {
-            let store = Arc::clone(store);
-            let checkpoint_gid = gid;
-            let seg_ranges: Vec<(u64, u64)> = segments
-                .iter()
-                .map(|s| (s.start, s.end))
-                .collect();
-            Arc::new(move |seg_id: u32, bytes_downloaded: u64| {
-                let (start, end) = seg_ranges
-                    .get(seg_id as usize)
-                    .copied()
-                    .unwrap_or((0, 0));
-                let seg = raria_core::segment::SegmentState {
-                    start,
-                    end,
-                    downloaded: bytes_downloaded,
-                    etag: None,
-                    status: raria_core::segment::SegmentStatus::Active,
-                };
-                if let Err(e) = store.put_segment(checkpoint_gid, seg_id, &seg) {
-                    tracing::warn!(
-                        %checkpoint_gid, seg_id, error = %e,
-                        "failed to checkpoint segment progress"
-                    );
-                }
-            }) as Arc<dyn Fn(u32, u64) + Send + Sync>
-        });
-
-    let executor = SegmentExecutor::new(ExecutorConfig {
-        max_connections: effective_connections,
-        max_retries: 5,
-        rate_limiter,
-        on_checkpoint,
-        ..Default::default()
-    });
-
-    let results = executor
-        .execute(
-            backend as Arc<dyn ByteSourceBackend>,
-            &parsed_url,
-            &job.out_path,
-            &segments,
-            cancel,
-            on_progress,
-        )
-        .await?;
-
-    let downloaded_total = total_downloaded(&results);
-    let all_done = results.iter().all(|r| r.status == SegmentStatus::Done);
-    let failed: Vec<_> = results
-        .iter()
-        .filter(|r| r.status == SegmentStatus::Failed)
-        .collect();
-
-    if all_done {
-        engine.registry.update(gid, |job| {
-            job.downloaded = downloaded_total;
-        });
-        engine.complete_job(gid)?;
-        // Clean up persisted segment data — no longer needed.
-        if let Some(store) = engine.store() {
-            if let Err(e) = store.remove_segments(gid) {
-                tracing::warn!(%gid, error = %e, "failed to clean up segment checkpoints");
-            }
-        }
-        info!(%gid, bytes = downloaded_total, "daemon: download complete");
-    } else if !failed.is_empty() {
-        let err_msg = failed
-            .iter()
-            .map(|r| {
-                format!(
-                    "segment {}: {}",
-                    r.segment_id,
-                    r.error.as_deref().unwrap_or("unknown")
-                )
-            })
-            .collect::<Vec<_>>()
-            .join("; ");
-        engine.fail_job(gid, &err_msg)?;
-    } else {
-        engine.registry.update(gid, |job| {
-            job.downloaded = downloaded_total;
-        });
-        info!(%gid, downloaded = downloaded_total, "daemon: download interrupted");
-    }
-
-    Ok(())
-}
-
-// ═══════════════════════════════════════════════════════════════════════
-// Utilities
-// ═══════════════════════════════════════════════════════════════════════
-
-fn format_bytes(bytes: u64) -> String {
-    if bytes >= 1024 * 1024 * 1024 {
-        format!("{:.2} GiB", bytes as f64 / (1024.0 * 1024.0 * 1024.0))
-    } else if bytes >= 1024 * 1024 {
-        format!("{:.2} MiB", bytes as f64 / (1024.0 * 1024.0))
-    } else if bytes >= 1024 {
-        format!("{:.2} KiB", bytes as f64 / 1024.0)
-    } else {
-        format!("{bytes} B")
-    }
-}
-
-/// Create the appropriate ByteSourceBackend for a given URI.
-///
-/// Routes based on scheme:
-/// - `http://` / `https://` → HttpBackend
-/// - `ftp://` → FtpBackend
-/// - `ftps://` → FtpBackend (suppaftp handles TLS)
-/// - `sftp://` → SftpBackend
-/// - `magnet:` → Error (BT uses BtService, not ByteSourceBackend)
-///
-/// Returns an error for unrecognized schemes.
-fn create_backend(uri: &str) -> anyhow::Result<Arc<dyn ByteSourceBackend>> {
-    create_backend_with_config(uri, None)
-}
-
-/// Create the appropriate ByteSourceBackend for a given URI with optional HTTP config.
-fn create_backend_with_config(
-    uri: &str,
-    http_config: Option<&raria_http::backend::HttpBackendConfig>,
-) -> anyhow::Result<Arc<dyn ByteSourceBackend>> {
-    use raria_core::service::{detect_scheme, JobSource};
-    use raria_ftp::backend::FtpBackend;
-    use raria_sftp::backend::SftpBackend;
-
-    let source = detect_scheme(uri)
-        .ok_or_else(|| anyhow::anyhow!("unsupported or unrecognized URI scheme: {uri}"))?;
-
-    match source {
-        JobSource::Http => {
-            if let Some(config) = http_config {
-                Ok(Arc::new(HttpBackend::with_config(config)?))
-            } else {
-                Ok(Arc::new(HttpBackend::new()?))
-            }
-        }
-        JobSource::Ftp | JobSource::Ftps => Ok(Arc::new(FtpBackend::new())),
-        JobSource::Sftp => Ok(Arc::new(SftpBackend::new())),
-        JobSource::Magnet => Err(anyhow::anyhow!(
-            "magnet URIs use BitTorrent, not range-based download"
-        )),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    // ── create_backend dispatch tests ────────────────────────────────
-
-    #[test]
-    fn dispatch_https_to_http_backend() {
-        let backend = create_backend("https://example.com/file.zip").unwrap();
-        assert_eq!(backend.name(), "http");
-    }
-
-    #[test]
-    fn dispatch_http_to_http_backend() {
-        let backend = create_backend("http://example.com/file.zip").unwrap();
-        assert_eq!(backend.name(), "http");
-    }
-
-    #[test]
-    fn dispatch_ftp_to_ftp_backend() {
-        let backend = create_backend("ftp://ftp.example.com/pub/file.tar.gz").unwrap();
-        assert_eq!(backend.name(), "ftp");
-    }
-
-    #[test]
-    fn dispatch_ftps_to_ftp_backend() {
-        let backend = create_backend("ftps://ftp.example.com/secure/file.zip").unwrap();
-        assert_eq!(backend.name(), "ftp");
-    }
-
-    #[test]
-    fn dispatch_sftp_to_sftp_backend() {
-        let backend = create_backend("sftp://server.example.com/home/user/file.bin").unwrap();
-        assert_eq!(backend.name(), "sftp");
-    }
-
-    #[test]
-    fn dispatch_unknown_scheme_errors() {
-        let result = create_backend("gopher://old.server.net/file");
-        assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("unsupported"));
-    }
-
-    #[test]
-    fn dispatch_empty_uri_errors() {
-        assert!(create_backend("").is_err());
-    }
-
-    #[test]
-    fn dispatch_magnet_errors_for_range_backend() {
-        let result = create_backend("magnet:?xt=urn:btih:abc123");
-        assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("magnet"));
-    }
-
-    #[test]
-    fn dispatch_ftp_with_credentials() {
-        let backend = create_backend("ftp://user:pass@ftp.example.com/file.zip").unwrap();
-        assert_eq!(backend.name(), "ftp");
-    }
-
-    #[test]
-    fn dispatch_http_custom_port() {
-        let backend = create_backend("http://example.com:8080/file.zip").unwrap();
-        assert_eq!(backend.name(), "http");
-    }
-
-    // ── format_bytes tests ───────────────────────────────────────────
-
-    #[test]
-    fn format_bytes_small() {
-        assert_eq!(format_bytes(42), "42 B");
-    }
-
-    #[test]
-    fn format_bytes_kib() {
-        assert_eq!(format_bytes(2048), "2.00 KiB");
-    }
-
-    #[test]
-    fn format_bytes_mib() {
-        assert_eq!(format_bytes(1024 * 1024 * 5), "5.00 MiB");
-    }
-
-    #[test]
-    fn format_bytes_gib() {
-        assert_eq!(format_bytes(1024 * 1024 * 1024 * 2), "2.00 GiB");
-    }
-}
-

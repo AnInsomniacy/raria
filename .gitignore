@@ -25,3 +25,4 @@ Cargo.lock
 
 # Legacy aria2 source (local reference only)
 aria2-legacy/
+.omx/

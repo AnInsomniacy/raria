@@ -72,6 +72,9 @@ pub fn apply_config_map(config: &mut GlobalConfig, map: &HashMap<String, String>
             "log-level" => {
                 config.log_level = value.clone();
             }
+            "quiet" => {
+                config.quiet = value == "true" || value == "1";
+            }
             "all-proxy" => {
                 config.all_proxy = if value.is_empty() { None } else { Some(value.clone()) };
             }
@@ -96,6 +99,12 @@ pub fn apply_config_map(config: &mut GlobalConfig, map: &HashMap<String, String>
             }
             "user-agent" => {
                 config.user_agent = if value.is_empty() { None } else { Some(value.clone()) };
+            }
+            "http-user" => {
+                config.http_user = if value.is_empty() { None } else { Some(value.clone()) };
+            }
+            "http-passwd" => {
+                config.http_passwd = if value.is_empty() { None } else { Some(value.clone()) };
             }
             "load-cookies" => {
                 config.cookie_file = if value.is_empty() {
@@ -126,6 +135,58 @@ pub fn apply_config_map(config: &mut GlobalConfig, map: &HashMap<String, String>
             }
             "retry-wait" => {
                 if let Ok(n) = value.parse() { config.retry_wait = n; }
+            }
+            "max-redirect" => {
+                config.max_redirects = value.parse::<usize>().ok();
+            }
+            "netrc-path" => {
+                config.netrc_path = if value.is_empty() {
+                    None
+                } else {
+                    Some(PathBuf::from(value))
+                };
+            }
+            "no-netrc" => {
+                config.no_netrc = value == "true" || value == "1";
+            }
+            "timeout" => {
+                config.timeout = value.parse::<u64>().ok();
+            }
+            "connect-timeout" => {
+                config.connect_timeout = value.parse::<u64>().ok();
+            }
+            "conditional-get" => {
+                config.conditional_get = value == "true" || value == "1";
+            }
+            "allow-overwrite" => {
+                config.allow_overwrite = value == "true" || value == "1";
+            }
+            "sftp-strict-host-key-check" => {
+                config.sftp_strict_host_key_check = value == "true" || value == "1";
+            }
+            "sftp-known-hosts" => {
+                config.sftp_known_hosts = if value.is_empty() {
+                    None
+                } else {
+                    Some(PathBuf::from(value))
+                };
+            }
+            "sftp-private-key" => {
+                config.sftp_private_key = if value.is_empty() {
+                    None
+                } else {
+                    Some(PathBuf::from(value))
+                };
+            }
+            "sftp-private-key-passphrase" => {
+                config.sftp_private_key_passphrase = if value.is_empty() {
+                    None
+                } else {
+                    Some(value.clone())
+                };
+            }
+            "auto-file-renaming" => {
+                config.auto_file_renaming = value == "true" || value == "1";
             }
             _ => {
                 // Unknown key — silently ignore for forward compatibility.
@@ -245,6 +306,17 @@ mod tests {
     }
 
     #[test]
+    fn apply_config_http_basic_auth() {
+        let mut config = GlobalConfig::default();
+        let mut map = HashMap::new();
+        map.insert("http-user".into(), "cfg-user".into());
+        map.insert("http-passwd".into(), "cfg-pass".into());
+        apply_config_map(&mut config, &map);
+        assert_eq!(config.http_user.as_deref(), Some("cfg-user"));
+        assert_eq!(config.http_passwd.as_deref(), Some("cfg-pass"));
+    }
+
+    #[test]
     fn apply_config_empty_proxy_clears_it() {
         let mut config = GlobalConfig::default();
         config.all_proxy = Some("http://old-proxy".into());
@@ -276,6 +348,15 @@ mod tests {
         map.insert("enable-rpc".into(), "1".into());
         apply_config_map(&mut config, &map);
         assert!(config.enable_rpc);
+    }
+
+    #[test]
+    fn apply_config_quiet() {
+        let mut config = GlobalConfig::default();
+        let mut map = HashMap::new();
+        map.insert("quiet".into(), "true".into());
+        apply_config_map(&mut config, &map);
+        assert!(config.quiet);
     }
 
     #[test]
@@ -333,5 +414,106 @@ user-agent=raria/1.0
         assert_eq!(config.all_proxy, Some("http://proxy:3128".into()));
         assert!(config.check_certificate);
         assert_eq!(config.user_agent, Some("raria/1.0".into()));
+    }
+
+    #[test]
+    fn apply_config_max_redirects() {
+        let mut config = GlobalConfig::default();
+        let mut map = HashMap::new();
+        map.insert("max-redirect".into(), "3".into());
+        apply_config_map(&mut config, &map);
+        assert_eq!(config.max_redirects, Some(3));
+    }
+
+    #[test]
+    fn apply_config_netrc_path() {
+        let mut config = GlobalConfig::default();
+        let mut map = HashMap::new();
+        map.insert("netrc-path".into(), "/tmp/test.netrc".into());
+        apply_config_map(&mut config, &map);
+        assert_eq!(config.netrc_path, Some(PathBuf::from("/tmp/test.netrc")));
+    }
+
+    #[test]
+    fn apply_config_no_netrc_true() {
+        let mut config = GlobalConfig::default();
+        let mut map = HashMap::new();
+        map.insert("no-netrc".into(), "true".into());
+        apply_config_map(&mut config, &map);
+        assert!(config.no_netrc);
+    }
+
+    #[test]
+    fn apply_config_timeout() {
+        let mut config = GlobalConfig::default();
+        let mut map = HashMap::new();
+        map.insert("timeout".into(), "12".into());
+        apply_config_map(&mut config, &map);
+        assert_eq!(config.timeout, Some(12));
+    }
+
+    #[test]
+    fn apply_config_connect_timeout() {
+        let mut config = GlobalConfig::default();
+        let mut map = HashMap::new();
+        map.insert("connect-timeout".into(), "7".into());
+        apply_config_map(&mut config, &map);
+        assert_eq!(config.connect_timeout, Some(7));
+    }
+
+    #[test]
+    fn apply_config_conditional_get() {
+        let mut config = GlobalConfig::default();
+        let mut map = HashMap::new();
+        map.insert("conditional-get".into(), "true".into());
+        apply_config_map(&mut config, &map);
+        assert!(config.conditional_get);
+    }
+
+    #[test]
+    fn apply_config_allow_overwrite() {
+        let mut config = GlobalConfig::default();
+        let mut map = HashMap::new();
+        map.insert("allow-overwrite".into(), "true".into());
+        apply_config_map(&mut config, &map);
+        assert!(config.allow_overwrite);
+    }
+
+    #[test]
+    fn apply_config_sftp_strict_host_key_check() {
+        let mut config = GlobalConfig::default();
+        let mut map = HashMap::new();
+        map.insert("sftp-strict-host-key-check".into(), "true".into());
+        apply_config_map(&mut config, &map);
+        assert!(config.sftp_strict_host_key_check);
+    }
+
+    #[test]
+    fn apply_config_sftp_known_hosts() {
+        let mut config = GlobalConfig::default();
+        let mut map = HashMap::new();
+        map.insert("sftp-known-hosts".into(), "/tmp/known_hosts".into());
+        apply_config_map(&mut config, &map);
+        assert_eq!(config.sftp_known_hosts, Some(PathBuf::from("/tmp/known_hosts")));
+    }
+
+    #[test]
+    fn apply_config_sftp_private_key() {
+        let mut config = GlobalConfig::default();
+        let mut map = HashMap::new();
+        map.insert("sftp-private-key".into(), "/tmp/id_ed25519".into());
+        map.insert("sftp-private-key-passphrase".into(), "secret".into());
+        apply_config_map(&mut config, &map);
+        assert_eq!(config.sftp_private_key, Some(PathBuf::from("/tmp/id_ed25519")));
+        assert_eq!(config.sftp_private_key_passphrase.as_deref(), Some("secret"));
+    }
+
+    #[test]
+    fn apply_config_auto_file_renaming_false() {
+        let mut config = GlobalConfig::default();
+        let mut map = HashMap::new();
+        map.insert("auto-file-renaming".into(), "false".into());
+        apply_config_map(&mut config, &map);
+        assert!(!config.auto_file_renaming);
     }
 }

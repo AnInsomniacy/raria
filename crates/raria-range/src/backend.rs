@@ -42,6 +42,8 @@ pub struct OpenContext {
     pub timeout: Duration,
     /// ETag from a previous probe, used for conditional resume (If-Range).
     pub etag: Option<String>,
+    /// Custom HTTP headers for stream requests.
+    pub headers: Vec<(String, String)>,
 }
 
 impl Default for OpenContext {
@@ -50,6 +52,7 @@ impl Default for OpenContext {
             auth: None,
             timeout: Duration::from_secs(60),
             etag: None,
+            headers: Vec::new(),
         }
     }
 }
@@ -76,6 +79,8 @@ pub struct FileProbe {
     pub content_type: Option<String>,
     /// Suggested filename from Content-Disposition header (HTTP only).
     pub suggested_filename: Option<String>,
+    /// Whether the server explicitly reported that the local file is already up to date.
+    pub not_modified: bool,
 }
 
 /// A boxed async byte stream.
@@ -138,6 +143,7 @@ mod tests {
             last_modified: None,
             content_type: Some("application/octet-stream".into()),
             suggested_filename: None,
+            not_modified: false,
         };
         assert_eq!(probe.size, Some(1024));
         assert!(probe.supports_range);
