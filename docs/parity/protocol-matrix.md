@@ -72,7 +72,7 @@
 | Magnet URI | ✅ | ✅ | `client_verified` | BT dispatch tests cover creation semantics, and daemon RPC smoke now proves `aria2.addUri(magnet)` on the real daemon path |
 | DHT | ✅ | ✅ | `wired` | librqbit support; no explicit parity verification |
 | PEX | ✅ | ✅ | `wired` | librqbit support |
-| uTP | ✅ | ✅ | `wired` | librqbit support |
+| uTP | ✅ | ❌ | `gap` | Current upstream/runtime path is TCP-only in the exercised stack; no real uTP transport surface is available to verify |
 | File selection | ✅ | ✅ | `tested` | BT selection is wired and covered by unit + RPC tests |
 | Pause / Resume | ✅ | ✅ | `client_verified` | BT dispatch tests verify control flow, and daemon RPC smoke now proves pause/unpause status transitions on a real BT daemon path |
 | Fastresume | ✅ | ✅ | `tested` | `raria-bt` smoke now verifies fastresume persistence files are written and non-zero download progress is restored after restart |
