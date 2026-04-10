@@ -29,17 +29,21 @@ builds `SessionOptions` with:
 
 It does not expose librqbit's `dht_config` or any local bootstrap override.
 
-### 2. librqbit requires `dht_config` for deterministic local DHT control
+### 2. librqbit does not expose deterministic bootstrap control through `SessionOptions`
 
-In upstream `librqbit`, `SessionOptions` includes `dht_config: Option<PersistentDhtConfig>`, and
-the session boot path creates DHT either from default config or from persisted state. The
-deterministic controls that matter live in upstream DHT config:
+In upstream `librqbit`, `SessionOptions` includes `dht_config: Option<PersistentDhtConfig>`, but
+that type is only a persistence wrapper (`dump_interval`, `config_filename`) rather than a true
+bootstrap seam.
+
+The deterministic controls that actually matter live in upstream `DhtConfig`:
 
 - `bootstrap_addrs`
 - `listen_addr`
 - `routing_table`
 
 When `bootstrap_addrs` is not provided, librqbit falls back to public DHT bootstrap nodes.
+Current raria code only forwards `disable_dht` / `disable_dht_persistence`, plus BT persistence and
+fastresume. It still cannot inject `bootstrap_addrs` or a local-only DHT topology.
 
 ### 3. That makes a real local DHT proof non-deterministic from raria
 
@@ -58,6 +62,10 @@ peers back into peer discovery. So PEX exists in source.
 
 The reason this lane still does not close is not "PEX missing"; it is that DHT and uTP still
 prevent an honest transport-tail proof.
+
+An attempted local deterministic PEX proof using a dual-seed / single-client topology did not
+produce a stable second-peer discovery signal within the test window, so PEX also remains
+unproven in a deterministic local harness today.
 
 ### 5. uTP is absent from the current source/runtime path
 

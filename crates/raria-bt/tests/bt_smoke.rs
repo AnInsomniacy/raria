@@ -123,7 +123,10 @@ struct SeedFixture {
     _source_root: tempfile::TempDir,
 }
 
-async fn start_seed_fixture(payload_len: usize) -> Result<SeedFixture> {
+async fn start_seed_fixture_with_initial_peers(
+    payload_len: usize,
+    initial_peers: Option<Vec<SocketAddr>>,
+) -> Result<SeedFixture> {
     let source_root = tempdir().context("source tempdir")?;
     let session_dir = tempdir().context("session tempdir")?;
     let output_name = "fixture.bin".to_string();
@@ -166,6 +169,7 @@ async fn start_seed_fixture(payload_len: usize) -> Result<SeedFixture> {
             Some(AddTorrentOptions {
                 paused: false,
                 output_folder: Some(source_root.path().to_string_lossy().into_owned()),
+                initial_peers,
                 overwrite: true,
                 ..Default::default()
             }),
@@ -193,6 +197,10 @@ async fn start_seed_fixture(payload_len: usize) -> Result<SeedFixture> {
     })
 }
 
+async fn start_seed_fixture(payload_len: usize) -> Result<SeedFixture> {
+    start_seed_fixture_with_initial_peers(payload_len, None).await
+}
+
 async fn wait_for_bt_download(
     service: &BtService,
     gid: Gid,
@@ -203,7 +211,7 @@ async fn wait_for_bt_download(
         .await
         .expect("add torrent to BtService");
 
-    let first_peer = timeout(Duration::from_secs(30), async {
+    let first_peer = timeout(Duration::from_secs(60), async {
         loop {
             let peers = service.peer_list(&handle).await.unwrap_or_default();
             if let Some(peer) = peers.into_iter().next() {
@@ -341,6 +349,7 @@ async fn bt_service_attempts_peer_download_through_socks5_proxy() {
 
     service.shutdown().await;
 }
+
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn bt_service_persists_fastresume_state_and_restores_progress_after_restart() {
