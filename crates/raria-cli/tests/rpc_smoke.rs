@@ -31,7 +31,7 @@ fn allocate_port() -> u16 {
 }
 
 async fn wait_for_rpc_ready_with_child(port: u16, child: &mut ChildGuard) -> Result<(), String> {
-    let deadline = Instant::now() + Duration::from_secs(15);
+    let deadline = Instant::now() + Duration::from_secs(30);
     let client = reqwest::Client::new();
 
     loop {

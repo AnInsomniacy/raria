@@ -741,7 +741,7 @@ mod tests {
 
         let status = handler.tell_status(gid_str.clone()).await.unwrap();
         assert_eq!(status["status"], "waiting");
-        assert!(status["files"].as_array().unwrap().len() > 0);
+        assert!(!status["files"].as_array().unwrap().is_empty());
     }
 
     #[tokio::test]

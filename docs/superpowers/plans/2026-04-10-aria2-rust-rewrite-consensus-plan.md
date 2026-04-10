@@ -344,7 +344,9 @@ GA 是：
 
 **Deliverable:**
 
-- capability memo + whether D1 remains GA
+- capability memo，结论必须服务于**已冻结的 GA 范围**：
+  - 验证 metadata-ready 文件选择路径是否可进入 GA
+  - 记录 metadata 未就绪前、晚绑定或更复杂交互中哪些情况进入 Tail
 
 ### Phase 1: Replacement Core Beta
 

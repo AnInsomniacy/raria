@@ -170,8 +170,10 @@ impl Engine {
 
         // Detect whether this is a BT job (magnet URI) or a range-based download.
         let is_bt = spec.uris.iter().any(|u| u.starts_with("magnet:"));
-        let mut options = JobOptions::default();
-        options.out = spec.filename.clone();
+        let options = JobOptions {
+            out: spec.filename.clone(),
+            ..JobOptions::default()
+        };
 
         let job = if is_bt {
             Job::new_bt_with_options(spec.uris.clone(), out_path, options)

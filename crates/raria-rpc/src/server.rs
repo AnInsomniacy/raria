@@ -1,16 +1,32 @@
 // raria-rpc: HTTP + WebSocket server.
 //
-// Starts a jsonrpsee server that accepts aria2-compatible JSON-RPC requests
-// over HTTP and WebSocket.
+// Starts an HTTP + WebSocket RPC surface for aria2-compatible JSON-RPC.
+//
+// Product contract:
+// - HTTP JSON-RPC requests are accepted on `/` and `/jsonrpc`
+// - WebSocket JSON-RPC requests are accepted on `/` and `/jsonrpc`
+// - aria2-style notifications are pushed over the same WebSocket connection
+//   used for JSON-RPC requests
+//
+// jsonrpsee remains the request dispatcher via `RpcModule::raw_json_request`,
+// while the transport contract is owned explicitly here so we can provide
+// aria2-compatible same-socket notifications.
 
 use crate::methods::{Aria2RpcServer, RpcHandler};
 use anyhow::{Context, Result};
-use jsonrpsee::server::Server;
+use axum::body::Bytes;
+use axum::extract::State;
+use axum::extract::ws::{Message as WsMessage, WebSocket, WebSocketUpgrade};
+use axum::http::{HeaderValue, StatusCode};
+use axum::response::{IntoResponse, Response};
+use axum::routing::post;
+use axum::Router;
+use futures::{SinkExt, StreamExt};
 use raria_core::engine::Engine;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
-use tracing::{info, warn};
+use tracing::info;
 
 /// Configuration for the RPC server.
 #[derive(Debug, Clone)]
@@ -33,7 +49,19 @@ pub struct RpcServerAddrs {
     /// JSON-RPC HTTP/WS address.
     pub rpc: SocketAddr,
     /// WebSocket notification push address.
+    ///
+    /// Kept for compatibility with existing callers. Notifications now share
+    /// the same underlying listener as `rpc`; clients should connect to `/`
+    /// or `/jsonrpc` on this address.
     pub ws_notify: SocketAddr,
+}
+
+#[derive(Clone)]
+struct RpcAppState {
+    module: Arc<jsonrpsee::RpcModule<()>>,
+    notify_tx: tokio::sync::broadcast::Sender<String>,
+    max_request_size: usize,
+    rpc_secret: Option<String>,
 }
 
 /// Start the JSON-RPC server and run until the cancel token is triggered.
@@ -42,21 +70,13 @@ pub struct RpcServerAddrs {
 ///
 /// Also spawns a WebSocket event push task that broadcasts aria2-compatible
 /// notifications (`aria2.onDownloadStart`, `aria2.onDownloadComplete`, etc.)
-/// to all connected WebSocket clients on the notification endpoint.
+/// to all connected WebSocket clients on the same listener.
 pub async fn start_rpc_server(
     engine: Arc<Engine>,
     config: &RpcServerConfig,
     cancel: CancellationToken,
 ) -> Result<RpcServerAddrs> {
     let rpc_secret = engine.config.rpc_secret.clone();
-
-    let server = Server::builder()
-        .build(config.listen_addr)
-        .await
-        .context("failed to bind RPC server")?;
-
-    let addr = server.local_addr().context("failed to get local address")?;
-    info!(%addr, "RPC server listening");
 
     let handler = RpcHandler::new(Arc::clone(&engine));
     let mut module = handler.into_rpc();
@@ -66,55 +86,34 @@ pub async fn start_rpc_server(
 
     // If rpc_secret is set, wrap the module with token validation.
     // Convert to RpcModule<()> for uniform handling.
-    let module = if let Some(secret) = rpc_secret {
+    let module = if let Some(ref secret) = rpc_secret {
         let untyped = module.remove_context();
-        wrap_module_with_auth(untyped, &secret)?
+        wrap_module_with_auth(untyped, secret)?
     } else {
         module.remove_context()
     };
-
-    let handle = server.start(module);
+    let module = Arc::new(module);
 
     // Create the notification broadcast channel.
     let (notify_tx, _) = tokio::sync::broadcast::channel::<String>(256);
+    let listener = tokio::net::TcpListener::bind(config.listen_addr)
+        .await
+        .context("failed to bind RPC server")?;
+    let addr = listener
+        .local_addr()
+        .context("failed to get local RPC address")?;
+    info!(%addr, "RPC server listening");
 
-    // Prefer port+1 for parity with aria2-style tooling, but fall back to an
-    // OS-assigned port if that address is unavailable.
-    let preferred_notify_port = if config.listen_addr.port() == 0 {
-        0
-    } else {
-        config.listen_addr.port() + 1
+    let app_state = RpcAppState {
+        module: Arc::clone(&module),
+        notify_tx: notify_tx.clone(),
+        max_request_size: 10 * 1024 * 1024,
+        rpc_secret,
     };
-    let preferred_notify_addr =
-        SocketAddr::from((config.listen_addr.ip(), preferred_notify_port));
-
-    let ws_notify_addr = match start_ws_notify_listener(
-        preferred_notify_addr,
-        notify_tx.clone(),
-        cancel.clone(),
-    )
-    .await
-    {
-        Ok(addr) => addr,
-        Err(error) if preferred_notify_port != 0 => {
-            warn!(
-                preferred = %preferred_notify_addr,
-                error = %error,
-                "preferred WS notification port unavailable, falling back to an OS-assigned port"
-            );
-            start_ws_notify_listener(
-                SocketAddr::from((config.listen_addr.ip(), 0)),
-                notify_tx.clone(),
-                cancel.clone(),
-            )
-            .await
-            .context("failed to start WS notify server on fallback port")?
-        }
-        Err(error) => {
-            return Err(error).context("failed to start WS notify server");
-        }
-    };
-    info!(%ws_notify_addr, "WS notification server ready");
+    let app = Router::new()
+        .route("/", post(handle_http_rpc).get(handle_ws_rpc))
+        .route("/jsonrpc", post(handle_http_rpc).get(handle_ws_rpc))
+        .with_state(app_state);
 
     // Spawn WebSocket event push loop.
     let ws_cancel = cancel.clone();
@@ -123,17 +122,174 @@ pub async fn start_rpc_server(
         ws_event_push_loop(ws_engine, ws_cancel, notify_tx).await;
     });
 
-    // Spawn a task that stops the server when cancel is triggered.
+    let server_cancel = cancel.clone();
     tokio::spawn(async move {
-        cancel.cancelled().await;
-        info!("stopping RPC server");
-        handle.stop().unwrap();
+        axum::serve(listener, app)
+            .with_graceful_shutdown(async move {
+                server_cancel.cancelled().await;
+                info!("stopping RPC server");
+            })
+            .await
+            .expect("RPC server task failed");
     });
 
     Ok(RpcServerAddrs {
         rpc: addr,
-        ws_notify: ws_notify_addr,
+        ws_notify: addr,
     })
+}
+
+async fn handle_http_rpc(
+    State(state): State<RpcAppState>,
+    body: Bytes,
+) -> Response {
+    let Ok(request_body) = std::str::from_utf8(&body) else {
+        return (
+            StatusCode::BAD_REQUEST,
+            "request body must be valid UTF-8",
+        )
+            .into_response();
+    };
+
+    match dispatch_rpc_request(&state, request_body).await {
+        Ok(response) => {
+            let mut response = response.into_response();
+            response.headers_mut().insert(
+                axum::http::header::CONTENT_TYPE,
+                HeaderValue::from_static("application/json"),
+            );
+            response
+        }
+        Err(error) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            internal_dispatch_error_frame(&error),
+        )
+            .into_response(),
+    }
+}
+
+async fn handle_ws_rpc(
+    ws: WebSocketUpgrade,
+    State(state): State<RpcAppState>,
+) -> Response {
+    ws.on_upgrade(move |socket| handle_ws_rpc_client(socket, state))
+}
+
+async fn dispatch_rpc_request(state: &RpcAppState, request_body: &str) -> Result<String> {
+    let (response, _rx) = state
+        .module
+        .raw_json_request(request_body, state.max_request_size)
+        .await
+        .map_err(|e| anyhow::anyhow!("raw JSON-RPC dispatch failed: {e}"))?;
+    Ok(response)
+}
+
+fn internal_dispatch_error_frame(error: &anyhow::Error) -> String {
+    serde_json::json!({
+        "jsonrpc": "2.0",
+        "error": {
+            "code": -32603,
+            "message": format!("internal dispatch error: {error}"),
+        },
+        "id": serde_json::Value::Null,
+    })
+    .to_string()
+}
+
+async fn handle_ws_rpc_client(socket: WebSocket, state: RpcAppState) {
+    let (mut write, mut read) = socket.split();
+    let mut notify_rx = state.notify_tx.subscribe();
+    let mut authenticated = state.rpc_secret.is_none();
+
+    loop {
+        tokio::select! {
+            incoming = read.next() => {
+                let Some(incoming) = incoming else {
+                    break;
+                };
+
+                match incoming {
+                    Ok(WsMessage::Text(text)) => {
+                        if !authenticated {
+                            authenticated = request_contains_valid_token(text.as_ref(), state.rpc_secret.as_deref());
+                        }
+
+                        match dispatch_rpc_request(&state, text.as_ref()).await {
+                            Ok(response) => {
+                                if !response.is_empty() &&
+                                   write.send(WsMessage::Text(response)).await.is_err() {
+                                    break;
+                                }
+                            }
+                            Err(error) => {
+                                let error_frame = internal_dispatch_error_frame(&error);
+
+                                if write.send(WsMessage::Text(error_frame)).await.is_err() {
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    Ok(WsMessage::Ping(payload)) => {
+                        if write.send(WsMessage::Pong(payload)).await.is_err() {
+                            break;
+                        }
+                    }
+                    Ok(WsMessage::Close(_)) => break,
+                    Ok(WsMessage::Binary(_)) | Ok(WsMessage::Pong(_)) => {}
+                    Err(error) => {
+                        tracing::debug!(error = %error, "WS RPC client stream error");
+                        break;
+                    }
+                }
+            }
+            notification = notify_rx.recv() => {
+                match notification {
+                    Ok(text) => {
+                        if !authenticated {
+                            continue;
+                        }
+                        if write.send(WsMessage::Text(text)).await.is_err() {
+                            break;
+                        }
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                        tracing::warn!(n, "WS RPC client lagged behind notifications");
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                }
+            }
+        }
+    }
+}
+
+fn request_contains_valid_token(request_body: &str, secret: Option<&str>) -> bool {
+    let Some(secret) = secret else {
+        return true;
+    };
+
+    let Ok(json) = serde_json::from_str::<serde_json::Value>(request_body) else {
+        return false;
+    };
+
+    request_value_contains_valid_token(&json, secret)
+}
+
+fn request_value_contains_valid_token(value: &serde_json::Value, secret: &str) -> bool {
+    match value {
+        serde_json::Value::Object(map) => map
+            .get("params")
+            .and_then(|params| params.as_array())
+            .and_then(|params| params.first())
+            .and_then(|first| first.as_str())
+            .and_then(|token| token.strip_prefix("token:"))
+            .map(|token| token == secret)
+            .unwrap_or(false),
+        serde_json::Value::Array(items) => items
+            .iter()
+            .any(|item| request_value_contains_valid_token(item, secret)),
+        _ => false,
+    }
 }
 
 /// Wrap an RpcModule with token-based authentication.
@@ -430,85 +586,6 @@ fn event_gid(event: &raria_core::progress::DownloadEvent) -> raria_core::job::Gi
         DownloadEvent::Error { gid, .. } => *gid,
         DownloadEvent::Progress { gid, .. } => *gid,
         DownloadEvent::StatusChanged { gid, .. } => *gid,
-    }
-}
-
-/// Start the WebSocket notification server.
-///
-/// Listens on `addr` and forwards all messages from `notify_rx` to
-/// connected WebSocket clients. Each client gets its own subscriber.
-async fn start_ws_notify_listener(
-    addr: SocketAddr,
-    notify_tx: tokio::sync::broadcast::Sender<String>,
-    cancel: CancellationToken,
-) -> Result<SocketAddr> {
-    let listener = tokio::net::TcpListener::bind(addr)
-        .await
-        .context("failed to bind WS notify listener")?;
-    let bound_addr = listener.local_addr()?;
-    info!(%bound_addr, "WS notification server listening");
-
-    tokio::spawn(async move {
-        loop {
-            tokio::select! {
-                _ = cancel.cancelled() => break,
-                accept = listener.accept() => {
-                    match accept {
-                        Ok((stream, peer)) => {
-                            tracing::debug!(%peer, "WS notify client connected");
-                            let rx = notify_tx.subscribe();
-                            let cancel_clone = cancel.clone();
-                            tokio::spawn(handle_ws_notify_client(stream, rx, cancel_clone));
-                        }
-                        Err(e) => {
-                            tracing::warn!(error = %e, "WS notify accept failed");
-                        }
-                    }
-                }
-            }
-        }
-    });
-
-    Ok(bound_addr)
-}
-
-/// Handle a single WS notification client connection.
-async fn handle_ws_notify_client(
-    stream: tokio::net::TcpStream,
-    mut rx: tokio::sync::broadcast::Receiver<String>,
-    cancel: CancellationToken,
-) {
-    use futures::SinkExt;
-    use tokio_tungstenite::tungstenite::Message;
-
-    let ws_stream = match tokio_tungstenite::accept_async(stream).await {
-        Ok(ws) => ws,
-        Err(e) => {
-            tracing::warn!(error = %e, "WS handshake failed");
-            return;
-        }
-    };
-
-    let (mut write, _read) = futures::StreamExt::split(ws_stream);
-
-    loop {
-        tokio::select! {
-            _ = cancel.cancelled() => break,
-            msg = rx.recv() => {
-                match msg {
-                    Ok(text) => {
-                        if write.send(Message::Text(text.into())).await.is_err() {
-                            tracing::debug!("WS notify client disconnected");
-                            break;
-                        }
-                    }
-                    Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
-                        tracing::warn!(n, "WS notify client lagged");
-                    }
-                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
-                }
-            }
-        }
     }
 }
 

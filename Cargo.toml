@@ -36,6 +36,7 @@ reqwest_cookie_store = "0.8"
 
 # === RPC ===
 jsonrpsee = { version = "0.24", features = ["server", "macros"] }
+axum = { version = "0.7", features = ["ws"] }
 
 # === Rate Limiting ===
 governor = "0.8"

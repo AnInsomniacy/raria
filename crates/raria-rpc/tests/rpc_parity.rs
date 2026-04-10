@@ -154,7 +154,7 @@ mod tests {
     #[test]
     fn tell_status_non_error_has_no_error_fields() {
         let job = Job::new_range(vec![], PathBuf::from("/tmp/f"));
-        let json = serde_json::to_value(&job_to_aria2_status(&job)).unwrap();
+        let json = serde_json::to_value(job_to_aria2_status(&job)).unwrap();
 
         assert!(json.get("errorCode").is_none() || json["errorCode"].is_null());
         assert!(json.get("errorMessage").is_none() || json["errorMessage"].is_null());
@@ -166,8 +166,8 @@ mod tests {
         let range_job = Job::new_range(vec![], PathBuf::from("/tmp/f"));
         let bt_job = Job::new_bt(vec![], PathBuf::from("/tmp/f"));
 
-        let range_json = serde_json::to_value(&job_to_aria2_status(&range_job)).unwrap();
-        let bt_json = serde_json::to_value(&job_to_aria2_status(&bt_job)).unwrap();
+        let range_json = serde_json::to_value(job_to_aria2_status(&range_job)).unwrap();
+        let bt_json = serde_json::to_value(job_to_aria2_status(&bt_job)).unwrap();
 
         assert!(
             range_json.get("bittorrent").is_none() || range_json["bittorrent"].is_null(),
@@ -261,7 +261,7 @@ mod tests {
     #[test]
     fn tell_status_json_uses_camel_case_field_names() {
         let job = Job::new_range(vec![], PathBuf::from("/tmp/f"));
-        let json = serde_json::to_value(&job_to_aria2_status(&job)).unwrap();
+        let json = serde_json::to_value(job_to_aria2_status(&job)).unwrap();
         let obj = json.as_object().unwrap();
 
         // Must have camelCase keys

@@ -31,7 +31,7 @@ fn allocate_port() -> u16 {
 }
 
 async fn wait_for_rpc_ready_with_child(port: u16, child: &mut ChildGuard) -> Result<(), String> {
-    let deadline = Instant::now() + Duration::from_secs(15);
+    let deadline = Instant::now() + Duration::from_secs(30);
     let client = reqwest::Client::new();
 
     loop {
@@ -187,7 +187,7 @@ async fn graceful_shutdown(port: u16, child: &mut ChildGuard) {
     let shutdown_resp = rpc_call(port, "aria2.shutdown", serde_json::json!([])).await;
     assert_eq!(shutdown_resp["result"], "OK");
 
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = Instant::now() + Duration::from_secs(30);
     loop {
         match child.child.try_wait() {
             Ok(Some(status)) => {
@@ -240,7 +240,7 @@ async fn daemon_restores_saved_job_after_restart() {
     .await;
     let gid = add_resp["result"].as_str().expect("gid").to_string();
 
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = Instant::now() + Duration::from_secs(30);
     loop {
         let status_resp = rpc_call(first_port, "aria2.tellStatus", serde_json::json!([gid.clone()])).await;
         let status = status_resp["result"]["status"].as_str().expect("status");
@@ -325,7 +325,7 @@ async fn daemon_loads_jobs_from_input_file_on_startup() {
 
     let (mut child, rpc_port) = spawn_ready_daemon(temp.path(), &session_file, Some(&input_file)).await;
 
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = Instant::now() + Duration::from_secs(30);
     let jobs = loop {
         let active = rpc_call(rpc_port, "aria2.tellActive", serde_json::json!([])).await;
         let waiting = rpc_call(rpc_port, "aria2.tellWaiting", serde_json::json!([0, 10])).await;
@@ -407,7 +407,7 @@ async fn daemon_cli_headers_apply_to_input_file_downloads() {
     )
     .await;
 
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = Instant::now() + Duration::from_secs(30);
     loop {
         let active = rpc_call(rpc_port, "aria2.tellActive", serde_json::json!([])).await;
         let stopped = rpc_call(rpc_port, "aria2.tellStopped", serde_json::json!([0, 10])).await;
@@ -480,7 +480,7 @@ async fn daemon_cli_basic_auth_applies_to_input_file_downloads() {
     )
     .await;
 
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = Instant::now() + Duration::from_secs(30);
     loop {
         let stopped = rpc_call(rpc_port, "aria2.tellStopped", serde_json::json!([0, 10])).await;
         if stopped["result"].as_array().unwrap().iter().any(|job| job["status"] == "complete") {

@@ -37,7 +37,7 @@ mod tests {
             "method": method,
             "params": params,
         });
-        let resp = reqwest::Client::new()
+        reqwest::Client::new()
             .post(url)
             .json(&body)
             .send()
@@ -45,8 +45,7 @@ mod tests {
             .unwrap()
             .json::<serde_json::Value>()
             .await
-            .unwrap();
-        resp
+            .unwrap()
     }
 
     // ── addUri with header propagation ──────────────────────────────
