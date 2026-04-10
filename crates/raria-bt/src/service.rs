@@ -17,6 +17,7 @@ use librqbit::{
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 use tracing::{debug, info, warn};
@@ -129,6 +130,9 @@ pub struct BtPeerInfo {
 #[derive(Debug, Clone, Default)]
 pub struct BtServiceConfig {
     pub socks_proxy_url: Option<String>,
+    pub disable_dht: bool,
+    pub disable_dht_persistence: bool,
+    pub initial_peers: Option<Vec<SocketAddr>>,
 }
 
 pub struct BtService {
@@ -173,8 +177,8 @@ impl BtService {
         // Slow path: initialize.
         info!(dir = %self.output_dir.display(), "initializing librqbit session");
         let opts = SessionOptions {
-            disable_dht: false,
-            disable_dht_persistence: false,
+            disable_dht: self.config.disable_dht,
+            disable_dht_persistence: self.config.disable_dht_persistence,
             socks_proxy_url: self.config.socks_proxy_url.clone(),
             ..Default::default()
         };
@@ -213,6 +217,7 @@ impl BtService {
         let opts = AddTorrentOptions {
             output_folder: Some(self.output_dir.clone().to_string_lossy().to_string()),
             only_files: selected_files,
+            initial_peers: self.config.initial_peers.clone(),
             trackers,
             ..Default::default()
         };
@@ -513,6 +518,7 @@ mod tests {
             PathBuf::from("/tmp"),
             BtServiceConfig {
                 socks_proxy_url: Some("http://127.0.0.1:8080".into()),
+                ..Default::default()
             },
         )
         .unwrap();

@@ -75,7 +75,7 @@
 | `select-file` | `--select-file` | BT | `tested` |
 | `seed-ratio` | `--seed-ratio` | BT | `tested` |
 | `seed-time` | `--seed-time` | BT | `tested` |
-| `bt-tracker` | `--bt-tracker` | BT | `tested` |
+| `bt-tracker` | `--bt-tracker` | BT | `client_verified` |
 | `quiet` | `--quiet` / `-q` | CLI | `client_verified` |
 | `log` | `--log` / `-l` | CLI | `tested` |
 

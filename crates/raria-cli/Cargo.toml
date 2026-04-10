@@ -45,3 +45,4 @@ tokio-rustls = { workspace = true }
 rcgen = { workspace = true }
 russh = "0.51"
 russh-sftp = "2"
+librqbit = "8.1.1"

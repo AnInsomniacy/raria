@@ -32,6 +32,7 @@ fn allocate_port() -> u16 {
     port
 }
 
+
 async fn wait_for_rpc_ready_with_child(port: u16, child: &mut ChildGuard) -> Result<(), String> {
     let deadline = Instant::now() + Duration::from_secs(60);
     let client = reqwest::Client::new();
@@ -350,6 +351,7 @@ async fn daemon_accepts_rpc_add_uri_and_shutdown() {
         thread::sleep(Duration::from_millis(50));
     }
 }
+
 
 #[tokio::test]
 async fn daemon_bt_job_pause_and_unpause_round_trip_over_rpc() {

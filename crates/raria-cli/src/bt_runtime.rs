@@ -45,6 +45,17 @@ fn handle_bt_cancellation(engine: &Engine, gid: Gid) {
     }
 }
 
+fn bt_service_config(engine: &Engine) -> BtServiceConfig {
+    BtServiceConfig {
+        socks_proxy_url: engine
+            .config
+            .all_proxy
+            .clone()
+            .filter(|proxy| proxy.starts_with("socks5://")),
+        ..Default::default()
+    }
+}
+
 pub(crate) async fn run_bt_download(
     engine: Arc<Engine>,
     gid: Gid,
@@ -70,17 +81,8 @@ pub(crate) async fn run_bt_download(
         BtSource::TorrentFile(std::path::PathBuf::from(uri_str))
     };
 
-    let bt_service = BtService::with_config(
-        download_dir,
-        BtServiceConfig {
-            socks_proxy_url: engine
-                .config
-                .all_proxy
-                .clone()
-                .filter(|proxy| proxy.starts_with("socks5://")),
-        },
-    )
-    .context("failed to create BtService")?;
+    let bt_service = BtService::with_config(download_dir, bt_service_config(engine.as_ref()))
+        .context("failed to create BtService")?;
     let handle = bt_service
         .add(
             source,
@@ -180,7 +182,7 @@ fn should_stop_seeding(
 
 #[cfg(test)]
 mod tests {
-    use super::{handle_bt_cancellation, map_bt_files, map_bt_peers, should_stop_seeding};
+    use super::{bt_service_config, handle_bt_cancellation, map_bt_files, map_bt_peers, should_stop_seeding};
     use raria_bt::service::{BtFileInfo, BtPeerInfo};
     use raria_core::config::GlobalConfig;
     use raria_core::engine::{AddUriSpec, Engine};
@@ -225,6 +227,25 @@ mod tests {
         assert_eq!(mapped[0].port, 6881);
         assert_eq!(mapped[0].download_speed, 123);
         assert!(mapped[0].seeder);
+    }
+
+    #[test]
+    fn bt_service_config_forwards_only_socks5_all_proxy() {
+        let config = GlobalConfig {
+            all_proxy: Some("socks5://127.0.0.1:1080".into()),
+            ..Default::default()
+        };
+        let engine = Engine::new(config);
+        let bt_config = bt_service_config(&engine);
+        assert_eq!(bt_config.socks_proxy_url.as_deref(), Some("socks5://127.0.0.1:1080"));
+
+        let config = GlobalConfig {
+            all_proxy: Some("http://127.0.0.1:8080".into()),
+            ..Default::default()
+        };
+        let engine = Engine::new(config);
+        let bt_config = bt_service_config(&engine);
+        assert!(bt_config.socks_proxy_url.is_none());
     }
 
     #[test]

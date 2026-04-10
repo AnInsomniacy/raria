@@ -68,7 +68,7 @@
 
 | Capability | aria2 | raria | Status | Notes |
 |-----------|-------|-------|--------|-------|
-| Basic torrent download | ✅ | ✅ | `tested` | `BtService` wired through daemon path and RPC job creation tests |
+| Basic torrent download | ✅ | ✅ | `tested` | Dedicated `raria-bt` product-path smoke now downloads a real torrent from a live seed peer and verifies file completion alongside existing daemon/RPC wiring coverage |
 | Magnet URI | ✅ | ✅ | `client_verified` | BT dispatch tests cover creation semantics, and daemon RPC smoke now proves `aria2.addUri(magnet)` on the real daemon path |
 | DHT | ✅ | ✅ | `wired` | librqbit support; no explicit parity verification |
 | PEX | ✅ | ✅ | `wired` | librqbit support |
@@ -80,7 +80,7 @@
 | WebSeed (BEP-17/19) | ✅ | ❌ | `gap` | BT-GAP-002 |
 | Rarest-first | ✅ | ❌ | `gap` | BT-GAP-003 |
 | HTTP+BT mixed source | ✅ | ❌ | `gap` | BT-GAP-004 |
-| SOCKS5 proxy | ✅ | ✅ | `wired` | BT hot path now forwards `socks5://` all-proxy into librqbit session options and rejects non-SOCKS proxy schemes in tests, but end-to-end BT proxy transfer is still not product-verified |
+| SOCKS5 proxy | ✅ | ✅ | `wired` | BT hot path forwards `socks5://` all-proxy into librqbit session options, rejects non-SOCKS proxy schemes in tests, and dedicated smoke proves peer traffic attempts the SOCKS5 relay, but end-to-end proxied torrent completion is still not verified |
 
 ## Metalink
 
