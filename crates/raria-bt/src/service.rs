@@ -27,6 +27,27 @@ fn is_selected_file(selected_files: Option<&[usize]>, file_index: usize) -> bool
         .unwrap_or(true)
 }
 
+fn parse_peer_addr(addr: &str) -> (String, u16) {
+    if let Some(rest) = addr.strip_prefix('[') {
+        if let Some((host, port)) = rest.split_once("]:") {
+            if let Ok(port) = port.parse::<u16>() {
+                return (host.to_string(), port);
+            }
+        }
+        return (addr.trim_matches(&['[', ']'][..]).to_string(), 0);
+    }
+
+    if addr.matches(':').count() == 1 {
+        if let Some((host, port)) = addr.split_once(':') {
+            if let Ok(port) = port.parse::<u16>() {
+                return (host.to_string(), port);
+            }
+        }
+    }
+
+    (addr.to_string(), 0)
+}
+
 /// Source for a BitTorrent download.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum BtSource {
@@ -105,9 +126,16 @@ pub struct BtPeerInfo {
 /// librqbit only supports sequential downloading (rarest-first is not available).
 /// This means BT download behavior is NOT equivalent to aria2's BT engine.
 /// This is an accepted product constraint.
+#[derive(Debug, Clone, Default)]
+pub struct BtServiceConfig {
+    pub socks_proxy_url: Option<String>,
+}
+
 pub struct BtService {
     /// Output directory for downloads.
     output_dir: PathBuf,
+    /// BT session runtime config.
+    config: BtServiceConfig,
     /// librqbit session (initialized lazily on first use).
     session: Arc<RwLock<Option<Arc<Session>>>>,
     /// Map from raria GID → librqbit Arc<ManagedTorrent> for active torrents.
@@ -120,8 +148,13 @@ impl BtService {
     /// The librqbit session is NOT started here — it's initialized lazily
     /// on the first `add()` call. This keeps startup fast when BT isn't used.
     pub fn new(output_dir: PathBuf) -> Result<Self> {
+        Self::with_config(output_dir, BtServiceConfig::default())
+    }
+
+    pub fn with_config(output_dir: PathBuf, config: BtServiceConfig) -> Result<Self> {
         Ok(Self {
             output_dir,
+            config,
             session: Arc::new(RwLock::new(None)),
             handles: Arc::new(RwLock::new(HashMap::new())),
         })
@@ -142,6 +175,7 @@ impl BtService {
         let opts = SessionOptions {
             disable_dht: false,
             disable_dht_persistence: false,
+            socks_proxy_url: self.config.socks_proxy_url.clone(),
             ..Default::default()
         };
         let session = Session::new_with_opts(self.output_dir.clone(), opts)
@@ -330,10 +364,7 @@ impl BtService {
             .peers
             .into_iter()
             .map(|(addr, stats)| {
-                let (ip, port) = addr
-                    .rsplit_once(':')
-                    .and_then(|(ip, port)| port.parse::<u16>().ok().map(|port| (ip.to_string(), port)))
-                    .unwrap_or_else(|| (addr.clone(), 0));
+                let (ip, port) = parse_peer_addr(&addr);
                 let download_speed = if stats.counters.total_piece_download_ms > 0 {
                     stats.counters.fetched_bytes.saturating_mul(1000)
                         / stats.counters.total_piece_download_ms
@@ -476,6 +507,28 @@ mod tests {
         assert!(guard.is_empty());
     }
 
+    #[tokio::test]
+    async fn bt_service_rejects_non_socks5_proxy_urls_when_session_starts() {
+        let svc = BtService::with_config(
+            PathBuf::from("/tmp"),
+            BtServiceConfig {
+                socks_proxy_url: Some("http://127.0.0.1:8080".into()),
+            },
+        )
+        .unwrap();
+
+        let error = match svc.ensure_session().await {
+            Ok(_) => panic!("non-socks5 BT proxy must fail"),
+            Err(error) => error,
+        };
+        let error_chain = format!("{error:#}");
+        assert!(
+            error_chain.contains("proxy")
+                || error_chain.contains("socks5"),
+            "unexpected BT proxy error: {error_chain}"
+        );
+    }
+
     #[test]
     fn selection_defaults_to_all_files_when_only_files_is_none() {
         assert!(is_selected_file(None, 0));
@@ -486,5 +539,19 @@ mod tests {
     fn selection_uses_librqbit_only_files_state_when_present() {
         assert!(is_selected_file(Some(&[0, 2, 4]), 2));
         assert!(!is_selected_file(Some(&[0, 2, 4]), 3));
+    }
+
+    #[test]
+    fn parse_peer_addr_handles_bracketed_ipv6_with_port() {
+        let (ip, port) = parse_peer_addr("[2001:db8::1]:6881");
+        assert_eq!(ip, "2001:db8::1");
+        assert_eq!(port, 6881);
+    }
+
+    #[test]
+    fn parse_peer_addr_preserves_raw_ipv6_without_port() {
+        let (ip, port) = parse_peer_addr("2001:db8::1");
+        assert_eq!(ip, "2001:db8::1");
+        assert_eq!(port, 0);
     }
 }

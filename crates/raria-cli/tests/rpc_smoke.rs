@@ -352,6 +352,151 @@ async fn daemon_accepts_rpc_add_uri_and_shutdown() {
 }
 
 #[tokio::test]
+async fn daemon_bt_job_pause_and_unpause_round_trip_over_rpc() {
+    let temp = tempdir().expect("tempdir");
+    let session_file = temp.path().join("bt-pause-roundtrip.session.redb");
+    let (mut child, rpc_port) = spawn_ready_daemon(temp.path(), &session_file).await;
+
+    let client = reqwest::Client::new();
+    let add_resp: serde_json::Value = client
+        .post(format!("http://127.0.0.1:{rpc_port}"))
+        .json(&serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "aria2.addUri",
+            "params": [["magnet:?xt=urn:btih:da39a3ee5e6b4b0d3255bfef95601890afd80709"]],
+        }))
+        .send()
+        .await
+        .expect("send addUri magnet")
+        .json()
+        .await
+        .expect("parse addUri magnet response");
+
+    let gid = add_resp["result"].as_str().expect("gid").to_string();
+
+    let pause_resp: serde_json::Value = client
+        .post(format!("http://127.0.0.1:{rpc_port}"))
+        .json(&serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "aria2.pause",
+            "params": [gid.clone()],
+        }))
+        .send()
+        .await
+        .expect("send pause")
+        .json()
+        .await
+        .expect("parse pause response");
+    assert_eq!(pause_resp["result"], gid);
+
+    let paused_deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let status_resp: serde_json::Value = client
+            .post(format!("http://127.0.0.1:{rpc_port}"))
+            .json(&serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 3,
+                "method": "aria2.tellStatus",
+                "params": [gid.clone()],
+            }))
+            .send()
+            .await
+            .expect("send tellStatus paused")
+            .json()
+            .await
+            .expect("parse tellStatus paused");
+
+        if status_resp["result"]["status"].as_str() == Some("paused") {
+            break;
+        }
+
+        assert!(
+            Instant::now() < paused_deadline,
+            "BT job never reached paused status over daemon RPC: {status_resp}"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+
+    let unpause_resp: serde_json::Value = client
+        .post(format!("http://127.0.0.1:{rpc_port}"))
+        .json(&serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 4,
+            "method": "aria2.unpause",
+            "params": [gid.clone()],
+        }))
+        .send()
+        .await
+        .expect("send unpause")
+        .json()
+        .await
+        .expect("parse unpause response");
+    assert_eq!(unpause_resp["result"], gid);
+
+    let resumed_deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let status_resp: serde_json::Value = client
+            .post(format!("http://127.0.0.1:{rpc_port}"))
+            .json(&serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 5,
+                "method": "aria2.tellStatus",
+                "params": [gid.clone()],
+            }))
+            .send()
+            .await
+            .expect("send tellStatus resumed")
+            .json()
+            .await
+            .expect("parse tellStatus resumed");
+
+        let status = status_resp["result"]["status"].as_str().expect("status");
+        if matches!(status, "waiting" | "active") {
+            break;
+        }
+
+        assert!(
+            Instant::now() < resumed_deadline,
+            "BT job never resumed from paused state over daemon RPC: {status_resp}"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+
+    let shutdown_resp: serde_json::Value = client
+        .post(format!("http://127.0.0.1:{rpc_port}"))
+        .json(&serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 6,
+            "method": "aria2.shutdown",
+            "params": [],
+        }))
+        .send()
+        .await
+        .expect("send shutdown")
+        .json()
+        .await
+        .expect("parse shutdown response");
+    assert_eq!(shutdown_resp["result"], "OK");
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        match child.child.try_wait() {
+            Ok(Some(status)) => {
+                assert!(status.success(), "daemon exited unsuccessfully: {status}");
+                break;
+            }
+            Ok(None) => {
+                assert!(Instant::now() < deadline, "daemon did not exit after shutdown RPC");
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            Err(error) => panic!("failed waiting for daemon exit: {error}"),
+        }
+    }
+}
+
+#[tokio::test]
 async fn daemon_respects_min_split_size_when_calculating_effective_connections() {
     let download_server = MockServer::start().await;
 
@@ -1047,8 +1192,8 @@ async fn daemon_flag_detaches_process_and_keeps_rpc_alive() {
         .arg("--session-file")
         .arg(&session_file)
         .arg("--daemon")
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
         .spawn()
         .expect("spawn daemonize request");
 

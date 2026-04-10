@@ -43,3 +43,5 @@ nix = { workspace = true }
 rustls = { workspace = true }
 tokio-rustls = { workspace = true }
 rcgen = { workspace = true }
+russh = "0.51"
+russh-sftp = "2"

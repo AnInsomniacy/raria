@@ -425,4 +425,10 @@ mod tests {
         .unwrap();
         assert!(!allowed);
     }
+
+    #[test]
+    fn no_proxy_bypasses_exact_host() {
+        assert!(should_bypass_proxy("sftp.example.com", Some("localhost,sftp.example.com")));
+        assert!(!should_bypass_proxy("sftp.example.com", Some("localhost,127.0.0.1")));
+    }
 }

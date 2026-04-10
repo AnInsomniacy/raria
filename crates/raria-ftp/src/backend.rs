@@ -19,6 +19,7 @@ use async_trait::async_trait;
 use raria_range::backend::{
     ByteSourceBackend, ByteStream, FileProbe, OpenContext, ProbeContext,
 };
+use std::path::PathBuf;
 use std::pin::Pin;
 use std::task::{self, Poll};
 use suppaftp::tokio::AsyncNativeTlsFtpStream;
@@ -66,10 +67,23 @@ impl<S: AsyncRead + Unpin> AsyncRead for FtpOwnedStream<S> {
 unsafe impl<S: AsyncRead + Unpin + Send> Send for FtpOwnedStream<S> {}
 
 /// FTP/FTPS download backend.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct FtpBackendConfig {
     pub all_proxy: Option<String>,
     pub no_proxy: Option<String>,
+    pub check_certificate: bool,
+    pub ca_certificate: Option<PathBuf>,
+}
+
+impl Default for FtpBackendConfig {
+    fn default() -> Self {
+        Self {
+            all_proxy: None,
+            no_proxy: None,
+            check_certificate: true,
+            ca_certificate: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -157,10 +171,20 @@ async fn connect_ftp(uri: &Url, config: &FtpBackendConfig) -> Result<(AsyncNativ
             .with_context(|| format!("failed to initialize FTP stream for {addr}"))?;
 
     if uri.scheme() == "ftps" {
+        let mut tls_connector = suppaftp::async_native_tls::TlsConnector::new()
+            .danger_accept_invalid_certs(!config.check_certificate)
+            .danger_accept_invalid_hostnames(!config.check_certificate);
+        if let Some(ca_path) = config.ca_certificate.as_ref() {
+            let pem = std::fs::read(ca_path)
+                .with_context(|| format!("failed to read FTPS CA certificate from {}", ca_path.display()))?;
+            let cert = suppaftp::async_native_tls::Certificate::from_pem(&pem)
+                .with_context(|| format!("failed to parse FTPS CA certificate from {}", ca_path.display()))?;
+            tls_connector = tls_connector.add_root_certificate(cert);
+        }
         ftp = ftp
             .into_secure(
                 suppaftp::tokio::AsyncNativeTlsConnector::from(
-                    suppaftp::async_native_tls::TlsConnector::new(),
+                    tls_connector,
                 ),
                 host,
             )
@@ -322,5 +346,11 @@ mod tests {
             .unwrap();
         let (_, _, _, path) = parse_ftp_url(&url).unwrap();
         assert_eq!(path, "/a/b/c/d/file.tar.gz");
+    }
+
+    #[test]
+    fn no_proxy_bypasses_exact_host() {
+        assert!(should_bypass_proxy("ftp.example.com", Some("localhost,ftp.example.com")));
+        assert!(!should_bypass_proxy("ftp.example.com", Some("localhost,127.0.0.1")));
     }
 }

@@ -1,16 +1,529 @@
 use std::process::Command;
+use std::sync::{
+    Arc,
+    atomic::{AtomicUsize, Ordering},
+};
 use std::{fs, io::Write};
 use rustls::pki_types::{PrivateKeyDer, PrivatePkcs8KeyDer};
 use rustls::{RootCertStore, ServerConfig};
 use tempfile::tempdir;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::TcpListener;
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader};
+use tokio::net::{TcpListener, TcpStream};
 use tokio_rustls::TlsAcceptor;
 use wiremock::matchers::{header, header_exists, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 fn cargo_bin(name: &str) -> String {
     std::env::var(format!("CARGO_BIN_EXE_{name}")).expect("cargo should provide binary path")
+}
+
+struct FtpFixture {
+    port: u16,
+}
+
+struct FtpsFixture {
+    port: u16,
+    ca_path: std::path::PathBuf,
+}
+
+fn is_disconnect(error: &std::io::Error) -> bool {
+    matches!(
+        error.kind(),
+        std::io::ErrorKind::ConnectionReset
+            | std::io::ErrorKind::BrokenPipe
+            | std::io::ErrorKind::UnexpectedEof
+            | std::io::ErrorKind::ConnectionAborted
+    )
+}
+
+async fn spawn_ftp_server(
+    expected_user: &'static str,
+    expected_password: &'static str,
+    file_path: &'static str,
+    file_data: &'static [u8],
+) -> FtpFixture {
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind ftp listener");
+    let port = listener.local_addr().expect("ftp addr").port();
+
+    tokio::spawn(async move {
+        loop {
+            let Ok((stream, _)) = listener.accept().await else {
+                break;
+            };
+            tokio::spawn(handle_ftp_client(
+                stream,
+                expected_user,
+                expected_password,
+                file_path,
+                file_data,
+            ));
+        }
+    });
+
+    FtpFixture { port }
+}
+
+async fn spawn_explicit_ftps_server(
+    expected_user: &'static str,
+    expected_password: &'static str,
+    file_path: &'static str,
+    file_data: &'static [u8],
+) -> FtpsFixture {
+    use rcgen::{BasicConstraints, CertificateParams, DnType, IsCa, KeyPair};
+
+    let provider = rustls::crypto::aws_lc_rs::default_provider();
+    let _ = provider.clone().install_default();
+
+    let ca_key = KeyPair::generate().expect("generate ca key");
+    let mut ca_params = CertificateParams::new(vec!["raria-ftps-test-ca".into()]).expect("ca params");
+    ca_params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
+    ca_params.distinguished_name.push(DnType::CommonName, "raria-ftps-test-ca");
+    let ca_cert = ca_params.self_signed(&ca_key).expect("ca cert");
+
+    let server_key = KeyPair::generate().expect("generate server key");
+    let mut server_params =
+        CertificateParams::new(vec!["localhost".into(), "127.0.0.1".into()]).expect("server params");
+    server_params.distinguished_name.push(DnType::CommonName, "127.0.0.1");
+    let server_cert = server_params
+        .signed_by(&server_key, &ca_cert, &ca_key)
+        .expect("server cert");
+
+    let cert_dir = tempdir().expect("ftps cert tempdir");
+    let ca_path = cert_dir.path().join("ftps-ca.pem");
+    fs::write(&ca_path, ca_cert.pem()).expect("write ftps ca pem");
+    let ca_path_for_return = ca_path.clone();
+
+    let server_config = ServerConfig::builder()
+        .with_no_client_auth()
+        .with_single_cert(
+            vec![server_cert.der().clone()],
+            PrivateKeyDer::from(PrivatePkcs8KeyDer::from(server_key.serialize_der())),
+        )
+        .expect("ftps server config");
+    let acceptor = TlsAcceptor::from(Arc::new(server_config));
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind ftps listener");
+    let port = listener.local_addr().expect("ftps addr").port();
+
+    tokio::spawn(async move {
+        let _keep_dir_alive = cert_dir;
+        loop {
+            let Ok((stream, _)) = listener.accept().await else {
+                break;
+            };
+            let acceptor = acceptor.clone();
+            tokio::spawn(handle_ftps_client(
+                stream,
+                acceptor,
+                expected_user,
+                expected_password,
+                file_path,
+                file_data,
+            ));
+        }
+    });
+
+    FtpsFixture {
+        port,
+        ca_path: ca_path_for_return,
+    }
+}
+
+async fn handle_ftp_client(
+    stream: TcpStream,
+    expected_user: &str,
+    expected_password: &str,
+    file_path: &str,
+    file_data: &[u8],
+) {
+    let mut reader = BufReader::new(stream);
+    let mut pending_offset = 0usize;
+    let mut data_listener: Option<TcpListener> = None;
+    let mut authenticated = false;
+    let mut seen_user: Option<String> = None;
+
+    write_ftp_reply(reader.get_mut(), 220, "raria ftp test server")
+        .await
+        .expect("write greeting");
+
+    loop {
+        let mut line = String::new();
+        let n = match reader.read_line(&mut line).await {
+            Ok(n) => n,
+            Err(error) if is_disconnect(&error) => break,
+            Err(error) => panic!("read ftp command: {error}"),
+        };
+        if n == 0 {
+            break;
+        }
+
+        let line = line.trim_end_matches(['\r', '\n']);
+        let (command, arg) = line
+            .split_once(' ')
+            .map(|(cmd, rest)| (cmd.to_ascii_uppercase(), rest))
+            .unwrap_or_else(|| (line.to_ascii_uppercase(), ""));
+
+        match command.as_str() {
+            "USER" => {
+                seen_user = Some(arg.to_string());
+                write_ftp_reply(reader.get_mut(), 331, "password required")
+                    .await
+                    .expect("write user reply");
+            }
+            "PASS" => {
+                authenticated = seen_user.as_deref() == Some(expected_user) && arg == expected_password;
+                let code = if authenticated { 230 } else { 530 };
+                let message = if authenticated {
+                    "login successful"
+                } else {
+                    "login incorrect"
+                };
+                write_ftp_reply(reader.get_mut(), code, message)
+                    .await
+                    .expect("write pass reply");
+            }
+            "TYPE" => {
+                assert!(authenticated, "TYPE before authentication");
+                write_ftp_reply(reader.get_mut(), 200, "type set")
+                    .await
+                    .expect("write type reply");
+            }
+            "SIZE" => {
+                assert!(authenticated, "SIZE before authentication");
+                assert_eq!(arg, file_path, "unexpected SIZE path");
+                write_ftp_reply(reader.get_mut(), 213, &file_data.len().to_string())
+                    .await
+                    .expect("write size reply");
+            }
+            "REST" => {
+                assert!(authenticated, "REST before authentication");
+                pending_offset = arg.parse::<usize>().expect("parse rest offset");
+                write_ftp_reply(reader.get_mut(), 350, "restart position accepted")
+                    .await
+                    .expect("write rest reply");
+            }
+            "PASV" => {
+                assert!(authenticated, "PASV before authentication");
+                let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind data listener");
+                let addr = listener.local_addr().expect("data addr");
+                let octets = match addr.ip() {
+                    std::net::IpAddr::V4(ip) => ip.octets(),
+                    std::net::IpAddr::V6(_) => panic!("expected ipv4 listener"),
+                };
+                let reply = format!(
+                    "Entering Passive Mode ({},{},{},{},{},{})",
+                    octets[0],
+                    octets[1],
+                    octets[2],
+                    octets[3],
+                    addr.port() / 256,
+                    addr.port() % 256
+                );
+                data_listener = Some(listener);
+                write_ftp_reply(reader.get_mut(), 227, &reply)
+                    .await
+                    .expect("write pasv reply");
+            }
+            "RETR" => {
+                assert!(authenticated, "RETR before authentication");
+                assert_eq!(arg, file_path, "unexpected RETR path");
+                let listener = data_listener.take().expect("RETR without PASV");
+                write_ftp_reply(reader.get_mut(), 150, "opening data connection")
+                    .await
+                    .expect("write retr start");
+                let (mut data_stream, _) = listener.accept().await.expect("accept data");
+                data_stream
+                    .write_all(&file_data[pending_offset.min(file_data.len())..])
+                    .await
+                    .expect("write data payload");
+                data_stream.shutdown().await.expect("shutdown data stream");
+                pending_offset = 0;
+                write_ftp_reply(reader.get_mut(), 226, "transfer complete")
+                    .await
+                    .expect("write retr done");
+            }
+            "QUIT" => {
+                write_ftp_reply(reader.get_mut(), 221, "goodbye")
+                    .await
+                    .expect("write quit reply");
+                break;
+            }
+            other => panic!("unexpected FTP command: {other} {arg}"),
+        }
+    }
+}
+
+async fn handle_ftps_client(
+    stream: TcpStream,
+    acceptor: TlsAcceptor,
+    expected_user: &str,
+    expected_password: &str,
+    file_path: &str,
+    file_data: &[u8],
+) {
+    let mut reader = BufReader::new(stream);
+    write_ftp_reply(reader.get_mut(), 220, "raria explicit ftps test server")
+        .await
+        .expect("write greeting");
+
+    let mut line = String::new();
+    let n = match reader.read_line(&mut line).await {
+        Ok(n) => n,
+        Err(error) if is_disconnect(&error) => return,
+        Err(error) => panic!("read plain ftps command: {error}"),
+    };
+    if n == 0 {
+        return;
+    }
+    let line = line.trim_end_matches(['\r', '\n']);
+    let (command, arg) = line
+        .split_once(' ')
+        .map(|(cmd, rest)| (cmd.to_ascii_uppercase(), rest))
+        .unwrap_or_else(|| (line.to_ascii_uppercase(), ""));
+
+    match command.as_str() {
+        "AUTH" => {
+            assert_eq!(arg, "TLS", "unexpected AUTH mode");
+            write_ftp_reply(reader.get_mut(), 234, "AUTH TLS accepted")
+                .await
+                .expect("write auth reply");
+            let tls_stream = acceptor.accept(reader.into_inner()).await.expect("upgrade control tls");
+            handle_ftps_tls_session(
+                tls_stream,
+                acceptor,
+                expected_user,
+                expected_password,
+                file_path,
+                file_data,
+            )
+            .await;
+        }
+        "QUIT" => {
+            write_ftp_reply(reader.get_mut(), 221, "goodbye")
+                .await
+                .expect("write quit");
+        }
+        other => panic!("unexpected plain FTPS command before AUTH TLS: {other} {arg}"),
+    }
+}
+
+async fn handle_ftps_tls_session(
+    stream: tokio_rustls::server::TlsStream<TcpStream>,
+    acceptor: TlsAcceptor,
+    expected_user: &str,
+    expected_password: &str,
+    file_path: &str,
+    file_data: &[u8],
+) {
+    let mut reader = BufReader::new(stream);
+    let mut pending_offset = 0usize;
+    let mut data_listener: Option<TcpListener> = None;
+    let mut authenticated = false;
+    let mut seen_user: Option<String> = None;
+    let mut protect_private = false;
+
+    loop {
+        let mut line = String::new();
+        let n = match reader.read_line(&mut line).await {
+            Ok(n) => n,
+            Err(error) if is_disconnect(&error) => break,
+            Err(error) => panic!("read tls ftps command: {error}"),
+        };
+        if n == 0 {
+            break;
+        }
+        let line = line.trim_end_matches(['\r', '\n']);
+        let (command, arg) = line
+            .split_once(' ')
+            .map(|(cmd, rest)| (cmd.to_ascii_uppercase(), rest))
+            .unwrap_or_else(|| (line.to_ascii_uppercase(), ""));
+
+        match command.as_str() {
+            "USER" => {
+                seen_user = Some(arg.to_string());
+                write_ftp_reply(reader.get_mut(), 331, "password required")
+                    .await
+                    .expect("write user reply");
+            }
+            "PASS" => {
+                authenticated = seen_user.as_deref() == Some(expected_user) && arg == expected_password;
+                write_ftp_reply(
+                    reader.get_mut(),
+                    if authenticated { 230 } else { 530 },
+                    if authenticated { "login successful" } else { "login incorrect" },
+                )
+                .await
+                .expect("write pass reply");
+            }
+            "PBSZ" => {
+                assert_eq!(arg, "0");
+                write_ftp_reply(reader.get_mut(), 200, "pbsz=0")
+                    .await
+                    .expect("write pbsz");
+            }
+            "PROT" => {
+                assert_eq!(arg, "P");
+                protect_private = true;
+                write_ftp_reply(reader.get_mut(), 200, "protection private")
+                    .await
+                    .expect("write prot");
+            }
+            "TYPE" => {
+                assert!(authenticated, "TYPE before authentication");
+                write_ftp_reply(reader.get_mut(), 200, "type set to I")
+                    .await
+                    .expect("write type");
+            }
+            "SIZE" => {
+                assert!(authenticated, "SIZE before authentication");
+                assert_eq!(arg, file_path);
+                write_ftp_reply(reader.get_mut(), 213, &file_data.len().to_string())
+                    .await
+                    .expect("write size");
+            }
+            "REST" => {
+                pending_offset = arg.parse::<usize>().expect("parse rest");
+                write_ftp_reply(reader.get_mut(), 350, "restart position accepted")
+                    .await
+                    .expect("write rest");
+            }
+            "PASV" => {
+                let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind ftps data listener");
+                let addr = listener.local_addr().expect("data addr");
+                let octets = match addr.ip() {
+                    std::net::IpAddr::V4(ip) => ip.octets(),
+                    std::net::IpAddr::V6(_) => panic!("expected ipv4 listener"),
+                };
+                data_listener = Some(listener);
+                write_ftp_reply(
+                    reader.get_mut(),
+                    227,
+                    &format!(
+                        "Entering Passive Mode ({},{},{},{},{},{})",
+                        octets[0],
+                        octets[1],
+                        octets[2],
+                        octets[3],
+                        addr.port() / 256,
+                        addr.port() % 256
+                    ),
+                )
+                .await
+                .expect("write pasv");
+            }
+            "RETR" => {
+                assert_eq!(arg, file_path);
+                let listener = data_listener.take().expect("RETR without PASV");
+                write_ftp_reply(reader.get_mut(), 150, "opening protected data connection")
+                    .await
+                    .expect("write retr");
+                let (data_stream, _) = listener.accept().await.expect("accept data");
+                if protect_private {
+                    let mut data_stream = acceptor.accept(data_stream).await.expect("upgrade data tls");
+                    data_stream
+                        .write_all(&file_data[pending_offset.min(file_data.len())..])
+                        .await
+                        .expect("write tls data");
+                    data_stream.shutdown().await.expect("shutdown tls data");
+                } else {
+                    let mut data_stream = data_stream;
+                    data_stream
+                        .write_all(&file_data[pending_offset.min(file_data.len())..])
+                        .await
+                        .expect("write plain data");
+                    data_stream.shutdown().await.expect("shutdown plain data");
+                }
+                pending_offset = 0;
+                write_ftp_reply(reader.get_mut(), 226, "transfer complete")
+                    .await
+                    .expect("write complete");
+            }
+            "QUIT" => {
+                write_ftp_reply(reader.get_mut(), 221, "goodbye")
+                    .await
+                    .expect("write quit");
+                break;
+            }
+            other => panic!("unexpected FTPS command: {other} {arg}"),
+        }
+    }
+}
+
+async fn write_ftp_reply<W>(stream: &mut W, code: u16, message: &str) -> std::io::Result<()>
+where
+    W: AsyncWrite + Unpin,
+{
+    stream
+        .write_all(format!("{code} {message}\r\n").as_bytes())
+        .await?;
+    stream.flush().await
+}
+
+async fn spawn_socks5_proxy(connect_count: Arc<AtomicUsize>) -> String {
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind socks5 proxy");
+    let addr = listener.local_addr().expect("socks5 addr");
+
+    tokio::spawn(async move {
+        loop {
+            let Ok((mut downstream, _)) = listener.accept().await else {
+                break;
+            };
+            let connect_count = Arc::clone(&connect_count);
+            tokio::spawn(async move {
+                let mut greeting = [0u8; 2];
+                downstream.read_exact(&mut greeting).await.expect("read greeting");
+                let mut methods = vec![0u8; greeting[1] as usize];
+                downstream.read_exact(&mut methods).await.expect("read methods");
+                downstream
+                    .write_all(&[0x05, 0x00])
+                    .await
+                    .expect("write method select");
+
+                let mut req = [0u8; 4];
+                downstream.read_exact(&mut req).await.expect("read request header");
+                let target = match req[3] {
+                    0x01 => {
+                        let mut ipv4 = [0u8; 4];
+                        downstream.read_exact(&mut ipv4).await.expect("read ipv4");
+                        let mut port = [0u8; 2];
+                        downstream.read_exact(&mut port).await.expect("read port");
+                        format!(
+                            "{}.{}.{}.{}:{}",
+                            ipv4[0], ipv4[1], ipv4[2], ipv4[3], u16::from_be_bytes(port)
+                        )
+                    }
+                    0x03 => {
+                        let mut len = [0u8; 1];
+                        downstream.read_exact(&mut len).await.expect("read host len");
+                        let mut host = vec![0u8; len[0] as usize];
+                        downstream.read_exact(&mut host).await.expect("read host");
+                        let mut port = [0u8; 2];
+                        downstream.read_exact(&mut port).await.expect("read port");
+                        format!(
+                            "{}:{}",
+                            String::from_utf8(host).expect("utf8 host"),
+                            u16::from_be_bytes(port)
+                        )
+                    }
+                    other => panic!("unsupported socks atyp: {other}"),
+                };
+
+                connect_count.fetch_add(1, Ordering::SeqCst);
+                let mut upstream = TcpStream::connect(target).await.expect("connect upstream");
+                downstream
+                    .write_all(&[0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0])
+                    .await
+                    .expect("write connect reply");
+                if let Err(error) = tokio::io::copy_bidirectional(&mut downstream, &mut upstream).await {
+                    assert!(is_disconnect(&error), "relay socks5: {error}");
+                }
+            });
+        }
+    });
+
+    format!("socks5://{}", addr)
 }
 
 struct MtlsFixture {
@@ -981,4 +1494,123 @@ async fn single_download_continue_resumes_from_existing_file_length() {
         String::from_utf8_lossy(&output.stderr)
     );
     assert_eq!(fs::read(&out).expect("read resumed file"), b"12345678");
+}
+
+#[tokio::test]
+async fn single_download_supports_plain_ftp_urls() {
+    let fixture = spawn_ftp_server("cli-user", "cli-pass", "/pub/file.bin", b"hello-from-ftp").await;
+    let tmp = tempdir().expect("tempdir");
+    let download_dir = tmp.path().to_path_buf();
+    let url = format!(
+        "ftp://cli-user:cli-pass@127.0.0.1:{}/pub/file.bin",
+        fixture.port
+    );
+
+    let output = tokio::task::spawn_blocking(move || {
+        Command::new(cargo_bin("raria"))
+            .arg("download")
+            .arg(url)
+            .arg("-d")
+            .arg(&download_dir)
+            .output()
+            .expect("run raria")
+    })
+    .await
+    .expect("join blocking download");
+
+    assert!(
+        output.status.success(),
+        "stdout:\n{}\n\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        fs::read(tmp.path().join("file.bin")).expect("read ftp download"),
+        b"hello-from-ftp"
+    );
+}
+
+#[tokio::test]
+async fn single_download_supports_plain_ftp_urls_through_socks5_proxy() {
+    let fixture = spawn_ftp_server("proxy-user", "proxy-pass", "/pub/proxy.bin", b"ftp-via-proxy").await;
+    let connect_count = Arc::new(AtomicUsize::new(0));
+    let proxy = spawn_socks5_proxy(Arc::clone(&connect_count)).await;
+    let tmp = tempdir().expect("tempdir");
+    let download_dir = tmp.path().to_path_buf();
+    let url = format!(
+        "ftp://proxy-user:proxy-pass@127.0.0.1:{}/pub/proxy.bin",
+        fixture.port
+    );
+
+    let output = tokio::task::spawn_blocking(move || {
+        Command::new(cargo_bin("raria"))
+            .arg("download")
+            .arg(url)
+            .arg("-d")
+            .arg(&download_dir)
+            .arg("--all-proxy")
+            .arg(&proxy)
+            .output()
+            .expect("run raria")
+    })
+    .await
+    .expect("join blocking proxied download");
+
+    assert!(
+        output.status.success(),
+        "stdout:\n{}\n\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        fs::read(tmp.path().join("proxy.bin")).expect("read proxied ftp download"),
+        b"ftp-via-proxy"
+    );
+    assert!(
+        connect_count.load(Ordering::SeqCst) >= 2,
+        "expected proxied FTP control/data traffic"
+    );
+}
+
+#[tokio::test]
+async fn single_download_supports_explicit_ftps_with_custom_ca() {
+    let fixture = spawn_explicit_ftps_server(
+        "ftps-user",
+        "ftps-pass",
+        "/secure/file.bin",
+        b"hello-ftps-world",
+    )
+    .await;
+    let tmp = tempdir().expect("tempdir");
+    let download_dir = tmp.path().to_path_buf();
+    let url = format!(
+        "ftps://ftps-user:ftps-pass@127.0.0.1:{}/secure/file.bin",
+        fixture.port
+    );
+    let ca_path = fixture.ca_path.clone();
+
+    let output = tokio::task::spawn_blocking(move || {
+        Command::new(cargo_bin("raria"))
+            .arg("download")
+            .arg(url)
+            .arg("-d")
+            .arg(&download_dir)
+            .arg("--ca-certificate")
+            .arg(&ca_path)
+            .output()
+            .expect("run raria")
+    })
+    .await
+    .expect("join blocking ftps download");
+
+    assert!(
+        output.status.success(),
+        "stdout:\n{}\n\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        fs::read(tmp.path().join("file.bin")).expect("read ftps download"),
+        b"hello-ftps-world"
+    );
 }

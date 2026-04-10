@@ -266,6 +266,8 @@ async fn run_job_download(
     let ftp_cfg = raria_ftp::backend::FtpBackendConfig {
         all_proxy: engine.config.all_proxy.clone(),
         no_proxy: engine.config.no_proxy.clone(),
+        check_certificate: engine.config.check_certificate,
+        ca_certificate: engine.config.ca_certificate.clone(),
     };
     let sftp_cfg = raria_sftp::backend::SftpBackendConfig {
         strict_host_key_check: engine.config.sftp_strict_host_key_check,

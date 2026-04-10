@@ -104,6 +104,8 @@ pub(crate) async fn run_download(options: SingleDownloadOptions) -> Result<()> {
     let ftp_cfg = raria_ftp::backend::FtpBackendConfig {
         all_proxy: config.all_proxy.clone(),
         no_proxy: config.no_proxy.clone(),
+        check_certificate: config.check_certificate,
+        ca_certificate: config.ca_certificate.clone(),
     };
     let sftp_cfg = raria_sftp::backend::SftpBackendConfig {
         strict_host_key_check: config.sftp_strict_host_key_check,

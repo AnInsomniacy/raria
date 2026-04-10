@@ -243,4 +243,32 @@ mod tests {
 
         cancel.cancel();
     }
+
+    #[tokio::test]
+    async fn pause_and_unpause_bt_job_round_trip() {
+        let (engine, url, cancel) = spawn_server().await;
+
+        let add_resp = rpc_call(
+            &url,
+            "aria2.addUri",
+            serde_json::json!([["magnet:?xt=urn:btih:abc123"]]),
+        )
+        .await;
+        let gid_str = add_resp["result"].as_str().unwrap().to_string();
+        let gid = raria_core::job::Gid::from_raw(u64::from_str_radix(&gid_str, 16).unwrap());
+
+        let pause_resp = rpc_call(&url, "aria2.pause", serde_json::json!([gid_str.clone()])).await;
+        assert_eq!(pause_resp["result"], gid_str);
+        let paused = engine.registry.get(gid).unwrap();
+        assert_eq!(paused.kind, JobKind::Bt);
+        assert_eq!(paused.status, raria_core::job::Status::Paused);
+
+        let unpause_resp = rpc_call(&url, "aria2.unpause", serde_json::json!([gid_str.clone()])).await;
+        assert_eq!(unpause_resp["result"], gid_str);
+        let resumed = engine.registry.get(gid).unwrap();
+        assert_eq!(resumed.kind, JobKind::Bt);
+        assert_eq!(resumed.status, raria_core::job::Status::Waiting);
+
+        cancel.cancel();
+    }
 }
