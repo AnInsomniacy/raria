@@ -24,14 +24,14 @@ fn extract_filename(value: &str) -> Option<String> {
     let idx = lower.find("filename=")?;
     let after = &value[idx + "filename=".len()..];
 
-    if after.starts_with('"') {
+    if let Some(stripped) = after.strip_prefix('"') {
         // Quoted string: filename="some file.zip"
-        let end = after[1..].find('"')?;
-        Some(after[1..1 + end].to_string())
+        let end = stripped.find('"')?;
+        Some(stripped[..end].to_string())
     } else {
         // Unquoted token: filename=file.zip
         let end = after
-            .find(|c: char| c == ';' || c == ' ' || c == '\t')
+            .find([';', ' ', '\t'])
             .unwrap_or(after.len());
         let name = after[..end].trim();
         if name.is_empty() {
@@ -56,7 +56,7 @@ fn extract_filename_star(value: &str) -> Option<String> {
     }
 
     let encoded = parts[2]
-        .split(|c: char| c == ';' || c == ' ' || c == '\t')
+        .split([';', ' ', '\t'])
         .next()
         .unwrap_or("");
 

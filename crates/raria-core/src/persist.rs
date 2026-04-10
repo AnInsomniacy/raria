@@ -295,6 +295,98 @@ mod tests {
     }
 
     #[test]
+    fn get_job_restores_legacy_row_missing_new_fields() {
+        let (store, _dir) = temp_store();
+        let legacy_json = serde_json::json!({
+            "gid": 7,
+            "kind": "bt",
+            "status": "waiting",
+            "uris": ["magnet:?xt=urn:btih:abc123"],
+            "out_path": "/tmp/bt-download",
+            "total_size": null,
+            "downloaded": 0,
+            "upload_speed": 0,
+            "download_speed": 0,
+            "created_at": "2026-04-10T00:00:00Z",
+            "error_msg": null,
+            "options": {
+                "max_connections": 16,
+                "max_download_limit": 0,
+                "max_upload_limit": 0,
+                "dir": null,
+                "out": null,
+                "headers": [],
+                "http_user": null,
+                "http_passwd": null,
+                "checksum": null
+            }
+        })
+        .to_string();
+
+        let write_txn = store.db.begin_write().unwrap();
+        {
+            let mut table = write_txn.open_table(JOBS_TABLE).unwrap();
+            table.insert(7, legacy_json.as_str()).unwrap();
+        }
+        write_txn.commit().unwrap();
+
+        let recovered = store
+            .get_job(Gid::from_raw(7))
+            .unwrap()
+            .expect("legacy job should deserialize");
+
+        assert_eq!(recovered.gid, Gid::from_raw(7));
+        assert_eq!(recovered.connections, 0);
+        assert_eq!(recovered.options.bt_selected_files, None);
+        assert_eq!(recovered.status, crate::job::Status::Waiting);
+        assert!(recovered.bt_files.is_none());
+    }
+
+    #[test]
+    fn list_jobs_restores_legacy_rows_missing_new_fields() {
+        let (store, _dir) = temp_store();
+        let legacy_json = serde_json::json!({
+            "gid": 9,
+            "kind": "range",
+            "status": "active",
+            "uris": ["https://example.com/file.zip"],
+            "out_path": "/tmp/file.zip",
+            "total_size": 1024,
+            "downloaded": 256,
+            "upload_speed": 0,
+            "download_speed": 128,
+            "created_at": "2026-04-10T00:00:00Z",
+            "error_msg": null,
+            "options": {
+                "max_connections": 8,
+                "max_download_limit": 0,
+                "max_upload_limit": 0,
+                "dir": null,
+                "out": "file.zip",
+                "headers": [],
+                "http_user": null,
+                "http_passwd": null,
+                "checksum": null
+            }
+        })
+        .to_string();
+
+        let write_txn = store.db.begin_write().unwrap();
+        {
+            let mut table = write_txn.open_table(JOBS_TABLE).unwrap();
+            table.insert(9, legacy_json.as_str()).unwrap();
+        }
+        write_txn.commit().unwrap();
+
+        let jobs = store.list_jobs().unwrap();
+        assert_eq!(jobs.len(), 1);
+        assert_eq!(jobs[0].gid, Gid::from_raw(9));
+        assert_eq!(jobs[0].connections, 0);
+        assert_eq!(jobs[0].options.bt_selected_files, None);
+        assert_eq!(jobs[0].downloaded, 256);
+    }
+
+    #[test]
     fn put_get_segment_roundtrips() {
         let (store, _dir) = temp_store();
         let gid = Gid::from_raw(1);
@@ -370,9 +462,11 @@ mod tests {
     fn put_get_job_options_roundtrips() {
         let (store, _dir) = temp_store();
         let gid = Gid::from_raw(1);
-        let mut opts = JobOptions::default();
-        opts.max_connections = 8;
-        opts.out = Some("custom.zip".into());
+        let opts = JobOptions {
+            max_connections: 8,
+            out: Some("custom.zip".into()),
+            ..JobOptions::default()
+        };
 
         store.put_job_options(gid, &opts).unwrap();
         let recovered = store.get_job_options(gid).unwrap().expect("opts exist");

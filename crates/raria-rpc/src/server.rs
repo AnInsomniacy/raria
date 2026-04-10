@@ -17,7 +17,7 @@ use anyhow::{Context, Result};
 use axum::body::Bytes;
 use axum::extract::State;
 use axum::extract::ws::{Message as WsMessage, WebSocket, WebSocketUpgrade};
-use axum::http::{HeaderValue, StatusCode};
+use axum::http::{HeaderMap, HeaderValue, Method, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::post;
 use axum::Router;
@@ -27,6 +27,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 use tracing::info;
+use tower_http::cors::{Any, CorsLayer};
 
 /// Configuration for the RPC server.
 #[derive(Debug, Clone)]
@@ -61,7 +62,49 @@ struct RpcAppState {
     module: Arc<jsonrpsee::RpcModule<()>>,
     notify_tx: tokio::sync::broadcast::Sender<String>,
     max_request_size: usize,
+    transport_policy: RpcTransportPolicy,
+}
+
+#[derive(Clone, Debug)]
+struct RpcTransportPolicy {
     rpc_secret: Option<String>,
+    rpc_allow_origin_all: bool,
+}
+
+impl RpcTransportPolicy {
+    fn new(rpc_secret: Option<String>, rpc_allow_origin_all: bool) -> Self {
+        Self {
+            rpc_secret,
+            rpc_allow_origin_all,
+        }
+    }
+
+    fn allows_ws_upgrade(&self, headers: &HeaderMap) -> bool {
+        !headers.contains_key(axum::http::header::ORIGIN) || self.rpc_allow_origin_all
+    }
+
+    fn initial_ws_authenticated(&self) -> bool {
+        self.rpc_secret.is_none()
+    }
+
+    fn observe_ws_request(&self, request_body: &str, already_authenticated: bool) -> bool {
+        already_authenticated
+            || request_contains_valid_token(request_body, self.rpc_secret.as_deref())
+    }
+
+    fn token_valid(&self, token_value: Option<&str>) -> bool {
+        let Some(secret) = self.rpc_secret.as_deref() else {
+            return true;
+        };
+        token_value
+            .and_then(|token| token.strip_prefix("token:"))
+            .map(|token| token == secret)
+            .unwrap_or(false)
+    }
+
+    fn first_param_token_valid(&self, params: &[serde_json::Value]) -> bool {
+        self.token_valid(params.first().and_then(|value| value.as_str()))
+    }
 }
 
 /// Start the JSON-RPC server and run until the cancel token is triggered.
@@ -108,12 +151,22 @@ pub async fn start_rpc_server(
         module: Arc::clone(&module),
         notify_tx: notify_tx.clone(),
         max_request_size: 10 * 1024 * 1024,
-        rpc_secret,
+        transport_policy: RpcTransportPolicy::new(
+            rpc_secret,
+            engine.config.rpc_allow_origin_all,
+        ),
     };
-    let app = Router::new()
+    let mut app = Router::new()
         .route("/", post(handle_http_rpc).get(handle_ws_rpc))
         .route("/jsonrpc", post(handle_http_rpc).get(handle_ws_rpc))
         .with_state(app_state);
+    if engine.config.rpc_allow_origin_all {
+        let cors = CorsLayer::new()
+            .allow_origin(Any)
+            .allow_methods([Method::GET, Method::POST, Method::OPTIONS])
+            .allow_headers(Any);
+        app = app.layer(cors);
+    }
 
     // Spawn WebSocket event push loop.
     let ws_cancel = cancel.clone();
@@ -170,8 +223,12 @@ async fn handle_http_rpc(
 
 async fn handle_ws_rpc(
     ws: WebSocketUpgrade,
+    headers: HeaderMap,
     State(state): State<RpcAppState>,
 ) -> Response {
+    if !state.transport_policy.allows_ws_upgrade(&headers) {
+        return StatusCode::FORBIDDEN.into_response();
+    }
     ws.on_upgrade(move |socket| handle_ws_rpc_client(socket, state))
 }
 
@@ -199,7 +256,7 @@ fn internal_dispatch_error_frame(error: &anyhow::Error) -> String {
 async fn handle_ws_rpc_client(socket: WebSocket, state: RpcAppState) {
     let (mut write, mut read) = socket.split();
     let mut notify_rx = state.notify_tx.subscribe();
-    let mut authenticated = state.rpc_secret.is_none();
+    let mut authenticated = state.transport_policy.initial_ws_authenticated();
 
     loop {
         tokio::select! {
@@ -210,9 +267,9 @@ async fn handle_ws_rpc_client(socket: WebSocket, state: RpcAppState) {
 
                 match incoming {
                     Ok(WsMessage::Text(text)) => {
-                        if !authenticated {
-                            authenticated = request_contains_valid_token(text.as_ref(), state.rpc_secret.as_deref());
-                        }
+                        authenticated = state
+                            .transport_policy
+                            .observe_ws_request(text.as_ref(), authenticated);
 
                         match dispatch_rpc_request(&state, text.as_ref()).await {
                             Ok(response) => {
@@ -304,7 +361,7 @@ fn wrap_module_with_auth(
     use jsonrpsee::types::ErrorObjectOwned;
 
     let inner = Arc::new(inner);
-    let secret_str = secret.to_string();
+    let policy = RpcTransportPolicy::new(Some(secret.to_string()), false);
     let mut outer: jsonrpsee::RpcModule<()> = jsonrpsee::RpcModule::new(());
 
     let method_names: Vec<String> = inner.method_names().map(|s| s.to_string()).collect();
@@ -312,14 +369,14 @@ fn wrap_module_with_auth(
 
     for name in method_names {
         let inner_clone = Arc::clone(&inner);
-        let secret_clone = secret_str.clone();
+        let policy = policy.clone();
         let method_name = name.clone();
         // jsonrpsee requires &'static str for method names.
         let static_name: &'static str = Box::leak(name.into_boxed_str());
 
         outer.register_async_method(static_name, move |params, _ctx, _ext| {
             let inner = Arc::clone(&inner_clone);
-            let secret = secret_clone.clone();
+            let policy = policy.clone();
             let method = method_name.clone();
 
             async move {
@@ -337,13 +394,7 @@ fn wrap_module_with_auth(
                 };
 
                 // First param must be "token:<secret>".
-                let token_valid = param_array.first()
-                    .and_then(|v| v.as_str())
-                    .and_then(|s| s.strip_prefix("token:"))
-                    .map(|t| t == secret)
-                    .unwrap_or(false);
-
-                if !token_valid {
+                if !policy.first_param_token_valid(&param_array) {
                     return Err(ErrorObjectOwned::owned(
                         -32600_i32,
                         "Unauthorized: invalid or missing token".to_string(),
@@ -593,6 +644,36 @@ fn event_gid(event: &raria_core::progress::DownloadEvent) -> raria_core::job::Gi
 mod tests {
     use super::*;
     use raria_core::config::GlobalConfig;
+
+    #[test]
+    fn transport_policy_rejects_origin_by_default() {
+        let policy = RpcTransportPolicy::new(None, false);
+        let mut headers = HeaderMap::new();
+        headers.insert(axum::http::header::ORIGIN, HeaderValue::from_static("https://ui.example"));
+        assert!(!policy.allows_ws_upgrade(&headers));
+    }
+
+    #[test]
+    fn transport_policy_allows_origin_when_opted_in() {
+        let policy = RpcTransportPolicy::new(None, true);
+        let mut headers = HeaderMap::new();
+        headers.insert(axum::http::header::ORIGIN, HeaderValue::from_static("https://ui.example"));
+        assert!(policy.allows_ws_upgrade(&headers));
+    }
+
+    #[test]
+    fn transport_policy_marks_ws_authenticated_after_valid_token_request() {
+        let policy = RpcTransportPolicy::new(Some("secret".into()), false);
+        let request = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "aria2.getVersion",
+            "params": ["token:secret"],
+        }).to_string();
+
+        assert!(!policy.initial_ws_authenticated());
+        assert!(policy.observe_ws_request(&request, false));
+    }
 
     #[tokio::test]
     async fn server_starts_and_stops() {

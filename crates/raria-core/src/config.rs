@@ -50,6 +50,8 @@ pub struct GlobalConfig {
     /// RPC secret token (aria2: --rpc-secret). When set, all RPC
     /// requests must include "token:<secret>" as the first parameter.
     pub rpc_secret: Option<String>,
+    /// Allow browsers from any origin to call the HTTP JSON-RPC endpoint.
+    pub rpc_allow_origin_all: bool,
     /// File allocation strategy (aria2: --file-allocation).
     pub file_allocation: FileAllocation,
     /// Max connections per server (aria2: --max-connection-per-server / -x).
@@ -111,6 +113,7 @@ impl Default for GlobalConfig {
             http_passwd: None,
             cookie_file: None,
             rpc_secret: None,
+            rpc_allow_origin_all: false,
             file_allocation: FileAllocation::None,
             max_connection_per_server: 16,
             split: 5,
@@ -135,6 +138,7 @@ impl Default for GlobalConfig {
 
 /// Per-job options that override global defaults.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct JobOptions {
     /// Maximum number of connections per server for this job.
     pub max_connections: u32,
@@ -154,6 +158,8 @@ pub struct JobOptions {
     pub http_passwd: Option<String>,
     /// Checksum for file verification (e.g., "sha-256=abc123").
     pub checksum: Option<String>,
+    /// Zero-based BT file indices selected for download.
+    pub bt_selected_files: Option<Vec<usize>>,
 }
 
 impl Default for JobOptions {
@@ -168,6 +174,7 @@ impl Default for JobOptions {
             http_user: None,
             http_passwd: None,
             checksum: None,
+            bt_selected_files: None,
         }
     }
 }
@@ -183,6 +190,7 @@ mod tests {
         assert_eq!(cfg.max_overall_download_limit, 0);
         assert_eq!(cfg.rpc_listen_port, 6800);
         assert!(!cfg.enable_rpc);
+        assert!(!cfg.rpc_allow_origin_all);
     }
 
     #[test]

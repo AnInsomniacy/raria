@@ -192,6 +192,10 @@ enum Commands {
         #[arg(long)]
         rpc_secret: Option<String>,
 
+        /// Allow browser clients from any origin to access HTTP JSON-RPC.
+        #[arg(long, default_value_t = false)]
+        rpc_allow_origin_all: bool,
+
         /// Path to Netscape cookie file
         #[arg(long)]
         load_cookies: Option<PathBuf>,
@@ -301,34 +305,33 @@ async fn main() -> Result<()> {
             sftp_private_key,
             sftp_private_key_passphrase,
         } => {
-            single::run_download(
-                &url,
-                &dir,
-                out,
+            single::run_download(single::SingleDownloadOptions {
+                url,
+                dir,
+                filename: out,
                 connections,
-                cli.max_concurrent,
+                max_concurrent: cli.max_concurrent,
                 max_download_limit,
-                checksum,
+                checksum_spec: checksum,
                 all_proxy,
-                check_certificate.unwrap_or(true),
+                check_certificate: check_certificate.unwrap_or(true),
                 user_agent,
                 http_user,
                 http_passwd,
                 max_redirect,
                 netrc_path,
                 no_netrc,
-                header,
-                timeout,
-                connect_timeout,
+                header_args: header,
+                timeout_secs: timeout,
+                connect_timeout_secs: connect_timeout,
                 conditional_get,
                 allow_overwrite,
                 sftp_strict_host_key_check,
                 sftp_known_hosts,
                 sftp_private_key,
                 sftp_private_key_passphrase,
-                cli.quiet,
-            )
-            .await?;
+                quiet: cli.quiet,
+            }).await?;
         }
         Commands::Daemon {
             dir,
@@ -346,6 +349,7 @@ async fn main() -> Result<()> {
             http_passwd,
             input_file,
             rpc_secret,
+            rpc_allow_origin_all,
             load_cookies,
             file_allocation,
             max_redirect,
@@ -397,6 +401,7 @@ async fn main() -> Result<()> {
             if rpc_secret.is_some() {
                 config.rpc_secret = rpc_secret;
             }
+            config.rpc_allow_origin_all = rpc_allow_origin_all;
             if load_cookies.is_some() {
                 config.cookie_file = load_cookies;
             }

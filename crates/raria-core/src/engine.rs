@@ -17,6 +17,7 @@ use crate::cancel::CancelRegistry;
 use crate::config::GlobalConfig;
 use crate::config::JobOptions;
 use crate::job::{Gid, Job, Status};
+use crate::limiter::SharedRateLimiter;
 use crate::persist::Store;
 use crate::progress::{DownloadEvent, EventBus};
 use crate::registry::JobRegistry;
@@ -54,6 +55,7 @@ pub struct Engine {
     pub cancel_registry: CancelRegistry,
     pub event_bus: EventBus,
     pub config: GlobalConfig,
+    pub global_rate_limiter: Arc<SharedRateLimiter>,
     /// Unique session identifier (random hex, persisted for lifetime of process).
     pub session_id: String,
     store: Option<Arc<Store>>,
@@ -65,12 +67,14 @@ impl Engine {
     /// Create a new Engine with the given configuration (no persistence).
     pub fn new(config: GlobalConfig) -> Self {
         let max_concurrent = config.max_concurrent_downloads;
+        let global_rate_limiter = Arc::new(SharedRateLimiter::new(config.max_overall_download_limit));
         Self {
             registry: Arc::new(JobRegistry::new()),
             scheduler: Scheduler::new(max_concurrent),
             cancel_registry: CancelRegistry::new(),
             event_bus: EventBus::new(256),
             config,
+            global_rate_limiter,
             session_id: format!("{:016x}", rand::random::<u64>()),
             store: None,
             shutdown: CancellationToken::new(),
@@ -81,12 +85,14 @@ impl Engine {
     /// Create a new Engine with persistence enabled.
     pub fn with_store(config: GlobalConfig, store: Arc<Store>) -> Self {
         let max_concurrent = config.max_concurrent_downloads;
+        let global_rate_limiter = Arc::new(SharedRateLimiter::new(config.max_overall_download_limit));
         Self {
             registry: Arc::new(JobRegistry::new()),
             scheduler: Scheduler::new(max_concurrent),
             cancel_registry: CancelRegistry::new(),
             event_bus: EventBus::new(256),
             config,
+            global_rate_limiter,
             session_id: format!("{:016x}", rand::random::<u64>()),
             store: Some(store),
             shutdown: CancellationToken::new(),

@@ -5,11 +5,10 @@ use anyhow::{Context, Result};
 use raria_core::config::GlobalConfig;
 use raria_core::engine::{AddUriSpec, Engine};
 use raria_core::job::Gid;
-use raria_core::limiter::RateLimiter;
 use raria_core::persist::Store;
 use raria_core::segment::{init_segment_states, plan_segments, SegmentStatus};
 use raria_range::backend::{ByteSourceBackend, Credentials, ProbeContext};
-use raria_range::executor::{total_downloaded, ExecutorConfig, SegmentExecutor};
+use raria_range::executor::{apply_results, total_downloaded, ExecutorConfig, SegmentExecutor};
 use raria_rpc::server::{start_rpc_server, RpcServerConfig};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -25,7 +24,6 @@ pub(crate) async fn run_daemon_with_config(
 ) -> Result<()> {
     let default_headers = parse_header_args(&header_args)?;
     let rpc_port = config.rpc_listen_port;
-    let max_download_limit = config.max_overall_download_limit;
 
     std::fs::create_dir_all(&config.dir).context("failed to create download directory")?;
 
@@ -72,11 +70,7 @@ pub(crate) async fn run_daemon_with_config(
         println!("raria daemon running — RPC at http://{}/jsonrpc", rpc_addrs.rpc);
     }
 
-    let rate_limiter = if max_download_limit > 0 {
-        Some(Arc::new(RateLimiter::new(max_download_limit)))
-    } else {
-        None
-    };
+    let rate_limiter = Some(Arc::clone(&engine.global_rate_limiter));
 
     let work_notify = engine.work_notify();
 
@@ -139,6 +133,10 @@ pub(crate) async fn run_daemon_with_config(
     }
 
     info!("daemon shutting down...");
+    for job in engine.registry.by_status(raria_core::job::Status::Active) {
+        engine.cancel_registry.cancel(job.gid);
+    }
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
     match engine.save_session() {
         Ok(()) => info!("session saved successfully"),
         Err(e) => warn!(error = %e, "failed to save session on shutdown"),
@@ -154,7 +152,7 @@ async fn run_job_download(
     engine: Arc<Engine>,
     gid: Gid,
     cancel: CancellationToken,
-    rate_limiter: Option<Arc<RateLimiter>>,
+    rate_limiter: Option<Arc<raria_core::limiter::SharedRateLimiter>>,
     default_headers: Vec<(String, String)>,
 ) -> Result<()> {
     let job = engine
@@ -203,7 +201,6 @@ async fn run_job_download(
         headers: request_headers.clone(),
         auth: request_auth.clone(),
         timeout: std::time::Duration::from_secs(engine.config.timeout.unwrap_or(30)),
-        ..ProbeContext::default()
     };
 
     let probe = backend
@@ -239,6 +236,7 @@ async fn run_job_download(
 
     engine.registry.update(gid, |job| {
         job.total_size = Some(file_size);
+        job.connections = effective_connections;
     });
 
     let ranges = if file_size > 0 {
@@ -318,6 +316,7 @@ async fn run_job_download(
         .await?;
 
     let downloaded_total = total_downloaded(&results);
+    apply_results(&mut segments, &results);
     let all_done = results.iter().all(|r| r.status == SegmentStatus::Done);
     let failed: Vec<_> = results
         .iter()
@@ -327,6 +326,7 @@ async fn run_job_download(
     if all_done {
         engine.registry.update(gid, |job| {
             job.downloaded = downloaded_total;
+            job.connections = 0;
         });
         engine.complete_job(gid)?;
         if let Some(store) = engine.store() {
@@ -336,6 +336,9 @@ async fn run_job_download(
         }
         info!(%gid, bytes = downloaded_total, "daemon: download complete");
     } else if !failed.is_empty() {
+        engine.registry.update(gid, |job| {
+            job.connections = 0;
+        });
         let err_msg = failed
             .iter()
             .map(|r| {
@@ -351,7 +354,15 @@ async fn run_job_download(
     } else {
         engine.registry.update(gid, |job| {
             job.downloaded = downloaded_total;
+            job.connections = 0;
         });
+        if let Some(store) = engine.store() {
+            for (seg_id, seg) in segments.iter().enumerate() {
+                if let Err(e) = store.put_segment(gid, seg_id as u32, seg) {
+                    tracing::warn!(%gid, seg_id, error = %e, "failed to persist interrupted segment state");
+                }
+            }
+        }
         info!(%gid, downloaded = downloaded_total, "daemon: download interrupted");
     }
 

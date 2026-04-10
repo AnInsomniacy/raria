@@ -23,7 +23,7 @@ mod tests {
         let gid = Gid::from_raw(42);
 
         // Simulate: 4 segments, 2 completed, 2 in progress
-        let segments = vec![
+        let segments = [
             SegmentState {
                 start: 0,
                 end: 1_000_000,
@@ -169,7 +169,7 @@ mod tests {
     /// Filtering done segments for resume: only non-done segments need re-downloading.
     #[test]
     fn filter_segments_for_resume() {
-        let segments = vec![
+        let segments = [
             SegmentState {
                 start: 0,
                 end: 100,
@@ -217,7 +217,7 @@ mod tests {
         store.put_job(&job).unwrap();
 
         // Save segments
-        let segments = vec![
+        let segments = [
             SegmentState {
                 start: 0,
                 end: 2_000_000,

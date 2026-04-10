@@ -73,8 +73,10 @@ user-agent=raria-config/2.0
     /// cookie_file serializes/deserializes correctly.
     #[test]
     fn cookie_file_serde_roundtrip() {
-        let mut config = GlobalConfig::default();
-        config.cookie_file = Some(PathBuf::from("/tmp/cookies.txt"));
+        let config = GlobalConfig {
+            cookie_file: Some(PathBuf::from("/tmp/cookies.txt")),
+            ..GlobalConfig::default()
+        };
         let json = serde_json::to_string(&config).unwrap();
         let recovered: GlobalConfig = serde_json::from_str(&json).unwrap();
         assert_eq!(recovered.cookie_file, Some(PathBuf::from("/tmp/cookies.txt")));
@@ -83,8 +85,10 @@ user-agent=raria-config/2.0
     /// Empty load-cookies value clears the field.
     #[test]
     fn conf_file_empty_load_cookies_clears() {
-        let mut config = GlobalConfig::default();
-        config.cookie_file = Some(PathBuf::from("/old/cookies.txt"));
+        let mut config = GlobalConfig {
+            cookie_file: Some(PathBuf::from("/old/cookies.txt")),
+            ..GlobalConfig::default()
+        };
         let content = "load-cookies=";
         let map = parse_config_file(content);
         apply_config_map(&mut config, &map);

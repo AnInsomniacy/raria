@@ -5,58 +5,60 @@ use chrono::{DateTime, Utc};
 use raria_core::checksum;
 use raria_core::config::GlobalConfig;
 use raria_core::engine::{AddUriSpec, Engine};
-use raria_core::limiter::RateLimiter;
+use raria_core::limiter::SharedRateLimiter;
 use raria_core::segment::{init_segment_states, plan_segments, SegmentStatus};
 use raria_range::backend::{ByteSourceBackend, Credentials, ProbeContext};
 use raria_range::executor::{apply_results, total_downloaded, ExecutorConfig, SegmentExecutor};
-use std::path::Path;
+use std::path::PathBuf;
 use std::sync::Arc;
 use tracing::{error, info};
 
-pub(crate) async fn run_download(
-    url: &str,
-    dir: &Path,
-    filename: Option<String>,
-    connections: u32,
-    max_concurrent: u32,
-    max_download_limit: u64,
-    checksum_spec: Option<String>,
-    all_proxy: Option<String>,
-    check_certificate: bool,
-    user_agent: Option<String>,
-    http_user: Option<String>,
-    http_passwd: Option<String>,
-    max_redirect: Option<usize>,
-    netrc_path: Option<std::path::PathBuf>,
-    no_netrc: bool,
-    header_args: Vec<String>,
-    timeout_secs: Option<u64>,
-    connect_timeout_secs: Option<u64>,
-    conditional_get: bool,
-    allow_overwrite: bool,
-    sftp_strict_host_key_check: bool,
-    sftp_known_hosts: Option<std::path::PathBuf>,
-    sftp_private_key: Option<std::path::PathBuf>,
-    sftp_private_key_passphrase: Option<String>,
-    quiet: bool,
-) -> Result<()> {
-    let headers = parse_header_args(&header_args)?;
+pub(crate) struct SingleDownloadOptions {
+    pub url: String,
+    pub dir: PathBuf,
+    pub filename: Option<String>,
+    pub connections: u32,
+    pub max_concurrent: u32,
+    pub max_download_limit: u64,
+    pub checksum_spec: Option<String>,
+    pub all_proxy: Option<String>,
+    pub check_certificate: bool,
+    pub user_agent: Option<String>,
+    pub http_user: Option<String>,
+    pub http_passwd: Option<String>,
+    pub max_redirect: Option<usize>,
+    pub netrc_path: Option<PathBuf>,
+    pub no_netrc: bool,
+    pub header_args: Vec<String>,
+    pub timeout_secs: Option<u64>,
+    pub connect_timeout_secs: Option<u64>,
+    pub conditional_get: bool,
+    pub allow_overwrite: bool,
+    pub sftp_strict_host_key_check: bool,
+    pub sftp_known_hosts: Option<PathBuf>,
+    pub sftp_private_key: Option<PathBuf>,
+    pub sftp_private_key_passphrase: Option<String>,
+    pub quiet: bool,
+}
+
+pub(crate) async fn run_download(options: SingleDownloadOptions) -> Result<()> {
+    let headers = parse_header_args(&options.header_args)?;
     let config = GlobalConfig {
-        max_concurrent_downloads: max_concurrent,
-        all_proxy: all_proxy.clone(),
-        check_certificate,
-        user_agent: user_agent.clone(),
-        max_redirects: max_redirect,
-        netrc_path,
-        no_netrc,
-        timeout: timeout_secs,
-        connect_timeout: connect_timeout_secs,
-        conditional_get,
-        allow_overwrite,
-        sftp_strict_host_key_check,
-        sftp_known_hosts,
-        sftp_private_key,
-        sftp_private_key_passphrase,
+        max_concurrent_downloads: options.max_concurrent,
+        all_proxy: options.all_proxy.clone(),
+        check_certificate: options.check_certificate,
+        user_agent: options.user_agent.clone(),
+        max_redirects: options.max_redirect,
+        netrc_path: options.netrc_path.clone(),
+        no_netrc: options.no_netrc,
+        timeout: options.timeout_secs,
+        connect_timeout: options.connect_timeout_secs,
+        conditional_get: options.conditional_get,
+        allow_overwrite: options.allow_overwrite,
+        sftp_strict_host_key_check: options.sftp_strict_host_key_check,
+        sftp_known_hosts: options.sftp_known_hosts.clone(),
+        sftp_private_key: options.sftp_private_key.clone(),
+        sftp_private_key_passphrase: options.sftp_private_key_passphrase.clone(),
         ..Default::default()
     };
     let engine = Engine::new(config.clone());
@@ -81,20 +83,20 @@ pub(crate) async fn run_download(
         private_key_path: config.sftp_private_key.clone(),
         private_key_passphrase: config.sftp_private_key_passphrase.clone(),
     };
-    let backend = create_backend_with_config(url, Some(&http_cfg), Some(&sftp_cfg))?;
+    let backend = create_backend_with_config(&options.url, Some(&http_cfg), Some(&sftp_cfg))?;
     let probe_timeout = std::time::Duration::from_secs(config.timeout.unwrap_or(30));
-    let parsed_url: url::Url = url.parse().context("invalid URL")?;
-    let auth = http_user.map(|username| Credentials {
+    let parsed_url: url::Url = options.url.parse().context("invalid URL")?;
+    let auth = options.http_user.clone().map(|username| Credentials {
         username,
-        password: http_passwd.unwrap_or_default(),
+        password: options.http_passwd.clone().unwrap_or_default(),
     });
-    let fallback_filename = filename.clone().or_else(|| {
+    let fallback_filename = options.filename.clone().or_else(|| {
         parsed_url
             .path_segments()
             .and_then(|mut segments| segments.next_back().map(str::to_string))
             .filter(|segment| !segment.is_empty())
     });
-    let candidate_path = dir.join(
+    let candidate_path = options.dir.join(
         fallback_filename
             .clone()
             .unwrap_or_else(|| "download".to_string()),
@@ -125,7 +127,6 @@ pub(crate) async fn run_download(
                 headers: probe_headers,
                 auth: auth.clone(),
                 timeout: probe_timeout,
-                ..ProbeContext::default()
             },
         )
         .await
@@ -136,7 +137,7 @@ pub(crate) async fn run_download(
         return Ok(());
     }
 
-    let resolved_filename = filename.clone().or_else(|| probe.suggested_filename.clone()).or_else(|| {
+    let resolved_filename = options.filename.clone().or_else(|| probe.suggested_filename.clone()).or_else(|| {
         parsed_url
             .path_segments()
             .and_then(|mut segments| segments.next_back().map(str::to_string))
@@ -144,10 +145,10 @@ pub(crate) async fn run_download(
     });
 
     let handle = engine.add_uri(&AddUriSpec {
-        uris: vec![url.into()],
-        dir: dir.to_path_buf(),
+        uris: vec![options.url.clone()],
+        dir: options.dir.clone(),
         filename: resolved_filename,
-        connections,
+        connections: options.connections,
     })?;
 
     let gid = handle.gid;
@@ -157,11 +158,11 @@ pub(crate) async fn run_download(
         .get(gid)
         .context("job vanished from registry")?;
 
-    info!(%gid, url, out = %job.out_path.display(), "starting download");
+    info!(%gid, url = %options.url, out = %job.out_path.display(), "starting download");
 
     let file_size = probe.size.unwrap_or(0);
     let effective_connections = if probe.supports_range && file_size > 0 {
-        connections.min((file_size / 1024).max(1) as u32)
+        options.connections.min((file_size / 1024).max(1) as u32)
     } else {
         1
     };
@@ -194,6 +195,7 @@ pub(crate) async fn run_download(
     let downloaded = Arc::new(std::sync::atomic::AtomicU64::new(0));
     let downloaded_clone = Arc::clone(&downloaded);
     let total = file_size;
+    let quiet = options.quiet;
     let on_progress: Arc<dyn Fn(u32, u64) + Send + Sync> = Arc::new(move |_seg_id, bytes| {
         if quiet {
             return;
@@ -215,8 +217,8 @@ pub(crate) async fn run_download(
         }
     });
 
-    let rate_limiter = if max_download_limit > 0 {
-        Some(Arc::new(RateLimiter::new(max_download_limit)))
+    let rate_limiter = if options.max_download_limit > 0 {
+        Some(Arc::new(SharedRateLimiter::new(options.max_download_limit)))
     } else {
         None
     };
@@ -246,7 +248,7 @@ pub(crate) async fn run_download(
     apply_results(&mut segments, &results);
     let downloaded_total = total_downloaded(&results);
 
-    if !quiet {
+    if !options.quiet {
         eprintln!();
     }
 
@@ -262,12 +264,12 @@ pub(crate) async fn run_download(
             job.downloaded = downloaded_total;
         });
 
-        if let Some(ref spec) = checksum_spec {
+        if let Some(ref spec) = options.checksum_spec {
             info!("verifying checksum...");
             match checksum::verify_checksum(&job.out_path, spec).await {
                 Ok(()) => {
                     info!("checksum verified successfully");
-                    if !quiet {
+                    if !options.quiet {
                         println!("Checksum OK");
                     }
                 }
@@ -279,7 +281,7 @@ pub(crate) async fn run_download(
         }
 
         info!(%gid, bytes = downloaded_total, path = %job.out_path.display(), "download complete");
-        if !quiet {
+        if !options.quiet {
             println!(
                 "Download complete: {} ({})",
                 job.out_path.display(),
@@ -306,7 +308,7 @@ pub(crate) async fn run_download(
             job.downloaded = downloaded_total;
         });
         info!(%gid, downloaded = downloaded_total, "download interrupted — can be resumed");
-        if !quiet {
+        if !options.quiet {
             println!(
                 "Download interrupted: {} downloaded so far",
                 format_bytes(downloaded_total)

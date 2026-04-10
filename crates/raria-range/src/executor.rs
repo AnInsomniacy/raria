@@ -13,7 +13,7 @@
 use crate::backend::{ByteSourceBackend, Credentials, OpenContext};
 use anyhow::{Context, Result};
 use raria_core::file_alloc::{preallocate, FileAllocation};
-use raria_core::limiter::RateLimiter;
+use raria_core::limiter::SharedRateLimiter;
 use raria_core::segment::{SegmentState, SegmentStatus};
 use std::path::Path;
 use std::sync::Arc;
@@ -37,7 +37,7 @@ pub struct ExecutorConfig {
     pub retry_base_delay_ms: u64,
     /// Optional rate limiter for throttling download speed.
     /// Shared across all concurrent segment tasks.
-    pub rate_limiter: Option<Arc<RateLimiter>>,
+    pub rate_limiter: Option<Arc<SharedRateLimiter>>,
     /// Optional checkpoint callback. Called periodically with
     /// (segment_id, bytes_downloaded_this_segment) so the engine
     /// can persist segment-level progress to redb.
@@ -381,7 +381,7 @@ impl SegmentExecutor {
         request_auth: Option<&Credentials>,
         cancel: &CancellationToken,
         on_progress: &(dyn Fn(u32, u64) + Send + Sync),
-        rate_limiter: Option<&RateLimiter>,
+        rate_limiter: Option<&SharedRateLimiter>,
         on_checkpoint: Option<&(dyn Fn(u32, u64) + Send + Sync)>,
     ) -> Result<u64> {
         debug!(seg_id, offset, remaining, "starting segment attempt");

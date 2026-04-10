@@ -256,6 +256,35 @@ mod tests {
         cancel.cancel();
     }
 
+    #[tokio::test]
+    async fn get_option_round_trips_bt_select_file_as_aria2_string() {
+        use base64::Engine as Base64Engine;
+
+        let (_engine, url, cancel) = spawn_server().await;
+        let encoded = base64::engine::general_purpose::STANDARD.encode(
+            b"d8:announce35:http://tracker.example.com/announcee",
+        );
+
+        let add_resp = rpc_call(
+            &url,
+            "aria2.addTorrent",
+            serde_json::json!([
+                encoded,
+                [],
+                {
+                    "select-file": "1,3"
+                }
+            ]),
+        )
+        .await;
+        assert!(add_resp.get("error").is_none(), "addTorrent should succeed: {add_resp}");
+        let gid_str = add_resp["result"].as_str().unwrap();
+
+        let option = rpc_call(&url, "aria2.getOption", serde_json::json!([gid_str])).await;
+        assert_eq!(option["result"]["select-file"], "1,3");
+        cancel.cancel();
+    }
+
     // ── getGlobalOption includes proxy/TLS fields ────────────────────
 
     #[tokio::test]
@@ -296,6 +325,94 @@ mod tests {
 
         // Verify the scheduler was actually updated.
         assert_eq!(engine.scheduler.max_concurrent(), 10);
+        cancel.cancel();
+    }
+
+    #[tokio::test]
+    async fn change_global_option_updates_runtime_download_limit() {
+        let (engine, url, cancel) = spawn_server().await;
+        assert_eq!(engine.global_rate_limiter.limit_bps(), 0);
+
+        let resp = rpc_call(
+            &url,
+            "aria2.changeGlobalOption",
+            serde_json::json!([{"max-overall-download-limit": "2048"}]),
+        )
+        .await;
+        assert_eq!(resp["result"], "OK");
+        assert_eq!(engine.global_rate_limiter.limit_bps(), 2048);
+
+        let resp = rpc_call(
+            &url,
+            "aria2.changeGlobalOption",
+            serde_json::json!([{"max-overall-download-limit": "0"}]),
+        )
+        .await;
+        assert_eq!(resp["result"], "OK");
+        assert_eq!(engine.global_rate_limiter.limit_bps(), 0);
+
+        cancel.cancel();
+    }
+
+    #[tokio::test]
+    async fn get_global_option_reflects_runtime_download_limit_after_mutation() {
+        let (_engine, url, cancel) = spawn_server().await;
+
+        let resp = rpc_call(
+            &url,
+            "aria2.changeGlobalOption",
+            serde_json::json!([{"max-overall-download-limit": "4096"}]),
+        )
+        .await;
+        assert_eq!(resp["result"], "OK");
+
+        let global = rpc_call(
+            &url,
+            "aria2.getGlobalOption",
+            serde_json::json!([]),
+        )
+        .await;
+        assert_eq!(global["result"]["max-overall-download-limit"], "4096");
+
+        let resp = rpc_call(
+            &url,
+            "aria2.changeGlobalOption",
+            serde_json::json!([{"max-overall-download-limit": "0"}]),
+        )
+        .await;
+        assert_eq!(resp["result"], "OK");
+
+        let global = rpc_call(
+            &url,
+            "aria2.getGlobalOption",
+            serde_json::json!([]),
+        )
+        .await;
+        assert_eq!(global["result"]["max-overall-download-limit"], "0");
+
+        cancel.cancel();
+    }
+
+    #[tokio::test]
+    async fn get_global_option_reflects_runtime_max_concurrent_after_mutation() {
+        let (_engine, url, cancel) = spawn_server().await;
+
+        let resp = rpc_call(
+            &url,
+            "aria2.changeGlobalOption",
+            serde_json::json!([{"max-concurrent-downloads": "9"}]),
+        )
+        .await;
+        assert_eq!(resp["result"], "OK");
+
+        let global = rpc_call(
+            &url,
+            "aria2.getGlobalOption",
+            serde_json::json!([]),
+        )
+        .await;
+        assert_eq!(global["result"]["max-concurrent-downloads"], "9");
+
         cancel.cancel();
     }
 

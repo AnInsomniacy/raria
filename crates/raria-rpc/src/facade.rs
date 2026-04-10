@@ -79,21 +79,53 @@ pub fn job_to_aria2_status(job: &Job) -> Aria2Status {
         (None, None)
     };
 
-    let files = vec![Aria2File {
-        index: "1".into(),
-        path: job.out_path.to_string_lossy().into_owned(),
-        length: job.total_size.unwrap_or(0).to_string(),
-        completed_length: job.downloaded.to_string(),
-        selected: "true".into(),
-        uris: job
-            .uris
-            .iter()
-            .map(|u| Aria2Uri {
-                uri: u.clone(),
-                status: "used".into(),
-            })
-            .collect(),
-    }];
+    let files = if job.kind == JobKind::Bt {
+        if let Some(bt_files) = &job.bt_files {
+            bt_files
+                .iter()
+                .map(|file| Aria2File {
+                    index: (file.index + 1).to_string(),
+                    path: file.path.to_string_lossy().into_owned(),
+                    length: file.length.to_string(),
+                    completed_length: file.completed_length.to_string(),
+                    selected: if file.selected { "true" } else { "false" }.into(),
+                    uris: Vec::new(),
+                })
+                .collect()
+        } else {
+            vec![Aria2File {
+                index: "1".into(),
+                path: job.out_path.to_string_lossy().into_owned(),
+                length: job.total_size.unwrap_or(0).to_string(),
+                completed_length: job.downloaded.to_string(),
+                selected: "true".into(),
+                uris: job
+                    .uris
+                    .iter()
+                    .map(|u| Aria2Uri {
+                        uri: u.clone(),
+                        status: "used".into(),
+                    })
+                    .collect(),
+            }]
+        }
+    } else {
+        vec![Aria2File {
+            index: "1".into(),
+            path: job.out_path.to_string_lossy().into_owned(),
+            length: job.total_size.unwrap_or(0).to_string(),
+            completed_length: job.downloaded.to_string(),
+            selected: "true".into(),
+            uris: job
+                .uris
+                .iter()
+                .map(|u| Aria2Uri {
+                    uri: u.clone(),
+                    status: "used".into(),
+                })
+                .collect(),
+        }]
+    };
 
     Aria2Status {
         gid: format!("{}", job.gid),
@@ -102,7 +134,7 @@ pub fn job_to_aria2_status(job: &Job) -> Aria2Status {
         completed_length: job.downloaded.to_string(),
         download_speed: job.download_speed.to_string(),
         upload_speed: job.upload_speed.to_string(),
-        connections: "0".into(), // TODO: track real connections
+        connections: job.connections.to_string(),
         dir: job
             .out_path
             .parent()

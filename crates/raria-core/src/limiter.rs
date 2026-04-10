@@ -2,6 +2,7 @@
 //
 // Provides global and per-job rate limiting for download/upload throughput.
 
+use arc_swap::ArcSwapOption;
 use governor::{Quota, RateLimiter as GovRateLimiter};
 use std::num::NonZeroU32;
 use std::sync::Arc;
@@ -14,6 +15,12 @@ use std::sync::Arc;
 pub struct RateLimiter {
     limiter: Option<Arc<GovRateLimiter<governor::state::NotKeyed, governor::state::InMemoryState, governor::clock::DefaultClock>>>,
     limit_bps: u64,
+}
+
+/// A read-mostly limiter handle whose active limiter can be swapped at runtime.
+#[derive(Debug, Default)]
+pub struct SharedRateLimiter {
+    inner: ArcSwapOption<RateLimiter>,
 }
 
 impl RateLimiter {
@@ -78,6 +85,50 @@ impl RateLimiter {
     }
 }
 
+impl SharedRateLimiter {
+    pub fn new(limit_bps: u64) -> Self {
+        let inner = if limit_bps > 0 {
+            Some(Arc::new(RateLimiter::new(limit_bps)))
+        } else {
+            None
+        };
+        Self {
+            inner: ArcSwapOption::from(inner),
+        }
+    }
+
+    pub fn limit_bps(&self) -> u64 {
+        self.inner
+            .load_full()
+            .map(|limiter| limiter.limit_bps())
+            .unwrap_or(0)
+    }
+
+    pub fn is_limited(&self) -> bool {
+        self.inner.load().is_some()
+    }
+
+    pub fn update_limit(&self, limit_bps: u64) {
+        let next = if limit_bps > 0 {
+            Some(Arc::new(RateLimiter::new(limit_bps)))
+        } else {
+            None
+        };
+        self.inner.store(next);
+    }
+
+    pub async fn consume(&self, n: u32) {
+        let mut remaining = n;
+        while remaining > 0 {
+            let step = remaining.min(16 * 1024);
+            if let Some(limiter) = self.inner.load_full() {
+                limiter.consume(step).await;
+            }
+            remaining -= step;
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -120,5 +171,27 @@ mod tests {
         // 10000 bytes/sec burst, consuming 100 bytes should be instant.
         let limiter = RateLimiter::new(10000);
         limiter.consume(100).await;
+    }
+
+    #[test]
+    fn shared_rate_limiter_defaults_to_unlimited() {
+        let limiter = SharedRateLimiter::new(0);
+        assert_eq!(limiter.limit_bps(), 0);
+        assert!(!limiter.is_limited());
+    }
+
+    #[test]
+    fn shared_rate_limiter_can_swap_limits() {
+        let limiter = SharedRateLimiter::new(1024);
+        assert_eq!(limiter.limit_bps(), 1024);
+        assert!(limiter.is_limited());
+
+        limiter.update_limit(2048);
+        assert_eq!(limiter.limit_bps(), 2048);
+        assert!(limiter.is_limited());
+
+        limiter.update_limit(0);
+        assert_eq!(limiter.limit_bps(), 0);
+        assert!(!limiter.is_limited());
     }
 }

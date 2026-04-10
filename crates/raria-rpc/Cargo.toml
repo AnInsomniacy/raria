@@ -12,6 +12,7 @@ raria-core = { workspace = true }
 raria-metalink = { workspace = true }
 jsonrpsee = { workspace = true }
 axum = { workspace = true }
+tower-http = { workspace = true }
 tokio = { workspace = true }
 tokio-util = { workspace = true }
 async-trait = { workspace = true }

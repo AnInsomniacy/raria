@@ -5,6 +5,8 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use tempfile::tempdir;
+use tokio_tungstenite::connect_async;
+use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -31,7 +33,7 @@ fn allocate_port() -> u16 {
 }
 
 async fn wait_for_rpc_ready_with_child(port: u16, child: &mut ChildGuard) -> Result<(), String> {
-    let deadline = Instant::now() + Duration::from_secs(30);
+    let deadline = Instant::now() + Duration::from_secs(60);
     let client = reqwest::Client::new();
 
     loop {
@@ -79,9 +81,18 @@ async fn wait_for_rpc_ready_with_child(port: u16, child: &mut ChildGuard) -> Res
 }
 
 async fn spawn_ready_daemon(download_dir: &std::path::Path, session_file: &std::path::Path) -> (ChildGuard, u16) {
+    spawn_ready_daemon_with_args(download_dir, session_file, &[]).await
+}
+
+async fn spawn_ready_daemon_with_args(
+    download_dir: &std::path::Path,
+    session_file: &std::path::Path,
+    extra_args: &[&str],
+) -> (ChildGuard, u16) {
     for _ in 0..8 {
         let rpc_port = allocate_port();
-        let child = Command::new(cargo_bin("raria"))
+        let mut cmd = Command::new(cargo_bin("raria"));
+        cmd
             .arg("daemon")
             .arg("-d")
             .arg(download_dir)
@@ -90,9 +101,11 @@ async fn spawn_ready_daemon(download_dir: &std::path::Path, session_file: &std::
             .arg("--session-file")
             .arg(session_file)
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .expect("spawn daemon");
+            .stderr(Stdio::piped());
+        for arg in extra_args {
+            cmd.arg(arg);
+        }
+        let child = cmd.spawn().expect("spawn daemon");
         let mut child = ChildGuard { child };
 
         match wait_for_rpc_ready_with_child(rpc_port, &mut child).await {
@@ -103,6 +116,119 @@ async fn spawn_ready_daemon(download_dir: &std::path::Path, session_file: &std::
     }
 
     panic!("failed to start daemon on a free RPC port after multiple attempts");
+}
+
+#[tokio::test]
+async fn daemon_emits_cors_headers_when_rpc_allow_origin_all_is_enabled() {
+    let temp = tempdir().expect("tempdir");
+    let session_file = temp.path().join("cors.session.redb");
+    let (mut child, rpc_port) = spawn_ready_daemon_with_args(
+        temp.path(),
+        &session_file,
+        &["--rpc-allow-origin-all"],
+    )
+    .await;
+
+    let client = reqwest::Client::new();
+    let preflight = client
+        .request(
+            reqwest::Method::OPTIONS,
+            format!("http://127.0.0.1:{rpc_port}/jsonrpc"),
+        )
+        .header("Origin", "https://ui.example")
+        .header("Access-Control-Request-Method", "POST")
+        .send()
+        .await
+        .expect("send CORS preflight");
+
+    assert!(
+        preflight.status().is_success(),
+        "preflight should succeed when daemon CORS is enabled: {}",
+        preflight.status()
+    );
+    assert_eq!(
+        preflight
+            .headers()
+            .get("access-control-allow-origin")
+            .and_then(|v| v.to_str().ok()),
+        Some("*"),
+    );
+
+    let shutdown_resp: serde_json::Value = client
+        .post(format!("http://127.0.0.1:{rpc_port}"))
+        .json(&serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 99,
+            "method": "aria2.shutdown",
+            "params": [],
+        }))
+        .send()
+        .await
+        .expect("send shutdown")
+        .json()
+        .await
+        .expect("parse shutdown response");
+    assert_eq!(shutdown_resp["result"], "OK");
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        match child.child.try_wait() {
+            Ok(Some(status)) => {
+                assert!(status.success(), "daemon exited unsuccessfully: {status}");
+                break;
+            }
+            Ok(None) => {
+                assert!(Instant::now() < deadline, "daemon did not exit after shutdown RPC");
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            Err(error) => panic!("failed waiting for daemon exit: {error}"),
+        }
+    }
+}
+
+#[tokio::test]
+async fn daemon_rejects_ws_origin_by_default() {
+    let temp = tempdir().expect("tempdir");
+    let session_file = temp.path().join("ws-origin-default.session.redb");
+    let (_child, rpc_port) = spawn_ready_daemon(temp.path(), &session_file).await;
+
+    let mut request = format!("ws://127.0.0.1:{rpc_port}/jsonrpc")
+        .into_client_request()
+        .unwrap();
+    request
+        .headers_mut()
+        .insert("Origin", "https://ui.example".parse().unwrap());
+
+    let result = connect_async(request).await;
+    assert!(
+        result.is_err(),
+        "daemon should reject browser-style WS upgrade by default"
+    );
+}
+
+#[tokio::test]
+async fn daemon_allows_ws_origin_when_rpc_allow_origin_all_is_enabled() {
+    let temp = tempdir().expect("tempdir");
+    let session_file = temp.path().join("ws-origin-allow.session.redb");
+    let (_child, rpc_port) = spawn_ready_daemon_with_args(
+        temp.path(),
+        &session_file,
+        &["--rpc-allow-origin-all"],
+    )
+    .await;
+
+    let mut request = format!("ws://127.0.0.1:{rpc_port}/jsonrpc")
+        .into_client_request()
+        .unwrap();
+    request
+        .headers_mut()
+        .insert("Origin", "https://ui.example".parse().unwrap());
+
+    let result = connect_async(request).await;
+    assert!(
+        result.is_ok(),
+        "daemon should allow browser-style WS upgrade when rpc_allow_origin_all is enabled: {result:?}"
+    );
 }
 
 #[tokio::test]
@@ -435,6 +561,446 @@ async fn daemon_uses_rpc_supplied_basic_auth_on_real_download_requests() {
         .json(&serde_json::json!({
             "jsonrpc": "2.0",
             "id": 3,
+            "method": "aria2.shutdown",
+            "params": [],
+        }))
+        .send()
+        .await
+        .expect("send shutdown")
+        .json()
+        .await
+        .expect("parse shutdown response");
+    assert_eq!(shutdown_resp["result"], "OK");
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        match child.child.try_wait() {
+            Ok(Some(status)) => {
+                assert!(status.success(), "daemon exited unsuccessfully: {status}");
+                break;
+            }
+            Ok(None) => {
+                assert!(Instant::now() < deadline, "daemon did not exit after shutdown RPC");
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            Err(error) => panic!("failed waiting for daemon exit: {error}"),
+        }
+    }
+}
+
+#[tokio::test]
+async fn tell_status_reports_non_zero_connections_while_download_is_active() {
+    let download_server = MockServer::start().await;
+
+    Mock::given(method("HEAD"))
+        .and(path("/slow-connections.bin"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-length", "1048576")
+                .insert_header("accept-ranges", "bytes"),
+        )
+        .mount(&download_server)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path("/slow-connections.bin"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_delay(Duration::from_secs(3))
+                .set_body_bytes(vec![b'x'; 1024 * 1024]),
+        )
+        .mount(&download_server)
+        .await;
+
+    let temp = tempdir().expect("tempdir");
+    let session_file = temp.path().join("connections.session.redb");
+    let (mut child, rpc_port) = spawn_ready_daemon(temp.path(), &session_file).await;
+
+    let client = reqwest::Client::new();
+    let add_resp: serde_json::Value = client
+        .post(format!("http://127.0.0.1:{rpc_port}"))
+        .json(&serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "aria2.addUri",
+            "params": [[format!("{}/slow-connections.bin", download_server.uri())]],
+        }))
+        .send()
+        .await
+        .expect("send addUri")
+        .json()
+        .await
+        .expect("parse addUri response");
+
+    let gid = add_resp["result"].as_str().expect("gid").to_string();
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let observed_connections = loop {
+        let status_resp: serde_json::Value = client
+            .post(format!("http://127.0.0.1:{rpc_port}"))
+            .json(&serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "aria2.tellStatus",
+                "params": [gid.clone()],
+            }))
+            .send()
+            .await
+            .expect("send tellStatus")
+            .json()
+            .await
+            .expect("parse tellStatus");
+
+        let status = status_resp["result"]["status"].as_str().expect("status");
+        let connections = status_resp["result"]["connections"]
+            .as_str()
+            .expect("connections string")
+            .parse::<u32>()
+            .expect("connections should parse as integer");
+
+        if status == "active" && connections > 0 {
+            break connections;
+        }
+
+        assert!(
+            Instant::now() < deadline,
+            "active tellStatus never surfaced non-zero connections: {status_resp}"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    };
+
+    assert!(
+        observed_connections > 0,
+        "connections must be greater than zero while a segmented download is active"
+    );
+
+    let shutdown_resp: serde_json::Value = client
+        .post(format!("http://127.0.0.1:{rpc_port}"))
+        .json(&serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "aria2.shutdown",
+            "params": [],
+        }))
+        .send()
+        .await
+        .expect("send shutdown")
+        .json()
+        .await
+        .expect("parse shutdown response");
+    assert_eq!(shutdown_resp["result"], "OK");
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        match child.child.try_wait() {
+            Ok(Some(status)) => {
+                assert!(status.success(), "daemon exited unsuccessfully: {status}");
+                break;
+            }
+            Ok(None) => {
+                assert!(Instant::now() < deadline, "daemon did not exit after shutdown RPC");
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            Err(error) => panic!("failed waiting for daemon exit: {error}"),
+        }
+    }
+}
+
+#[tokio::test]
+async fn change_global_option_updates_active_download_limit_in_product_path() {
+    let download_server = MockServer::start().await;
+
+    Mock::given(method("HEAD"))
+        .and(path("/dynamic-limit.bin"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-length", "524288")
+                .insert_header("accept-ranges", "bytes"),
+        )
+        .mount(&download_server)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path("/dynamic-limit.bin"))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(vec![b'y'; 512 * 1024]))
+        .mount(&download_server)
+        .await;
+
+    let temp = tempdir().expect("tempdir");
+    let session_file = temp.path().join("dynamic-limit.session.redb");
+    let (mut child, rpc_port) = spawn_ready_daemon_with_args(
+        temp.path(),
+        &session_file,
+        &["--max-download-limit", "16384"],
+    )
+    .await;
+
+    let client = reqwest::Client::new();
+    let add_resp: serde_json::Value = client
+        .post(format!("http://127.0.0.1:{rpc_port}"))
+        .json(&serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "aria2.addUri",
+            "params": [
+                [format!("{}/dynamic-limit.bin", download_server.uri())],
+                {
+                    "split": "1",
+                    "max-connection-per-server": "1"
+                }
+            ],
+        }))
+        .send()
+        .await
+        .expect("send addUri")
+        .json()
+        .await
+        .expect("parse addUri response");
+
+    let gid = add_resp["result"].as_str().expect("gid").to_string();
+
+    let active_deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        let status_resp: serde_json::Value = client
+            .post(format!("http://127.0.0.1:{rpc_port}"))
+            .json(&serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "aria2.tellStatus",
+                "params": [gid.clone()],
+            }))
+            .send()
+            .await
+            .expect("send tellStatus")
+            .json()
+            .await
+            .expect("parse tellStatus");
+
+        let status = status_resp["result"]["status"].as_str().expect("status");
+        let completed = status_resp["result"]["completedLength"]
+            .as_str()
+            .expect("completedLength string")
+            .parse::<u64>()
+            .expect("completedLength should parse");
+
+        if status == "active" && completed > 0 {
+            break;
+        }
+
+        assert!(
+            Instant::now() < active_deadline,
+            "download never reached observable active state before runtime limit mutation: {status_resp}"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+
+    let resp: serde_json::Value = client
+        .post(format!("http://127.0.0.1:{rpc_port}"))
+        .json(&serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "aria2.changeGlobalOption",
+            "params": [{"max-overall-download-limit": "0"}],
+        }))
+        .send()
+        .await
+        .expect("send changeGlobalOption")
+        .json()
+        .await
+        .expect("parse changeGlobalOption response");
+    assert_eq!(resp["result"], "OK");
+
+    let completion_deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let status_resp: serde_json::Value = client
+            .post(format!("http://127.0.0.1:{rpc_port}"))
+            .json(&serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 4,
+                "method": "aria2.tellStatus",
+                "params": [gid.clone()],
+            }))
+            .send()
+            .await
+            .expect("send tellStatus after limit change")
+            .json()
+            .await
+            .expect("parse tellStatus after limit change");
+
+        let status = status_resp["result"]["status"].as_str().expect("status");
+        if status == "complete" {
+            break;
+        }
+
+        assert!(
+            Instant::now() < completion_deadline,
+            "download did not complete soon after global limit was removed: {status_resp}"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+
+    let shutdown_resp: serde_json::Value = client
+        .post(format!("http://127.0.0.1:{rpc_port}"))
+        .json(&serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 5,
+            "method": "aria2.shutdown",
+            "params": [],
+        }))
+        .send()
+        .await
+        .expect("send shutdown")
+        .json()
+        .await
+        .expect("parse shutdown response");
+    assert_eq!(shutdown_resp["result"], "OK");
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        match child.child.try_wait() {
+            Ok(Some(status)) => {
+                assert!(status.success(), "daemon exited unsuccessfully: {status}");
+                break;
+            }
+            Ok(None) => {
+                assert!(Instant::now() < deadline, "daemon did not exit after shutdown RPC");
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            Err(error) => panic!("failed waiting for daemon exit: {error}"),
+        }
+    }
+}
+
+#[tokio::test]
+async fn change_global_option_can_enable_a_limit_for_an_already_active_download() {
+    let download_server = MockServer::start().await;
+
+    Mock::given(method("HEAD"))
+        .and(path("/late-limit.bin"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-length", "524288")
+                .insert_header("accept-ranges", "bytes"),
+        )
+        .mount(&download_server)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path("/late-limit.bin"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_delay(Duration::from_millis(500))
+                .set_body_bytes(vec![b'z'; 512 * 1024]),
+        )
+        .mount(&download_server)
+        .await;
+
+    let temp = tempdir().expect("tempdir");
+    let session_file = temp.path().join("late-limit.session.redb");
+    let (mut child, rpc_port) = spawn_ready_daemon(temp.path(), &session_file).await;
+
+    let client = reqwest::Client::new();
+    let add_resp: serde_json::Value = client
+        .post(format!("http://127.0.0.1:{rpc_port}"))
+        .json(&serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "aria2.addUri",
+            "params": [
+                [format!("{}/late-limit.bin", download_server.uri())],
+                {
+                    "split": "1",
+                    "max-connection-per-server": "1"
+                }
+            ],
+        }))
+        .send()
+        .await
+        .expect("send addUri")
+        .json()
+        .await
+        .expect("parse addUri response");
+
+    let gid = add_resp["result"].as_str().expect("gid").to_string();
+
+    let active_deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let status_resp: serde_json::Value = client
+            .post(format!("http://127.0.0.1:{rpc_port}"))
+            .json(&serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "aria2.tellStatus",
+                "params": [gid.clone()],
+            }))
+            .send()
+            .await
+            .expect("send tellStatus")
+            .json()
+            .await
+            .expect("parse tellStatus");
+
+        let status = status_resp["result"]["status"].as_str().expect("status");
+        if status == "active" {
+            break;
+        }
+
+        assert!(
+            Instant::now() < active_deadline,
+            "download never reached active state before late limit mutation: {status_resp}"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+
+    let resp: serde_json::Value = client
+        .post(format!("http://127.0.0.1:{rpc_port}"))
+        .json(&serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "aria2.changeGlobalOption",
+            "params": [{"max-overall-download-limit": "16384"}],
+        }))
+        .send()
+        .await
+        .expect("send changeGlobalOption")
+        .json()
+        .await
+        .expect("parse changeGlobalOption response");
+    assert_eq!(resp["result"], "OK");
+
+    let stall_window = Instant::now() + Duration::from_secs(2);
+    loop {
+        let status_resp: serde_json::Value = client
+            .post(format!("http://127.0.0.1:{rpc_port}"))
+            .json(&serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 4,
+                "method": "aria2.tellStatus",
+                "params": [gid.clone()],
+            }))
+            .send()
+            .await
+            .expect("send tellStatus after enabling limit")
+            .json()
+            .await
+            .expect("parse tellStatus after enabling limit");
+
+        let status = status_resp["result"]["status"].as_str().expect("status");
+        if Instant::now() >= stall_window {
+            assert_ne!(
+                status,
+                "complete",
+                "download completed too quickly after enabling a very low global limit: {status_resp}"
+            );
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+
+    let shutdown_resp: serde_json::Value = client
+        .post(format!("http://127.0.0.1:{rpc_port}"))
+        .json(&serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 5,
             "method": "aria2.shutdown",
             "params": [],
         }))

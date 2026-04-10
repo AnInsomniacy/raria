@@ -116,6 +116,9 @@ pub fn apply_config_map(config: &mut GlobalConfig, map: &HashMap<String, String>
             "rpc-secret" => {
                 config.rpc_secret = if value.is_empty() { None } else { Some(value.clone()) };
             }
+            "rpc-allow-origin-all" => {
+                config.rpc_allow_origin_all = value == "true" || value == "1";
+            }
             "file-allocation" => {
                 if let Ok(mode) = crate::file_alloc::FileAllocation::parse(value) {
                     config.file_allocation = mode;
@@ -259,6 +262,31 @@ mod tests {
     }
 
     #[test]
+    fn apply_config_map_sets_rpc_allow_origin_all() {
+        let mut config = GlobalConfig::default();
+        let mut map = HashMap::new();
+        map.insert("rpc-allow-origin-all".into(), "true".into());
+
+        apply_config_map(&mut config, &map);
+
+        assert!(config.rpc_allow_origin_all);
+    }
+
+    #[test]
+    fn apply_config_map_clears_rpc_allow_origin_all_with_false() {
+        let mut config = GlobalConfig {
+            rpc_allow_origin_all: true,
+            ..GlobalConfig::default()
+        };
+        let mut map = HashMap::new();
+        map.insert("rpc-allow-origin-all".into(), "false".into());
+
+        apply_config_map(&mut config, &map);
+
+        assert!(!config.rpc_allow_origin_all);
+    }
+
+    #[test]
     fn parse_empty_value() {
         let content = "all-proxy=";
         let map = parse_config_file(content);
@@ -318,8 +346,10 @@ mod tests {
 
     #[test]
     fn apply_config_empty_proxy_clears_it() {
-        let mut config = GlobalConfig::default();
-        config.all_proxy = Some("http://old-proxy".into());
+        let mut config = GlobalConfig {
+            all_proxy: Some("http://old-proxy".into()),
+            ..GlobalConfig::default()
+        };
         let mut map = HashMap::new();
         map.insert("all-proxy".into(), "".into());
         apply_config_map(&mut config, &map);

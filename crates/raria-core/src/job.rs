@@ -97,6 +97,16 @@ pub enum JobKind {
     Bt,
 }
 
+/// BT file entry cached on the job for RPC-facing metadata/file views.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BtFile {
+    pub index: usize,
+    pub path: PathBuf,
+    pub length: u64,
+    pub completed_length: u64,
+    pub selected: bool,
+}
+
 /// A download job with all metadata needed for scheduling and persistence.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Job {
@@ -118,6 +128,9 @@ pub struct Job {
     pub upload_speed: u64,
     /// Download speed, bytes/sec.
     pub download_speed: u64,
+    /// Number of active transport connections backing the job.
+    #[serde(default)]
+    pub connections: u32,
     /// Timestamp when the job was created.
     pub created_at: DateTime<Utc>,
     /// Error message if `status == Error`.
@@ -125,6 +138,9 @@ pub struct Job {
     /// Per-job configuration options (overrides global defaults).
     #[serde(default)]
     pub options: JobOptions,
+    /// BT file metadata cached for RPC file-list views when available.
+    #[serde(default)]
+    pub bt_files: Option<Vec<BtFile>>,
 }
 
 impl Job {
@@ -145,9 +161,11 @@ impl Job {
             downloaded: 0,
             upload_speed: 0,
             download_speed: 0,
+            connections: 0,
             created_at: Utc::now(),
             error_msg: None,
             options,
+            bt_files: None,
         }
     }
 
@@ -168,9 +186,11 @@ impl Job {
             downloaded: 0,
             upload_speed: 0,
             download_speed: 0,
+            connections: 0,
             created_at: Utc::now(),
             error_msg: None,
             options,
+            bt_files: None,
         }
     }
 

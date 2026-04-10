@@ -49,6 +49,8 @@ pub struct RpcOptions {
     pub http_user: Option<String>,
     #[serde(default, rename = "http-passwd")]
     pub http_passwd: Option<String>,
+    #[serde(default, rename = "select-file")]
+    pub select_file: Option<String>,
 }
 
 /// JSON-RPC interface definition — full aria2 parity.
@@ -209,6 +211,7 @@ impl Aria2RpcServer for RpcHandler {
             .unwrap_or_else(|| self.engine.config.dir.clone());
         let connections = opts
             .connections
+            .as_ref()
             .and_then(|s| s.parse().ok())
             .unwrap_or(16);
 
@@ -227,6 +230,11 @@ impl Aria2RpcServer for RpcHandler {
         // Apply per-job options from RPC request.
         let gid = handle.gid;
         self.engine.registry.update(gid, |job| {
+            if let Some(ref conns) = opts.connections {
+                if let Ok(n) = conns.parse::<u32>() {
+                    job.options.max_connections = n;
+                }
+            }
             if let Some(ref limit) = opts.max_download_limit {
                 if let Ok(bps) = limit.parse::<u64>() {
                     job.options.max_download_limit = bps;
@@ -251,6 +259,11 @@ impl Aria2RpcServer for RpcHandler {
             if let Some(ref passwd) = opts.http_passwd {
                 job.options.http_passwd = Some(passwd.clone());
             }
+            if let Some(ref select_file) = opts.select_file {
+                if let Ok(files) = parse_select_file_spec(select_file) {
+                    job.options.bt_selected_files = Some(files);
+                }
+            }
         });
 
         debug!(gid = %handle.gid, "RPC addUri succeeded");
@@ -261,7 +274,7 @@ impl Aria2RpcServer for RpcHandler {
         &self,
         torrent_base64: String,
         _uris: Option<Vec<String>>,
-        _options: Option<RpcOptions>,
+        options: Option<RpcOptions>,
     ) -> RpcResult<String> {
         use base64::Engine as Base64Engine;
         use raria_core::job::{Gid, Job};
@@ -281,7 +294,15 @@ impl Aria2RpcServer for RpcHandler {
 
         let _gid = Gid::new();
         let out_path = self.engine.config.dir.join("bt_download");
-        let job = Job::new_bt(vec![torrent_uri], out_path);
+        let mut job = Job::new_bt(vec![torrent_uri], out_path);
+        if let Some(select_file) = options
+            .and_then(|opts| opts.select_file)
+            .map(|spec| parse_select_file_spec(&spec))
+            .transpose()
+            .map_err(|e| rpc_err(1, &e.to_string()))?
+        {
+            job.options.bt_selected_files = Some(select_file);
+        }
         let actual_gid = job.gid;
 
         self.engine.cancel_registry.register(actual_gid);
@@ -570,14 +591,17 @@ impl Aria2RpcServer for RpcHandler {
             "checksum": job.options.checksum.as_deref().unwrap_or(""),
             "http-user": job.options.http_user.as_deref().unwrap_or(""),
             "http-passwd": job.options.http_passwd.as_deref().unwrap_or(""),
+            "select-file": job.options.bt_selected_files.as_ref()
+                .map(|files| files.iter().map(|idx| (idx + 1).to_string()).collect::<Vec<_>>().join(","))
+                .unwrap_or_default(),
         }))
     }
 
     async fn change_global_option(&self, options: serde_json::Value) -> RpcResult<String> {
         if let Some(limit) = options.get("max-overall-download-limit").and_then(|v| v.as_str()) {
-            if let Ok(_bytes) = limit.parse::<u64>() {
-                debug!(limit, "changed global download limit");
-                // TODO: propagate to rate limiter dynamically.
+            if let Ok(bytes) = limit.parse::<u64>() {
+                self.engine.global_rate_limiter.update_limit(bytes);
+                debug!(limit, bytes, "changed global download limit");
             }
         }
         if let Some(max) = options.get("max-concurrent-downloads").and_then(|v| v.as_str()) {
@@ -593,8 +617,8 @@ impl Aria2RpcServer for RpcHandler {
     async fn get_global_option(&self) -> RpcResult<serde_json::Value> {
         Ok(serde_json::json!({
             "dir": self.engine.config.dir.to_string_lossy(),
-            "max-concurrent-downloads": self.engine.config.max_concurrent_downloads.to_string(),
-            "max-overall-download-limit": self.engine.config.max_overall_download_limit.to_string(),
+            "max-concurrent-downloads": self.engine.scheduler.max_concurrent().to_string(),
+            "max-overall-download-limit": self.engine.global_rate_limiter.limit_bps().to_string(),
             "max-overall-upload-limit": self.engine.config.max_overall_upload_limit.to_string(),
             "log-level": self.engine.config.log_level,
             "all-proxy": self.engine.config.all_proxy.as_deref().unwrap_or(""),
@@ -680,6 +704,23 @@ fn rpc_err(code: i32, msg: &str) -> jsonrpsee::types::ErrorObjectOwned {
     jsonrpsee::types::ErrorObjectOwned::owned(code, msg.to_string(), None::<()>)
 }
 
+fn parse_select_file_spec(spec: &str) -> anyhow::Result<Vec<usize>> {
+    let mut result = Vec::new();
+    for part in spec.split(',') {
+        let trimmed = part.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let one_based: usize = trimmed
+            .parse()
+            .map_err(|_| anyhow::anyhow!("invalid select-file entry: {trimmed}"))?;
+        anyhow::ensure!(one_based > 0, "select-file indices must be 1-based");
+        result.push(one_based - 1);
+    }
+    anyhow::ensure!(!result.is_empty(), "select-file must contain at least one index");
+    Ok(result)
+}
+
 fn jobs_to_json(jobs: &[raria_core::job::Job]) -> RpcResult<Vec<serde_json::Value>> {
     jobs.iter()
         .map(|j| {
@@ -707,6 +748,8 @@ fn apply_offset_limit(jobs: &mut Vec<raria_core::job::Job>, offset: i64, num: u3
 mod tests {
     use super::*;
     use raria_core::config::GlobalConfig;
+    use raria_core::job::{BtFile, Job};
+    use std::path::PathBuf;
 
     fn test_engine() -> Arc<Engine> {
         Arc::new(Engine::new(GlobalConfig::default()))
@@ -964,6 +1007,47 @@ mod tests {
         let files = handler.get_files(gid_str).await.unwrap();
         assert_eq!(files.len(), 1);
         assert!(files[0]["path"].as_str().unwrap().contains("data.zip"));
+    }
+
+    #[tokio::test]
+    async fn get_files_returns_bt_file_entries_when_metadata_is_available() {
+        let engine = test_engine();
+        let handler = RpcHandler::new(Arc::clone(&engine));
+
+        let mut job = Job::new_bt(
+            vec!["magnet:?xt=urn:btih:abc123".into()],
+            PathBuf::from("/tmp/bt-download"),
+        );
+        job.bt_files = Some(vec![
+            BtFile {
+                index: 0,
+                path: PathBuf::from("disc1/file-a.bin"),
+                length: 100,
+                completed_length: 25,
+                selected: true,
+            },
+            BtFile {
+                index: 1,
+                path: PathBuf::from("disc1/file-b.bin"),
+                length: 200,
+                completed_length: 0,
+                selected: false,
+            },
+        ]);
+        let gid = job.gid;
+        engine.registry.insert(job).unwrap();
+
+        let files = handler.get_files(gid.to_string()).await.unwrap();
+        assert_eq!(files.len(), 2);
+        assert_eq!(files[0]["index"], "1");
+        assert_eq!(files[0]["path"], "disc1/file-a.bin");
+        assert_eq!(files[0]["length"], "100");
+        assert_eq!(files[0]["completedLength"], "25");
+        assert_eq!(files[0]["selected"], "true");
+
+        assert_eq!(files[1]["index"], "2");
+        assert_eq!(files[1]["path"], "disc1/file-b.bin");
+        assert_eq!(files[1]["selected"], "false");
     }
 
     #[tokio::test]

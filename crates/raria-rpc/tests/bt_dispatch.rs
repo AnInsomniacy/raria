@@ -76,6 +76,37 @@ mod tests {
         cancel.cancel();
     }
 
+    #[tokio::test]
+    async fn add_uri_magnet_with_select_file_stores_bt_file_selection_intent() {
+        let (engine, url, cancel) = spawn_server().await;
+
+        let resp = rpc_call(
+            &url,
+            "aria2.addUri",
+            serde_json::json!([
+                ["magnet:?xt=urn:btih:da39a3ee5e6b4b0d3255bfef95601890afd80709"],
+                {
+                    "select-file": "2,4"
+                }
+            ]),
+        )
+        .await;
+
+        assert!(
+            resp.get("error").is_none(),
+            "addUri with magnet and select-file should succeed: {resp}"
+        );
+        let gid_str = resp["result"].as_str().unwrap();
+        let gid = raria_core::job::Gid::from_raw(
+            u64::from_str_radix(gid_str, 16).unwrap(),
+        );
+        let job = engine.registry.get(gid).unwrap();
+        assert_eq!(job.kind, JobKind::Bt);
+        assert_eq!(job.options.bt_selected_files, Some(vec![1, 3]));
+
+        cancel.cancel();
+    }
+
     /// addTorrent with base64-encoded torrent data should create a Bt-kind job.
     #[tokio::test]
     async fn add_torrent_creates_bt_job() {
@@ -105,6 +136,45 @@ mod tests {
         );
         let job = engine.registry.get(gid).unwrap();
         assert_eq!(job.kind, JobKind::Bt, "torrent should create Bt-kind job");
+
+        cancel.cancel();
+    }
+
+    /// addTorrent should persist BT file-selection intent on the created job.
+    #[tokio::test]
+    async fn add_torrent_with_select_file_stores_bt_file_selection() {
+        let (engine, url, cancel) = spawn_server().await;
+
+        use base64::Engine as Base64Engine;
+        let fake_torrent = b"d8:announce35:http://tracker.example.com/announcee";
+        let encoded = base64::engine::general_purpose::STANDARD.encode(fake_torrent);
+
+        let resp = rpc_call(
+            &url,
+            "aria2.addTorrent",
+            serde_json::json!([
+                encoded,
+                [],
+                {
+                    "select-file": "1,3"
+                }
+            ]),
+        )
+        .await;
+
+        assert!(resp.get("error").is_none(), "addTorrent should succeed: {resp}");
+        let gid_str = resp["result"].as_str().unwrap();
+        let gid = raria_core::job::Gid::from_raw(
+            u64::from_str_radix(gid_str, 16).unwrap(),
+        );
+        let job = engine.registry.get(gid).unwrap();
+
+        assert_eq!(job.kind, JobKind::Bt);
+        assert_eq!(
+            job.options.bt_selected_files,
+            Some(vec![0, 2]),
+            "select-file should be stored as zero-based file IDs for runtime use"
+        );
 
         cancel.cancel();
     }

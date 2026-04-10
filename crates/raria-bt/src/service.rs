@@ -21,6 +21,12 @@ use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 use tracing::{debug, info, warn};
 
+fn is_selected_file(selected_files: Option<&[usize]>, file_index: usize) -> bool {
+    selected_files
+        .map(|files| files.contains(&file_index))
+        .unwrap_or(true)
+}
+
 /// Source for a BitTorrent download.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum BtSource {
@@ -71,6 +77,8 @@ pub struct BtFileInfo {
     pub path: PathBuf,
     /// File size in bytes.
     pub size: u64,
+    /// Completed bytes for this file, when known.
+    pub completed_length: u64,
     /// Whether this file is selected for download.
     pub selected: bool,
 }
@@ -135,7 +143,12 @@ impl BtService {
     }
 
     /// Add a new torrent download.
-    pub async fn add(&self, source: BtSource, gid: raria_core::job::Gid) -> Result<BtHandle> {
+    pub async fn add(
+        &self,
+        source: BtSource,
+        gid: raria_core::job::Gid,
+        selected_files: Option<Vec<usize>>,
+    ) -> Result<BtHandle> {
         let session = self.ensure_session().await?;
 
         let add_torrent = match &source {
@@ -151,6 +164,7 @@ impl BtService {
 
         let opts = AddTorrentOptions {
             output_folder: Some(self.output_dir.clone().to_string_lossy().to_string()),
+            only_files: selected_files,
             ..Default::default()
         };
 
@@ -262,12 +276,12 @@ impl BtService {
     pub async fn file_list(&self, handle: &BtHandle) -> Result<Vec<BtFileInfo>> {
         let managed = self.get_managed_handle(handle)?;
         let stats = managed.stats();
-
         // Get file info from the torrent's metadata (loaded via ArcSwap).
         let metadata_guard = managed.metadata.load();
         let metadata = metadata_guard
             .as_ref()
             .context("torrent metadata not yet resolved (magnet still resolving?)")?;
+        let selected_files = managed.only_files();
 
         let files: Vec<BtFileInfo> = metadata
             .file_infos
@@ -279,7 +293,8 @@ impl BtService {
                     index: i,
                     path: fi.relative_filename.clone(),
                     size: fi.len,
-                    selected: progress > 0 || !stats.finished,
+                    completed_length: progress,
+                    selected: is_selected_file(selected_files.as_deref(), i),
                 }
             })
             .collect();
@@ -383,11 +398,13 @@ mod tests {
             index: 0,
             path: PathBuf::from("subdir/file.txt"),
             size: 42,
+            completed_length: 7,
             selected: true,
         };
         let json = serde_json::to_string(&info).unwrap();
         let recovered: BtFileInfo = serde_json::from_str(&json).unwrap();
         assert_eq!(recovered.index, 0);
+        assert_eq!(recovered.completed_length, 7);
         assert!(recovered.selected);
     }
 
@@ -403,5 +420,17 @@ mod tests {
         let svc = BtService::new(PathBuf::from("/tmp")).unwrap();
         let guard = svc.handles.read().unwrap();
         assert!(guard.is_empty());
+    }
+
+    #[test]
+    fn selection_defaults_to_all_files_when_only_files_is_none() {
+        assert!(is_selected_file(None, 0));
+        assert!(is_selected_file(None, 10));
+    }
+
+    #[test]
+    fn selection_uses_librqbit_only_files_state_when_present() {
+        assert!(is_selected_file(Some(&[0, 2, 4]), 2));
+        assert!(!is_selected_file(Some(&[0, 2, 4]), 3));
     }
 }

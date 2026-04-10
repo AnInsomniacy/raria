@@ -67,8 +67,10 @@ mod tests {
     /// DownloadService must use job.options.max_connections, not hardcoded 16.
     #[test]
     fn service_reads_max_connections_from_job_options() {
-        let mut opts = JobOptions::default();
-        opts.max_connections = 4;
+        let opts = JobOptions {
+            max_connections: 4,
+            ..JobOptions::default()
+        };
 
         let job = Job::new_range_with_options(
             vec!["https://example.com/file.bin".into()],
@@ -91,6 +93,6 @@ mod tests {
         let service = DownloadService::new(engine, None);
 
         // Service should be constructable
-        assert!(service.engine().registry.len() == 0);
+        assert!(service.engine().registry.is_empty());
     }
 }

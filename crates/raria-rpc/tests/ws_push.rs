@@ -12,6 +12,7 @@ mod tests {
     use std::net::SocketAddr;
     use std::sync::Arc;
     use tokio_tungstenite::connect_async;
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
     use tokio_tungstenite::tungstenite::Message;
     use tokio_util::sync::CancellationToken;
 
@@ -318,6 +319,140 @@ mod tests {
         .expect("WS notification frame error");
 
         let json: serde_json::Value = serde_json::from_str(notification.to_text().unwrap()).unwrap();
+        assert_eq!(json["method"], "aria2.onDownloadStart");
+
+        cancel.cancel();
+    }
+
+    #[tokio::test]
+    async fn ws_upgrade_with_origin_is_rejected_by_default() {
+        let config = GlobalConfig::default();
+        let engine = Arc::new(Engine::new(config));
+        let cancel = CancellationToken::new();
+        let rpc_config = RpcServerConfig {
+            listen_addr: SocketAddr::from(([127, 0, 0, 1], 0)),
+        };
+        let addrs = start_rpc_server(engine, &rpc_config, cancel.clone())
+            .await
+            .unwrap();
+
+        let mut request = format!("ws://{}/jsonrpc", addrs.rpc)
+            .into_client_request()
+            .unwrap();
+        request
+            .headers_mut()
+            .insert("Origin", "https://ui.example".parse().unwrap());
+
+        let result = connect_async(request).await;
+        assert!(
+            result.is_err(),
+            "browser-style WS upgrade with Origin should be rejected by default"
+        );
+
+        cancel.cancel();
+    }
+
+    #[tokio::test]
+    async fn ws_upgrade_with_origin_is_allowed_when_rpc_allow_origin_all_is_enabled() {
+        let config = GlobalConfig {
+            rpc_allow_origin_all: true,
+            ..GlobalConfig::default()
+        };
+        let engine = Arc::new(Engine::new(config));
+        let cancel = CancellationToken::new();
+        let rpc_config = RpcServerConfig {
+            listen_addr: SocketAddr::from(([127, 0, 0, 1], 0)),
+        };
+        let addrs = start_rpc_server(engine, &rpc_config, cancel.clone())
+            .await
+            .unwrap();
+
+        let mut request = format!("ws://{}/jsonrpc", addrs.rpc)
+            .into_client_request()
+            .unwrap();
+        request
+            .headers_mut()
+            .insert("Origin", "https://ui.example".parse().unwrap());
+
+        let result = connect_async(request).await;
+        assert!(
+            result.is_ok(),
+            "browser-style WS upgrade should succeed when rpc_allow_origin_all is enabled: {result:?}"
+        );
+
+        cancel.cancel();
+    }
+
+    #[tokio::test]
+    async fn authenticated_ws_with_origin_receives_notifications_when_origin_and_secret_policies_allow_it() {
+        let config = GlobalConfig {
+            rpc_secret: Some("topsecret".into()),
+            rpc_allow_origin_all: true,
+            ..GlobalConfig::default()
+        };
+        let engine = Arc::new(Engine::new(config));
+        let cancel = CancellationToken::new();
+        let rpc_config = RpcServerConfig {
+            listen_addr: SocketAddr::from(([127, 0, 0, 1], 0)),
+        };
+        let addrs = start_rpc_server(engine.clone(), &rpc_config, cancel.clone())
+            .await
+            .unwrap();
+
+        let mut request = format!("ws://{}/jsonrpc", addrs.rpc)
+            .into_client_request()
+            .unwrap();
+        request
+            .headers_mut()
+            .insert("Origin", "https://ui.example".parse().unwrap());
+
+        let (mut ws_stream, _) = connect_async(request)
+            .await
+            .expect("WS connect with allowed Origin failed");
+
+        let auth_request = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 8,
+            "method": "aria2.getVersion",
+            "params": ["token:topsecret"],
+        });
+        ws_stream
+            .send(Message::Text(auth_request.to_string()))
+            .await
+            .expect("send auth request over WS");
+
+        let response = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            ws_stream.next(),
+        )
+        .await
+        .expect("timed out waiting for WS auth response")
+        .expect("stream ended before auth response")
+        .expect("WS auth response frame error");
+        let response_json: serde_json::Value =
+            serde_json::from_str(response.to_text().unwrap()).unwrap();
+        assert_eq!(response_json["id"], 8);
+        assert!(response_json.get("result").is_some());
+
+        let spec = raria_core::engine::AddUriSpec {
+            uris: vec!["https://example.com/origin-secret.bin".into()],
+            filename: Some("origin-secret.bin".into()),
+            dir: std::path::PathBuf::from("/tmp"),
+            connections: 1,
+        };
+        let _handle = engine.add_uri(&spec).unwrap();
+
+        let notification = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            ws_stream.next(),
+        )
+        .await
+        .expect("timed out waiting for authenticated WS notification")
+        .expect("stream ended before notification")
+        .expect("WS notification frame error");
+
+        let json: serde_json::Value =
+            serde_json::from_str(notification.to_text().unwrap()).unwrap();
         assert_eq!(json["method"], "aria2.onDownloadStart");
 
         cancel.cancel();

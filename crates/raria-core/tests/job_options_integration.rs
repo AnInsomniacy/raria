@@ -32,10 +32,12 @@ mod tests {
     /// Job can be created with custom options.
     #[test]
     fn job_with_custom_options() {
-        let mut opts = JobOptions::default();
-        opts.max_connections = 4;
-        opts.max_download_limit = 1_048_576; // 1 MiB/s
-        opts.out = Some("custom_name.zip".into());
+        let opts = JobOptions {
+            max_connections: 4,
+            max_download_limit: 1_048_576, // 1 MiB/s
+            out: Some("custom_name.zip".into()),
+            ..JobOptions::default()
+        };
 
         let job = Job::new_range_with_options(
             vec!["https://example.com/file.bin".into()],
@@ -51,8 +53,10 @@ mod tests {
     /// Options survive serialization roundtrip (critical for persistence).
     #[test]
     fn job_options_survive_serialization() {
-        let mut opts = JobOptions::default();
-        opts.max_connections = 8;
+        let mut opts = JobOptions {
+            max_connections: 8,
+            ..JobOptions::default()
+        };
         opts.headers
             .push(("Referer".into(), "https://example.com".into()));
 
@@ -76,9 +80,11 @@ mod tests {
         let tmp = NamedTempFile::new().unwrap();
         let store = Store::open(tmp.path()).unwrap();
 
-        let mut opts = JobOptions::default();
-        opts.max_connections = 2;
-        opts.out = Some("output.tar.gz".into());
+        let opts = JobOptions {
+            max_connections: 2,
+            out: Some("output.tar.gz".into()),
+            ..JobOptions::default()
+        };
 
         let job = Job::new_range_with_options(
             vec!["https://example.com/archive.tar.gz".into()],

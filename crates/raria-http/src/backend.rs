@@ -24,6 +24,8 @@ use tokio_util::io::StreamReader;
 use tracing::debug;
 use url::Url;
 
+type NetrcAuthMap = Arc<HashMap<String, (String, String)>>;
+
 /// Configuration for the HTTP backend.
 ///
 /// Matches aria2's HTTP-related options: proxy, TLS, user-agent, cookies.
@@ -59,7 +61,7 @@ pub struct HttpBackendConfig {
 #[derive(Debug, Clone)]
 pub struct HttpBackend {
     client: Client,
-    netrc_auth: Option<Arc<HashMap<String, (String, String)>>>,
+    netrc_auth: Option<NetrcAuthMap>,
 }
 
 impl HttpBackend {
@@ -330,7 +332,7 @@ impl HttpBackend {
     }
 }
 
-fn load_netrc_auth(path: Option<&std::path::Path>) -> Result<Option<Arc<HashMap<String, (String, String)>>>> {
+fn load_netrc_auth(path: Option<&std::path::Path>) -> Result<Option<NetrcAuthMap>> {
     let parsed = match path {
         Some(path) => Netrc::from_file(path)
             .with_context(|| format!("failed to load netrc file: {}", path.display()))?,

@@ -37,3 +37,4 @@ tempfile = { workspace = true }
 wiremock = { workspace = true }
 reqwest = { workspace = true }
 serde_json = { workspace = true }
+tokio-tungstenite = { workspace = true }

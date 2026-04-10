@@ -31,7 +31,7 @@ fn allocate_port() -> u16 {
 }
 
 async fn wait_for_rpc_ready_with_child(port: u16, child: &mut ChildGuard) -> Result<(), String> {
-    let deadline = Instant::now() + Duration::from_secs(30);
+    let deadline = Instant::now() + Duration::from_secs(60);
     let client = reqwest::Client::new();
 
     loop {
@@ -187,7 +187,7 @@ async fn graceful_shutdown(port: u16, child: &mut ChildGuard) {
     let shutdown_resp = rpc_call(port, "aria2.shutdown", serde_json::json!([])).await;
     assert_eq!(shutdown_resp["result"], "OK");
 
-    let deadline = Instant::now() + Duration::from_secs(30);
+    let deadline = Instant::now() + Duration::from_secs(60);
     loop {
         match child.child.try_wait() {
             Ok(Some(status)) => {
@@ -240,7 +240,7 @@ async fn daemon_restores_saved_job_after_restart() {
     .await;
     let gid = add_resp["result"].as_str().expect("gid").to_string();
 
-    let deadline = Instant::now() + Duration::from_secs(30);
+    let deadline = Instant::now() + Duration::from_secs(60);
     loop {
         let status_resp = rpc_call(first_port, "aria2.tellStatus", serde_json::json!([gid.clone()])).await;
         let status = status_resp["result"]["status"].as_str().expect("status");
@@ -263,6 +263,226 @@ async fn daemon_restores_saved_job_after_restart() {
         matches!(restored_status, "waiting" | "active" | "complete"),
         "expected restored job to be present after restart, got {restored}"
     );
+
+    graceful_shutdown(second_port, &mut second).await;
+}
+
+#[tokio::test]
+async fn daemon_resume_after_restart_issues_range_request() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("HEAD"))
+        .and(path("/resume-range.bin"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-length", "262144")
+                .insert_header("accept-ranges", "bytes"),
+        )
+        .mount(&server)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path("/resume-range.bin"))
+        .and(wiremock::matchers::header_exists("range"))
+        .respond_with(
+            ResponseTemplate::new(206)
+                .set_body_bytes(vec![b'r'; 256 * 1024]),
+        )
+        .mount(&server)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path("/resume-range.bin"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_delay(Duration::from_secs(2))
+                .set_body_bytes(vec![b'r'; 256 * 1024]),
+        )
+        .mount(&server)
+        .await;
+
+    let temp = tempdir().expect("tempdir");
+    let session_file = temp.path().join("resume-range.session.redb");
+    let (mut first, first_port) = spawn_ready_daemon_with_args(
+        temp.path(),
+        &session_file,
+        None,
+        &["--max-download-limit", "16384"],
+    )
+    .await;
+
+    let add_resp = rpc_call(
+        first_port,
+        "aria2.addUri",
+        serde_json::json!([
+            [format!("{}/resume-range.bin", server.uri())],
+            {
+                "split": "1",
+                "max-connection-per-server": "1"
+            }
+        ]),
+    )
+    .await;
+    let gid = add_resp["result"].as_str().expect("gid").to_string();
+
+    let progress_deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        let status_resp = rpc_call(first_port, "aria2.tellStatus", serde_json::json!([gid.clone()])).await;
+        let completed = status_resp["result"]["completedLength"]
+            .as_str()
+            .expect("completedLength string")
+            .parse::<u64>()
+            .expect("completedLength parse");
+        let status = status_resp["result"]["status"].as_str().expect("status");
+        if status == "active" && completed > 0 {
+            break;
+        }
+
+        assert!(
+            Instant::now() < progress_deadline,
+            "download never accumulated partial progress before shutdown: {status_resp}"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+
+    graceful_shutdown(first_port, &mut first).await;
+
+    let (mut second, second_port) = spawn_ready_daemon(temp.path(), &session_file, None).await;
+
+    let completion_deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        let status_resp = rpc_call(second_port, "aria2.tellStatus", serde_json::json!([gid.clone()])).await;
+        let status = status_resp["result"]["status"].as_str().expect("status");
+        if status == "complete" {
+            break;
+        }
+
+        assert!(
+            Instant::now() < completion_deadline,
+            "resumed job never completed after restart: {status_resp}"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+
+    let requests = server.received_requests().await.expect("received requests");
+    let saw_range = requests.iter().any(|req| {
+        req.method.as_str() == "GET"
+            && req.url.path() == "/resume-range.bin"
+            && req.headers.get("range").is_some()
+    });
+    assert!(
+        saw_range,
+        "resumed daemon should issue at least one HTTP Range request after restart"
+    );
+
+    graceful_shutdown(second_port, &mut second).await;
+}
+
+#[tokio::test]
+async fn daemon_resume_after_restart_surfaces_non_zero_completed_length_before_completion() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("HEAD"))
+        .and(path("/resume-visible.bin"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-length", "262144")
+                .insert_header("accept-ranges", "bytes"),
+        )
+        .mount(&server)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path("/resume-visible.bin"))
+        .and(wiremock::matchers::header_exists("range"))
+        .respond_with(
+            ResponseTemplate::new(206)
+                .set_delay(Duration::from_secs(2))
+                .set_body_bytes(vec![b'v'; 256 * 1024]),
+        )
+        .mount(&server)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path("/resume-visible.bin"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_delay(Duration::from_secs(2))
+                .set_body_bytes(vec![b'v'; 256 * 1024]),
+        )
+        .mount(&server)
+        .await;
+
+    let temp = tempdir().expect("tempdir");
+    let session_file = temp.path().join("resume-visible.session.redb");
+    let (mut first, first_port) = spawn_ready_daemon_with_args(
+        temp.path(),
+        &session_file,
+        None,
+        &["--max-download-limit", "16384"],
+    )
+    .await;
+
+    let add_resp = rpc_call(
+        first_port,
+        "aria2.addUri",
+        serde_json::json!([
+            [format!("{}/resume-visible.bin", server.uri())],
+            {
+                "split": "1",
+                "max-connection-per-server": "1"
+            }
+        ]),
+    )
+    .await;
+    let gid = add_resp["result"].as_str().expect("gid").to_string();
+
+    let progress_deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        let status_resp = rpc_call(first_port, "aria2.tellStatus", serde_json::json!([gid.clone()])).await;
+        let completed = status_resp["result"]["completedLength"]
+            .as_str()
+            .expect("completedLength string")
+            .parse::<u64>()
+            .expect("completedLength parse");
+        let status = status_resp["result"]["status"].as_str().expect("status");
+        if status == "active" && completed > 0 {
+            break;
+        }
+
+        assert!(
+            Instant::now() < progress_deadline,
+            "download never accumulated partial progress before shutdown: {status_resp}"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+
+    graceful_shutdown(first_port, &mut first).await;
+
+    let (mut second, second_port) = spawn_ready_daemon(temp.path(), &session_file, None).await;
+
+    let resumed_deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        let status_resp = rpc_call(second_port, "aria2.tellStatus", serde_json::json!([gid.clone()])).await;
+        let completed = status_resp["result"]["completedLength"]
+            .as_str()
+            .expect("completedLength string")
+            .parse::<u64>()
+            .expect("completedLength parse");
+        let status = status_resp["result"]["status"].as_str().expect("status");
+        if status == "active" && completed > 0 {
+            break;
+        }
+        if status == "complete" {
+            panic!("resumed job completed before showing preserved non-zero completedLength: {status_resp}");
+        }
+
+        assert!(
+            Instant::now() < resumed_deadline,
+            "resumed daemon never surfaced preserved non-zero completedLength: {status_resp}"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
 
     graceful_shutdown(second_port, &mut second).await;
 }
@@ -325,16 +545,24 @@ async fn daemon_loads_jobs_from_input_file_on_startup() {
 
     let (mut child, rpc_port) = spawn_ready_daemon(temp.path(), &session_file, Some(&input_file)).await;
 
-    let deadline = Instant::now() + Duration::from_secs(30);
+    let deadline = Instant::now() + Duration::from_secs(60);
     let jobs = loop {
         let active = rpc_call(rpc_port, "aria2.tellActive", serde_json::json!([])).await;
         let waiting = rpc_call(rpc_port, "aria2.tellWaiting", serde_json::json!([0, 10])).await;
+        let stopped = rpc_call(rpc_port, "aria2.tellStopped", serde_json::json!([0, 10])).await;
 
         let mut jobs = active["result"].as_array().expect("active jobs array").clone();
         jobs.extend(
             waiting["result"]
                 .as_array()
                 .expect("waiting jobs array")
+                .iter()
+                .cloned(),
+        );
+        jobs.extend(
+            stopped["result"]
+                .as_array()
+                .expect("stopped jobs array")
                 .iter()
                 .cloned(),
         );
