@@ -318,7 +318,7 @@ async fn bt_service_downloads_real_torrent_from_seed_peer_and_exposes_peer_detai
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn bt_service_attempts_peer_download_through_socks5_proxy() {
+async fn bt_service_completes_peer_download_through_socks5_proxy() {
     let seed = start_seed_fixture(4 * 1024 * 1024)
         .await
         .expect("seed fixture");
@@ -337,19 +337,49 @@ async fn bt_service_attempts_peer_download_through_socks5_proxy() {
     )
     .expect("create bt service");
 
-    let _ = timeout(Duration::from_secs(10), async {
-        let _ = wait_for_bt_download(&service, Gid::from_raw(2), seed.torrent_bytes.clone()).await;
+    let handle = service
+        .add(
+            BtSource::TorrentBytes(seed.torrent_bytes.clone()),
+            Gid::from_raw(2),
+            None,
+            None,
+        )
+        .await
+        .expect("add proxied torrent to BtService");
+
+    timeout(Duration::from_secs(10), async {
+        loop {
+            let status = service.status(&handle).await.expect("proxied bt status");
+            if status.is_complete {
+                return;
+            }
+            sleep(Duration::from_millis(100)).await;
+        }
     })
-    .await;
+    .await
+    .expect("BT completion via SOCKS5 proxy timeout");
+
+    let files = service.file_list(&handle).await.expect("bt file list");
+    let fixture_entry = files
+        .iter()
+        .find(|entry| entry.path.as_os_str() == std::ffi::OsStr::new(&seed.output_name))
+        .expect("fixture file entry");
+    assert_eq!(fixture_entry.size, seed.payload.len() as u64);
+    assert_eq!(fixture_entry.completed_length, seed.payload.len() as u64);
+    assert!(fixture_entry.selected);
+
+    assert_eq!(
+        fs::read(download_dir.path().join(&seed.output_name)).expect("read proxied torrent"),
+        seed.payload
+    );
 
     assert!(
         proxy_connects.load(Ordering::SeqCst) >= 1,
-        "expected BT peer traffic to attempt traversal through the SOCKS5 proxy"
+        "expected BT peer traffic to traverse the SOCKS5 proxy"
     );
 
     service.shutdown().await;
 }
-
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn bt_service_persists_fastresume_state_and_restores_progress_after_restart() {

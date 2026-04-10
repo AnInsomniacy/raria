@@ -80,7 +80,7 @@
 | WebSeed (BEP-17/19) | ✅ | ❌ | `gap` | BT-GAP-002 |
 | Rarest-first | ✅ | ❌ | `gap` | BT-GAP-003 |
 | HTTP+BT mixed source | ✅ | ❌ | `gap` | BT-GAP-004 |
-| SOCKS5 proxy | ✅ | ✅ | `wired` | BT hot path forwards `socks5://` all-proxy into librqbit session options, rejects non-SOCKS proxy schemes in tests, and dedicated smoke proves peer traffic attempts the SOCKS5 relay, but end-to-end proxied torrent completion is still not verified |
+| SOCKS5 proxy | ✅ | ✅ | `tested` | BT hot path forwards `socks5://` all-proxy into librqbit session options, rejects non-SOCKS proxy schemes in tests, and dedicated `raria-bt` smoke now proves end-to-end torrent completion through the SOCKS5 relay |
 
 ## Metalink
 
