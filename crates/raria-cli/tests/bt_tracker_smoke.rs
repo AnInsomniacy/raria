@@ -1,6 +1,7 @@
 use std::io::Read;
 use std::net::TcpListener;
 use std::process::{Child, Command, Stdio};
+use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 use base64::Engine;
@@ -12,6 +13,8 @@ use librqbit::{
 use tempfile::tempdir;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
+
+static BT_DAEMON_SMOKE_LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
 
 fn cargo_bin(name: &str) -> String {
     std::env::var(format!("CARGO_BIN_EXE_{name}")).expect("cargo should provide binary path")
@@ -114,6 +117,13 @@ async fn spawn_ready_daemon(
     panic!("failed to start daemon on a free RPC port after multiple attempts");
 }
 
+async fn lock_bt_daemon_smoke_lane() -> tokio::sync::MutexGuard<'static, ()> {
+    BT_DAEMON_SMOKE_LOCK
+        .get_or_init(|| tokio::sync::Mutex::new(()))
+        .lock()
+        .await
+}
+
 struct BtSeedFixture {
     tracker_url: String,
     torrent_b64: String,
@@ -198,6 +208,7 @@ async fn spawn_bt_seed_fixture() -> BtSeedFixture {
 
 #[tokio::test]
 async fn daemon_bt_tracker_option_announces_to_tracker_on_real_daemon_path() {
+    let _guard = lock_bt_daemon_smoke_lane().await;
     let fixture = spawn_bt_seed_fixture().await;
     let temp = tempdir().expect("tempdir");
     let session_file = temp.path().join("bt-download.session.redb");
@@ -304,6 +315,7 @@ async fn daemon_bt_tracker_option_announces_to_tracker_on_real_daemon_path() {
 
 #[tokio::test]
 async fn daemon_get_peers_exposes_live_bt_peer_details_over_rpc() {
+    let _guard = lock_bt_daemon_smoke_lane().await;
     let fixture = spawn_bt_seed_fixture_with_payload((0..(8 * 1024 * 1024)).map(|idx| (idx % 251) as u8).collect()).await;
     let temp = tempdir().expect("tempdir");
     let session_file = temp.path().join("bt-get-peers.session.redb");
