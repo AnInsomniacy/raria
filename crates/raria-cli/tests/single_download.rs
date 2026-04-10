@@ -1,11 +1,11 @@
+use rustls::pki_types::{PrivateKeyDer, PrivatePkcs8KeyDer};
+use rustls::{RootCertStore, ServerConfig};
 use std::process::Command;
 use std::sync::{
     Arc,
     atomic::{AtomicUsize, Ordering},
 };
 use std::{fs, io::Write};
-use rustls::pki_types::{PrivateKeyDer, PrivatePkcs8KeyDer};
-use rustls::{RootCertStore, ServerConfig};
 use tempfile::tempdir;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
@@ -42,7 +42,9 @@ async fn spawn_ftp_server(
     file_path: &'static str,
     file_data: &'static [u8],
 ) -> FtpFixture {
-    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind ftp listener");
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind ftp listener");
     let port = listener.local_addr().expect("ftp addr").port();
 
     tokio::spawn(async move {
@@ -75,15 +77,20 @@ async fn spawn_explicit_ftps_server(
     let _ = provider.clone().install_default();
 
     let ca_key = KeyPair::generate().expect("generate ca key");
-    let mut ca_params = CertificateParams::new(vec!["raria-ftps-test-ca".into()]).expect("ca params");
+    let mut ca_params =
+        CertificateParams::new(vec!["raria-ftps-test-ca".into()]).expect("ca params");
     ca_params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
-    ca_params.distinguished_name.push(DnType::CommonName, "raria-ftps-test-ca");
+    ca_params
+        .distinguished_name
+        .push(DnType::CommonName, "raria-ftps-test-ca");
     let ca_cert = ca_params.self_signed(&ca_key).expect("ca cert");
 
     let server_key = KeyPair::generate().expect("generate server key");
-    let mut server_params =
-        CertificateParams::new(vec!["localhost".into(), "127.0.0.1".into()]).expect("server params");
-    server_params.distinguished_name.push(DnType::CommonName, "127.0.0.1");
+    let mut server_params = CertificateParams::new(vec!["localhost".into(), "127.0.0.1".into()])
+        .expect("server params");
+    server_params
+        .distinguished_name
+        .push(DnType::CommonName, "127.0.0.1");
     let server_cert = server_params
         .signed_by(&server_key, &ca_cert, &ca_key)
         .expect("server cert");
@@ -102,7 +109,9 @@ async fn spawn_explicit_ftps_server(
         .expect("ftps server config");
     let acceptor = TlsAcceptor::from(Arc::new(server_config));
 
-    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind ftps listener");
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind ftps listener");
     let port = listener.local_addr().expect("ftps addr").port();
 
     tokio::spawn(async move {
@@ -171,7 +180,8 @@ async fn handle_ftp_client(
                     .expect("write user reply");
             }
             "PASS" => {
-                authenticated = seen_user.as_deref() == Some(expected_user) && arg == expected_password;
+                authenticated =
+                    seen_user.as_deref() == Some(expected_user) && arg == expected_password;
                 let code = if authenticated { 230 } else { 530 };
                 let message = if authenticated {
                     "login successful"
@@ -204,7 +214,9 @@ async fn handle_ftp_client(
             }
             "PASV" => {
                 assert!(authenticated, "PASV before authentication");
-                let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind data listener");
+                let listener = TcpListener::bind("127.0.0.1:0")
+                    .await
+                    .expect("bind data listener");
                 let addr = listener.local_addr().expect("data addr");
                 let octets = match addr.ip() {
                     std::net::IpAddr::V4(ip) => ip.octets(),
@@ -287,7 +299,10 @@ async fn handle_ftps_client(
             write_ftp_reply(reader.get_mut(), 234, "AUTH TLS accepted")
                 .await
                 .expect("write auth reply");
-            let tls_stream = acceptor.accept(reader.into_inner()).await.expect("upgrade control tls");
+            let tls_stream = acceptor
+                .accept(reader.into_inner())
+                .await
+                .expect("upgrade control tls");
             handle_ftps_tls_session(
                 tls_stream,
                 acceptor,
@@ -346,11 +361,16 @@ async fn handle_ftps_tls_session(
                     .expect("write user reply");
             }
             "PASS" => {
-                authenticated = seen_user.as_deref() == Some(expected_user) && arg == expected_password;
+                authenticated =
+                    seen_user.as_deref() == Some(expected_user) && arg == expected_password;
                 write_ftp_reply(
                     reader.get_mut(),
                     if authenticated { 230 } else { 530 },
-                    if authenticated { "login successful" } else { "login incorrect" },
+                    if authenticated {
+                        "login successful"
+                    } else {
+                        "login incorrect"
+                    },
                 )
                 .await
                 .expect("write pass reply");
@@ -388,7 +408,9 @@ async fn handle_ftps_tls_session(
                     .expect("write rest");
             }
             "PASV" => {
-                let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind ftps data listener");
+                let listener = TcpListener::bind("127.0.0.1:0")
+                    .await
+                    .expect("bind ftps data listener");
                 let addr = listener.local_addr().expect("data addr");
                 let octets = match addr.ip() {
                     std::net::IpAddr::V4(ip) => ip.octets(),
@@ -419,7 +441,10 @@ async fn handle_ftps_tls_session(
                     .expect("write retr");
                 let (data_stream, _) = listener.accept().await.expect("accept data");
                 if protect_private {
-                    let mut data_stream = acceptor.accept(data_stream).await.expect("upgrade data tls");
+                    let mut data_stream = acceptor
+                        .accept(data_stream)
+                        .await
+                        .expect("upgrade data tls");
                     data_stream
                         .write_all(&file_data[pending_offset.min(file_data.len())..])
                         .await
@@ -473,16 +498,25 @@ async fn spawn_socks5_proxy(connect_count: Arc<AtomicUsize>) -> String {
             let connect_count = Arc::clone(&connect_count);
             tokio::spawn(async move {
                 let mut greeting = [0u8; 2];
-                downstream.read_exact(&mut greeting).await.expect("read greeting");
+                downstream
+                    .read_exact(&mut greeting)
+                    .await
+                    .expect("read greeting");
                 let mut methods = vec![0u8; greeting[1] as usize];
-                downstream.read_exact(&mut methods).await.expect("read methods");
+                downstream
+                    .read_exact(&mut methods)
+                    .await
+                    .expect("read methods");
                 downstream
                     .write_all(&[0x05, 0x00])
                     .await
                     .expect("write method select");
 
                 let mut req = [0u8; 4];
-                downstream.read_exact(&mut req).await.expect("read request header");
+                downstream
+                    .read_exact(&mut req)
+                    .await
+                    .expect("read request header");
                 let target = match req[3] {
                     0x01 => {
                         let mut ipv4 = [0u8; 4];
@@ -491,12 +525,19 @@ async fn spawn_socks5_proxy(connect_count: Arc<AtomicUsize>) -> String {
                         downstream.read_exact(&mut port).await.expect("read port");
                         format!(
                             "{}.{}.{}.{}:{}",
-                            ipv4[0], ipv4[1], ipv4[2], ipv4[3], u16::from_be_bytes(port)
+                            ipv4[0],
+                            ipv4[1],
+                            ipv4[2],
+                            ipv4[3],
+                            u16::from_be_bytes(port)
                         )
                     }
                     0x03 => {
                         let mut len = [0u8; 1];
-                        downstream.read_exact(&mut len).await.expect("read host len");
+                        downstream
+                            .read_exact(&mut len)
+                            .await
+                            .expect("read host len");
                         let mut host = vec![0u8; len[0] as usize];
                         downstream.read_exact(&mut host).await.expect("read host");
                         let mut port = [0u8; 2];
@@ -516,7 +557,9 @@ async fn spawn_socks5_proxy(connect_count: Arc<AtomicUsize>) -> String {
                     .write_all(&[0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0])
                     .await
                     .expect("write connect reply");
-                if let Err(error) = tokio::io::copy_bidirectional(&mut downstream, &mut upstream).await {
+                if let Err(error) =
+                    tokio::io::copy_bidirectional(&mut downstream, &mut upstream).await
+                {
                     assert!(is_disconnect(&error), "relay socks5: {error}");
                 }
             });
@@ -545,20 +588,27 @@ async fn spawn_mtls_server(temp: &std::path::Path) -> MtlsFixture {
     let ca_key = KeyPair::generate().expect("generate ca key");
     let mut ca_params = CertificateParams::new(vec!["raria-test-ca".into()]).expect("ca params");
     ca_params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
-    ca_params.distinguished_name.push(DnType::CommonName, "raria-test-ca");
+    ca_params
+        .distinguished_name
+        .push(DnType::CommonName, "raria-test-ca");
     let ca_cert = ca_params.self_signed(&ca_key).expect("ca cert");
 
     let server_key = KeyPair::generate().expect("generate server key");
-    let mut server_params =
-        CertificateParams::new(vec!["localhost".into(), "127.0.0.1".into()]).expect("server params");
-    server_params.distinguished_name.push(DnType::CommonName, "localhost");
+    let mut server_params = CertificateParams::new(vec!["localhost".into(), "127.0.0.1".into()])
+        .expect("server params");
+    server_params
+        .distinguished_name
+        .push(DnType::CommonName, "localhost");
     let server_cert = server_params
         .signed_by(&server_key, &ca_cert, &ca_key)
         .expect("server cert");
 
     let client_key = KeyPair::generate().expect("generate client key");
-    let mut client_params = CertificateParams::new(vec!["raria-client".into()]).expect("client params");
-    client_params.distinguished_name.push(DnType::CommonName, "raria-client");
+    let mut client_params =
+        CertificateParams::new(vec!["raria-client".into()]).expect("client params");
+    client_params
+        .distinguished_name
+        .push(DnType::CommonName, "raria-client");
     let client_cert = client_params
         .signed_by(&client_key, &ca_cert, &ca_key)
         .expect("client cert");
@@ -586,7 +636,9 @@ async fn spawn_mtls_server(temp: &std::path::Path) -> MtlsFixture {
         )
         .expect("server config");
 
-    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind listener");
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind listener");
     let addr = listener.local_addr().expect("listener addr");
     let acceptor = TlsAcceptor::from(Arc::new(server_config));
 
@@ -604,7 +656,9 @@ async fn spawn_mtls_server(temp: &std::path::Path) -> MtlsFixture {
             } else {
                 "HTTP/1.1 404 Not Found\r\ncontent-length: 0\r\n\r\n".to_string()
             };
-            tls.write_all(response.as_bytes()).await.expect("write response");
+            tls.write_all(response.as_bytes())
+                .await
+                .expect("write response");
             tls.flush().await.expect("flush response");
         }
     });
@@ -627,7 +681,10 @@ async fn single_download_uses_suggested_filename_when_out_is_not_provided() {
             ResponseTemplate::new(200)
                 .insert_header("content-length", "11")
                 .insert_header("accept-ranges", "bytes")
-                .insert_header("content-disposition", "attachment; filename=server-name.bin"),
+                .insert_header(
+                    "content-disposition",
+                    "attachment; filename=server-name.bin",
+                ),
         )
         .mount(&server)
         .await;
@@ -660,7 +717,10 @@ async fn single_download_uses_suggested_filename_when_out_is_not_provided() {
         "expected downloaded file at {}",
         expected.display()
     );
-    assert_eq!(std::fs::read(&expected).expect("read downloaded file"), b"hello world");
+    assert_eq!(
+        std::fs::read(&expected).expect("read downloaded file"),
+        b"hello world"
+    );
 }
 
 #[tokio::test]
@@ -673,7 +733,10 @@ async fn single_download_keeps_explicit_out_over_suggested_filename() {
             ResponseTemplate::new(200)
                 .insert_header("content-length", "11")
                 .insert_header("accept-ranges", "bytes")
-                .insert_header("content-disposition", "attachment; filename=server-name.bin"),
+                .insert_header(
+                    "content-disposition",
+                    "attachment; filename=server-name.bin",
+                ),
         )
         .mount(&server)
         .await;
@@ -752,7 +815,10 @@ async fn single_download_sends_basic_auth_from_cli_flags() {
     let server = MockServer::start().await;
     let auth_value = format!(
         "Basic {}",
-        base64::Engine::encode(&base64::engine::general_purpose::STANDARD, b"cli-user:cli-pass")
+        base64::Engine::encode(
+            &base64::engine::general_purpose::STANDARD,
+            b"cli-user:cli-pass"
+        )
     );
 
     Mock::given(method("HEAD"))
@@ -967,7 +1033,11 @@ async fn single_download_auto_renames_when_target_file_exists() {
 
     assert_eq!(fs::read(&original).expect("read original"), b"old!");
     let renamed = tmp.path().join("file.bin.1");
-    assert!(renamed.is_file(), "expected auto-renamed file at {}", renamed.display());
+    assert!(
+        renamed.is_file(),
+        "expected auto-renamed file at {}",
+        renamed.display()
+    );
     assert_eq!(fs::read(&renamed).expect("read renamed"), b"new!");
 }
 
@@ -976,7 +1046,10 @@ async fn single_download_uses_netrc_credentials_for_http_auth() {
     let server = MockServer::start().await;
     let auth_value = format!(
         "Basic {}",
-        base64::Engine::encode(&base64::engine::general_purpose::STANDARD, b"netrc-user:netrc-pass")
+        base64::Engine::encode(
+            &base64::engine::general_purpose::STANDARD,
+            b"netrc-user:netrc-pass"
+        )
     );
 
     Mock::given(method("HEAD"))
@@ -1030,7 +1103,10 @@ async fn single_download_no_netrc_disables_netrc_credentials() {
     let server = MockServer::start().await;
     let auth_value = format!(
         "Basic {}",
-        base64::Engine::encode(&base64::engine::general_purpose::STANDARD, b"netrc-user:netrc-pass")
+        base64::Engine::encode(
+            &base64::engine::general_purpose::STANDARD,
+            b"netrc-user:netrc-pass"
+        )
     );
 
     Mock::given(method("HEAD"))
@@ -1498,7 +1574,8 @@ async fn single_download_continue_resumes_from_existing_file_length() {
 
 #[tokio::test]
 async fn single_download_supports_plain_ftp_urls() {
-    let fixture = spawn_ftp_server("cli-user", "cli-pass", "/pub/file.bin", b"hello-from-ftp").await;
+    let fixture =
+        spawn_ftp_server("cli-user", "cli-pass", "/pub/file.bin", b"hello-from-ftp").await;
     let tmp = tempdir().expect("tempdir");
     let download_dir = tmp.path().to_path_buf();
     let url = format!(
@@ -1532,7 +1609,13 @@ async fn single_download_supports_plain_ftp_urls() {
 
 #[tokio::test]
 async fn single_download_supports_plain_ftp_urls_through_socks5_proxy() {
-    let fixture = spawn_ftp_server("proxy-user", "proxy-pass", "/pub/proxy.bin", b"ftp-via-proxy").await;
+    let fixture = spawn_ftp_server(
+        "proxy-user",
+        "proxy-pass",
+        "/pub/proxy.bin",
+        b"ftp-via-proxy",
+    )
+    .await;
     let connect_count = Arc::new(AtomicUsize::new(0));
     let proxy = spawn_socks5_proxy(Arc::clone(&connect_count)).await;
     let tmp = tempdir().expect("tempdir");

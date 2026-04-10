@@ -8,7 +8,9 @@ use raria_sftp::backend::{SftpBackend, SftpBackendConfig};
 use russh::keys::ssh_key::{LineEnding, rand_core::OsRng};
 use russh::server::{Auth, Msg, Server as _, Session};
 use russh::{Channel, ChannelId};
-use russh_sftp::protocol::{Attrs, Data, FileAttributes, Handle, Name, OpenFlags, Status, StatusCode, Version};
+use russh_sftp::protocol::{
+    Attrs, Data, FileAttributes, Handle, Name, OpenFlags, Status, StatusCode, Version,
+};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::sync::Mutex;
@@ -125,11 +127,7 @@ impl russh_sftp::server::Handler for SftpSession {
         Ok(Version::new())
     }
 
-    async fn realpath(
-        &mut self,
-        id: u32,
-        path: String,
-    ) -> Result<Name, Self::Error> {
+    async fn realpath(&mut self, id: u32, path: String) -> Result<Name, Self::Error> {
         let resolved = if path == "." { "/".to_string() } else { path };
         Ok(Name {
             id,
@@ -137,11 +135,7 @@ impl russh_sftp::server::Handler for SftpSession {
         })
     }
 
-    async fn stat(
-        &mut self,
-        id: u32,
-        path: String,
-    ) -> Result<Attrs, Self::Error> {
+    async fn stat(&mut self, id: u32, path: String) -> Result<Attrs, Self::Error> {
         if path != self.file_path {
             return Err(StatusCode::NoSuchFile);
         }
@@ -161,7 +155,10 @@ impl russh_sftp::server::Handler for SftpSession {
         if filename != self.file_path {
             return Err(StatusCode::NoSuchFile);
         }
-        Ok(Handle { id, handle: filename })
+        Ok(Handle {
+            id,
+            handle: filename,
+        })
     }
 
     async fn read(
@@ -185,11 +182,7 @@ impl russh_sftp::server::Handler for SftpSession {
         })
     }
 
-    async fn close(
-        &mut self,
-        id: u32,
-        _handle: String,
-    ) -> Result<Status, Self::Error> {
+    async fn close(&mut self, id: u32, _handle: String) -> Result<Status, Self::Error> {
         Ok(Status {
             id,
             status_code: StatusCode::Ok,
@@ -209,12 +202,13 @@ async fn spawn_sftp_server(file_path: &str, contents: &'static [u8]) -> SftpServ
     let port = listener.local_addr().expect("local addr").port();
     drop(listener);
 
-    let host_key = russh::keys::PrivateKey::random(
-        &mut OsRng,
-        russh::keys::ssh_key::Algorithm::Ed25519,
-    )
-    .unwrap();
-    let host_public_key = host_key.public_key().to_openssh().expect("public key openssh");
+    let host_key =
+        russh::keys::PrivateKey::random(&mut OsRng, russh::keys::ssh_key::Algorithm::Ed25519)
+            .unwrap();
+    let host_public_key = host_key
+        .public_key()
+        .to_openssh()
+        .expect("public key openssh");
 
     let config = russh::server::Config {
         auth_rejection_time: Duration::from_secs(1),
@@ -237,7 +231,10 @@ async fn spawn_sftp_server(file_path: &str, contents: &'static [u8]) -> SftpServ
 
     let deadline = std::time::Instant::now() + Duration::from_secs(5);
     loop {
-        if tokio::net::TcpStream::connect(("127.0.0.1", port)).await.is_ok() {
+        if tokio::net::TcpStream::connect(("127.0.0.1", port))
+            .await
+            .is_ok()
+        {
             break;
         }
         assert!(
@@ -265,17 +262,26 @@ async fn spawn_socks5_proxy() -> String {
             };
             tokio::spawn(async move {
                 let mut greeting = [0u8; 2];
-                downstream.read_exact(&mut greeting).await.expect("read socks greeting");
+                downstream
+                    .read_exact(&mut greeting)
+                    .await
+                    .expect("read socks greeting");
                 let methods_len = greeting[1] as usize;
                 let mut methods = vec![0u8; methods_len];
-                downstream.read_exact(&mut methods).await.expect("read socks methods");
+                downstream
+                    .read_exact(&mut methods)
+                    .await
+                    .expect("read socks methods");
                 downstream
                     .write_all(&[0x05, 0x00])
                     .await
                     .expect("write socks method select");
 
                 let mut req = [0u8; 4];
-                downstream.read_exact(&mut req).await.expect("read socks request header");
+                downstream
+                    .read_exact(&mut req)
+                    .await
+                    .expect("read socks request header");
                 let target = match req[3] {
                     0x01 => {
                         let mut ipv4 = [0u8; 4];
@@ -284,12 +290,19 @@ async fn spawn_socks5_proxy() -> String {
                         downstream.read_exact(&mut port).await.expect("read port");
                         format!(
                             "{}.{}.{}.{}:{}",
-                            ipv4[0], ipv4[1], ipv4[2], ipv4[3], u16::from_be_bytes(port)
+                            ipv4[0],
+                            ipv4[1],
+                            ipv4[2],
+                            ipv4[3],
+                            u16::from_be_bytes(port)
                         )
                     }
                     0x03 => {
                         let mut len = [0u8; 1];
-                        downstream.read_exact(&mut len).await.expect("read host len");
+                        downstream
+                            .read_exact(&mut len)
+                            .await
+                            .expect("read host len");
                         let mut host = vec![0u8; len[0] as usize];
                         downstream.read_exact(&mut host).await.expect("read host");
                         let mut port = [0u8; 2];
@@ -321,9 +334,12 @@ async fn spawn_socks5_proxy() -> String {
 async fn sftp_backend_downloads_file_with_password_auth() {
     let fixture = spawn_sftp_server("/remote/file.txt", b"hello-sftp").await;
     let backend = SftpBackend::with_config(SftpBackendConfig::default());
-    let url = format!("sftp://test-user:test-pass@127.0.0.1:{}/remote/file.txt", fixture.port)
-        .parse()
-        .expect("url");
+    let url = format!(
+        "sftp://test-user:test-pass@127.0.0.1:{}/remote/file.txt",
+        fixture.port
+    )
+    .parse()
+    .expect("url");
 
     let probe = backend
         .probe(&url, &ProbeContext::default())
@@ -336,7 +352,10 @@ async fn sftp_backend_downloads_file_with_password_auth() {
         .await
         .expect("open_from should succeed");
     let mut buf = Vec::new();
-    stream.read_to_end(&mut buf).await.expect("read sftp stream");
+    stream
+        .read_to_end(&mut buf)
+        .await
+        .expect("read sftp stream");
     assert_eq!(buf, b"-sftp");
 }
 
@@ -346,11 +365,8 @@ async fn sftp_backend_downloads_file_with_private_key_auth() {
 
     let dir = tempfile::tempdir().expect("tempdir");
     let key_path = dir.path().join("id_ed25519");
-    let key = russh::keys::PrivateKey::random(
-        &mut OsRng,
-        russh::keys::ssh_key::Algorithm::Ed25519,
-    )
-    .unwrap();
+    let key = russh::keys::PrivateKey::random(&mut OsRng, russh::keys::ssh_key::Algorithm::Ed25519)
+        .unwrap();
     key.write_openssh_file(&key_path, LineEnding::LF)
         .expect("write key");
 
@@ -358,9 +374,12 @@ async fn sftp_backend_downloads_file_with_private_key_auth() {
         private_key_path: Some(key_path),
         ..Default::default()
     });
-    let url = format!("sftp://test-user@127.0.0.1:{}/remote/key-auth.txt", fixture.port)
-        .parse()
-        .expect("url");
+    let url = format!(
+        "sftp://test-user@127.0.0.1:{}/remote/key-auth.txt",
+        fixture.port
+    )
+    .parse()
+    .expect("url");
 
     let probe = backend
         .probe(&url, &ProbeContext::default())
@@ -373,7 +392,10 @@ async fn sftp_backend_downloads_file_with_private_key_auth() {
         .await
         .expect("open_from should succeed with key auth");
     let mut buf = Vec::new();
-    stream.read_to_end(&mut buf).await.expect("read sftp stream");
+    stream
+        .read_to_end(&mut buf)
+        .await
+        .expect("read sftp stream");
     assert_eq!(buf, b"key");
 }
 

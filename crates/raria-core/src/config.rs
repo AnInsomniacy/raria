@@ -2,8 +2,8 @@
 //
 // This module defines configuration structures for global and per-job settings.
 
-use serde::{Deserialize, Serialize};
 use crate::file_alloc::FileAllocation;
+use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 /// Global configuration for the raria daemon.
@@ -243,7 +243,10 @@ mod tests {
         let cfg = GlobalConfig::default();
         let json = serde_json::to_string(&cfg).unwrap();
         let recovered: GlobalConfig = serde_json::from_str(&json).unwrap();
-        assert_eq!(recovered.max_concurrent_downloads, cfg.max_concurrent_downloads);
+        assert_eq!(
+            recovered.max_concurrent_downloads,
+            cfg.max_concurrent_downloads
+        );
         assert_eq!(recovered.rpc_listen_port, cfg.rpc_listen_port);
     }
 
@@ -259,7 +262,8 @@ mod tests {
     #[test]
     fn job_options_serde_roundtrips() {
         let mut opts = JobOptions::default();
-        opts.headers.push(("Referer".into(), "https://example.com".into()));
+        opts.headers
+            .push(("Referer".into(), "https://example.com".into()));
         opts.out = Some("custom_name.zip".into());
 
         let json = serde_json::to_string(&opts).unwrap();

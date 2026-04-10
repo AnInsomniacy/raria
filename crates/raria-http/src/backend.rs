@@ -10,14 +10,14 @@ use async_trait::async_trait;
 use digest_auth::{AuthContext, HttpMethod as DigestHttpMethod};
 use futures::TryStreamExt;
 use netrc::Netrc;
-use reqwest::StatusCode;
 use raria_range::backend::{
     ByteSourceBackend, ByteStream, Credentials, FileProbe, OpenContext, ProbeContext,
 };
-use reqwest::header::{
-    HeaderMap, HeaderName, HeaderValue, CONTENT_LENGTH, CONTENT_TYPE, ETAG, LAST_MODIFIED, RANGE,
-};
 use reqwest::Client;
+use reqwest::StatusCode;
+use reqwest::header::{
+    CONTENT_LENGTH, CONTENT_TYPE, ETAG, HeaderMap, HeaderName, HeaderValue, LAST_MODIFIED, RANGE,
+};
 use reqwest::redirect::Policy;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -84,8 +84,7 @@ impl HttpBackend {
 
     /// Create a new HTTP backend with the given configuration.
     pub fn with_config(config: &HttpBackendConfig) -> Result<Self> {
-        let _ = rustls::crypto::aws_lc_rs::default_provider()
-            .install_default();
+        let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
 
         let ua = config
             .user_agent
@@ -112,24 +111,21 @@ impl HttpBackend {
 
         // Configure proxy.
         if let Some(ref proxy_url) = config.all_proxy {
-            let mut proxy = reqwest::Proxy::all(proxy_url)
-                .context("invalid all-proxy URL")?;
+            let mut proxy = reqwest::Proxy::all(proxy_url).context("invalid all-proxy URL")?;
             if let Some(ref np) = no_proxy_list {
                 proxy = proxy.no_proxy(Some(np.clone()));
             }
             builder = builder.proxy(proxy);
         }
         if let Some(ref proxy_url) = config.http_proxy {
-            let mut proxy = reqwest::Proxy::http(proxy_url)
-                .context("invalid http-proxy URL")?;
+            let mut proxy = reqwest::Proxy::http(proxy_url).context("invalid http-proxy URL")?;
             if let Some(ref np) = no_proxy_list {
                 proxy = proxy.no_proxy(Some(np.clone()));
             }
             builder = builder.proxy(proxy);
         }
         if let Some(ref proxy_url) = config.https_proxy {
-            let mut proxy = reqwest::Proxy::https(proxy_url)
-                .context("invalid https-proxy URL")?;
+            let mut proxy = reqwest::Proxy::https(proxy_url).context("invalid https-proxy URL")?;
             if let Some(ref np) = no_proxy_list {
                 proxy = proxy.no_proxy(Some(np.clone()));
             }
@@ -148,16 +144,20 @@ impl HttpBackend {
         // Configure client identity for mTLS.
         match (&config.client_certificate, &config.client_private_key) {
             (Some(cert_path), Some(key_path)) => {
-                let cert = std::fs::read(cert_path)
-                    .with_context(|| format!("failed to read client certificate: {}", cert_path.display()))?;
-                let key = std::fs::read(key_path)
-                    .with_context(|| format!("failed to read client private key: {}", key_path.display()))?;
+                let cert = std::fs::read(cert_path).with_context(|| {
+                    format!("failed to read client certificate: {}", cert_path.display())
+                })?;
+                let key = std::fs::read(key_path).with_context(|| {
+                    format!("failed to read client private key: {}", key_path.display())
+                })?;
                 let identity = reqwest::Identity::from_pem(&[cert, key].concat())
                     .context("failed to parse client identity")?;
                 builder = builder.identity(identity);
             }
             (Some(_), None) | (None, Some(_)) => {
-                anyhow::bail!("both certificate and private-key must be set for client TLS identity");
+                anyhow::bail!(
+                    "both certificate and private-key must be set for client TLS identity"
+                );
             }
             (None, None) => {}
         }
@@ -255,8 +255,8 @@ impl HttpBackend {
             return Ok(response);
         };
 
-        let mut prompt = digest_auth::parse(&challenge)
-            .context("failed to parse digest auth challenge")?;
+        let mut prompt =
+            digest_auth::parse(&challenge).context("failed to parse digest auth challenge")?;
         let mut uri_value = uri.path().to_string();
         if let Some(query) = uri.query() {
             uri_value.push('?');
@@ -294,10 +294,8 @@ impl ByteSourceBackend for HttpBackend {
 
         let headers = Self::build_headers(ctx);
         let creds = ctx.auth.as_ref().cloned().or_else(|| {
-            self.netrc_credentials_for(uri).map(|(username, password)| Credentials {
-                username,
-                password,
-            })
+            self.netrc_credentials_for(uri)
+                .map(|(username, password)| Credentials { username, password })
         });
 
         let resp = self
@@ -382,10 +380,8 @@ impl ByteSourceBackend for HttpBackend {
         debug!(uri = %uri, offset, "opening HTTP stream");
 
         let creds = ctx.auth.as_ref().cloned().or_else(|| {
-            self.netrc_credentials_for(uri).map(|(username, password)| Credentials {
-                username,
-                password,
-            })
+            self.netrc_credentials_for(uri)
+                .map(|(username, password)| Credentials { username, password })
         });
 
         let resp = self
@@ -438,9 +434,7 @@ impl ByteSourceBackend for HttpBackend {
         }
 
         // Convert reqwest's bytes stream into AsyncRead via StreamReader.
-        let byte_stream = resp
-            .bytes_stream()
-            .map_err(std::io::Error::other);
+        let byte_stream = resp.bytes_stream().map_err(std::io::Error::other);
 
         let reader = StreamReader::new(byte_stream);
         Ok(Box::pin(reader))

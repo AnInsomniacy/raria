@@ -129,8 +129,11 @@ async fn start_seed_fixture(payload_len: usize) -> Result<SeedFixture> {
     let output_name = "fixture.bin".to_string();
     let source_file = source_root.path().join(&output_name);
     let payload = write_fixture(&source_file, payload_len);
-    fs::write(source_root.path().join("extra.bin"), make_payload(256 * 1024))
-        .expect("write extra payload");
+    fs::write(
+        source_root.path().join("extra.bin"),
+        make_payload(256 * 1024),
+    )
+    .expect("write extra payload");
 
     let torrent = create_torrent(
         source_root.path(),
@@ -282,7 +285,10 @@ async fn bt_service_downloads_real_torrent_from_seed_peer_and_exposes_peer_detai
     let (handle, first_peer) =
         wait_for_bt_download(&service, Gid::from_raw(1), seed.torrent_bytes.clone()).await;
 
-    assert_eq!(first_peer.addr, format!("127.0.0.1:{}", seed.seed_addr.port()));
+    assert_eq!(
+        first_peer.addr,
+        format!("127.0.0.1:{}", seed.seed_addr.port())
+    );
     assert_eq!(first_peer.ip, "127.0.0.1");
     assert_eq!(first_peer.port, seed.seed_addr.port());
 
@@ -310,8 +316,7 @@ async fn bt_service_attempts_peer_download_through_socks5_proxy() {
         .expect("seed fixture");
     let download_dir = tempdir().expect("download tempdir");
     let proxy_connects = Arc::new(AtomicUsize::new(0));
-    let proxy_url = spawn_socks5_proxy(Arc::clone(&proxy_connects))
-        .await;
+    let proxy_url = spawn_socks5_proxy(Arc::clone(&proxy_connects)).await;
 
     let service = BtService::with_config(
         download_dir.path().to_path_buf(),
@@ -352,12 +357,8 @@ async fn bt_service_persists_fastresume_state_and_resumes_after_restart() {
 
     let service = BtService::with_config(download_dir.path().to_path_buf(), config.clone())
         .expect("create bt service");
-    let (_handle, partial_downloaded) = wait_for_partial_bt_download(
-        &service,
-        Gid::from_raw(3),
-        seed.torrent_bytes.clone(),
-    )
-    .await;
+    let (_handle, partial_downloaded) =
+        wait_for_partial_bt_download(&service, Gid::from_raw(3), seed.torrent_bytes.clone()).await;
     service.shutdown().await;
 
     let persistence_dir = download_dir.path().join(".raria-bt-session");

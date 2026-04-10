@@ -12,8 +12,8 @@
 use anyhow::{Context, Result};
 use librqbit::api::{Api, TorrentIdOrHash};
 use librqbit::{
-    AddTorrent, AddTorrentOptions, AddTorrentResponse, ManagedTorrent, Session,
-    SessionOptions, SessionPersistenceConfig,
+    AddTorrent, AddTorrentOptions, AddTorrentResponse, ManagedTorrent, Session, SessionOptions,
+    SessionPersistenceConfig,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -256,10 +256,7 @@ impl BtService {
         // Store the handle for later operations.
         self.handles.write().unwrap().insert(gid, handle);
 
-        Ok(BtHandle {
-            torrent_id,
-            gid,
-        })
+        Ok(BtHandle { torrent_id, gid })
     }
 
     /// Pause a torrent.
@@ -290,10 +287,7 @@ impl BtService {
     pub async fn remove(&self, handle: &BtHandle, delete_files: bool) -> Result<()> {
         let session = self.ensure_session().await?;
         session
-            .delete(
-                TorrentIdOrHash::Id(handle.torrent_id),
-                delete_files,
-            )
+            .delete(TorrentIdOrHash::Id(handle.torrent_id), delete_files)
             .await
             .context("failed to remove torrent")?;
 
@@ -541,8 +535,7 @@ mod tests {
         };
         let error_chain = format!("{error:#}");
         assert!(
-            error_chain.contains("proxy")
-                || error_chain.contains("socks5"),
+            error_chain.contains("proxy") || error_chain.contains("socks5"),
             "unexpected BT proxy error: {error_chain}"
         );
     }
@@ -560,8 +553,14 @@ mod tests {
             },
         );
 
-        assert!(options.fastresume, "BtService must enable librqbit fastresume");
-        assert_eq!(options.socks_proxy_url.as_deref(), Some("socks5://127.0.0.1:1080"));
+        assert!(
+            options.fastresume,
+            "BtService must enable librqbit fastresume"
+        );
+        assert_eq!(
+            options.socks_proxy_url.as_deref(),
+            Some("socks5://127.0.0.1:1080")
+        );
         assert!(options.disable_dht);
         assert!(options.disable_dht_persistence);
         match options.persistence {

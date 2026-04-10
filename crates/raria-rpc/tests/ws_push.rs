@@ -8,12 +8,12 @@ mod tests {
     use futures::{SinkExt, StreamExt};
     use raria_core::config::GlobalConfig;
     use raria_core::engine::Engine;
-    use raria_rpc::server::{start_rpc_server, RpcServerConfig};
+    use raria_rpc::server::{RpcServerConfig, start_rpc_server};
     use std::net::SocketAddr;
     use std::sync::Arc;
     use tokio_tungstenite::connect_async;
-    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
     use tokio_tungstenite::tungstenite::Message;
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
     use tokio_util::sync::CancellationToken;
 
     /// A WS client should receive an aria2.onDownloadStart notification
@@ -35,9 +35,7 @@ mod tests {
 
         // Connect to the WS notification endpoint.
         let ws_url = format!("ws://{}", addrs.ws_notify);
-        let (mut ws_stream, _) = connect_async(&ws_url)
-            .await
-            .expect("WS connect failed");
+        let (mut ws_stream, _) = connect_async(&ws_url).await.expect("WS connect failed");
 
         // Give the WS connection a moment to establish.
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
@@ -52,11 +50,8 @@ mod tests {
         let _handle = engine.add_uri(&spec).unwrap();
 
         // Expect a notification within 2 seconds.
-        let notification = tokio::time::timeout(
-            std::time::Duration::from_secs(2),
-            ws_stream.next(),
-        )
-        .await;
+        let notification =
+            tokio::time::timeout(std::time::Duration::from_secs(2), ws_stream.next()).await;
 
         assert!(
             notification.is_ok(),
@@ -90,9 +85,7 @@ mod tests {
             .unwrap();
 
         let ws_url = format!("ws://{}", addrs.ws_notify);
-        let (mut ws_stream, _) = connect_async(&ws_url)
-            .await
-            .expect("WS connect failed");
+        let (mut ws_stream, _) = connect_async(&ws_url).await.expect("WS connect failed");
 
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
@@ -104,11 +97,8 @@ mod tests {
         };
         let _handle = engine.add_uri(&spec).unwrap();
 
-        let notification = tokio::time::timeout(
-            std::time::Duration::from_secs(2),
-            ws_stream.next(),
-        )
-        .await;
+        let notification =
+            tokio::time::timeout(std::time::Duration::from_secs(2), ws_stream.next()).await;
 
         if let Ok(Some(Ok(msg))) = notification {
             let json: serde_json::Value = serde_json::from_str(msg.to_text().unwrap()).unwrap();
@@ -167,13 +157,12 @@ mod tests {
         let mut saw_notification = false;
 
         while tokio::time::Instant::now() < deadline && !(saw_response && saw_notification) {
-            let maybe_msg = tokio::time::timeout(
-                std::time::Duration::from_millis(500),
-                ws_stream.next(),
-            )
-            .await;
+            let maybe_msg =
+                tokio::time::timeout(std::time::Duration::from_millis(500), ws_stream.next()).await;
 
-            let Some(Ok(msg)) = maybe_msg.expect("WS read timed out before receiving response/notification") else {
+            let Some(Ok(msg)) =
+                maybe_msg.expect("WS read timed out before receiving response/notification")
+            else {
                 panic!("WS stream ended before unified RPC/notification contract was satisfied");
             };
 
@@ -190,8 +179,14 @@ mod tests {
             }
 
             if json.get("method").and_then(|m| m.as_str()) == Some("aria2.onDownloadStart") {
-                let params = json["params"].as_array().expect("notification params array");
-                assert_eq!(params.len(), 1, "notification params must contain one gid object");
+                let params = json["params"]
+                    .as_array()
+                    .expect("notification params array");
+                assert_eq!(
+                    params.len(),
+                    1,
+                    "notification params must contain one gid object"
+                );
                 assert!(
                     params[0].get("gid").and_then(|gid| gid.as_str()).is_some(),
                     "notification must include gid: {json}"
@@ -200,7 +195,10 @@ mod tests {
             }
         }
 
-        assert!(saw_response, "same-socket WS JSON-RPC never returned addUri response");
+        assert!(
+            saw_response,
+            "same-socket WS JSON-RPC never returned addUri response"
+        );
         assert!(
             saw_notification,
             "same-socket WS JSON-RPC never delivered aria2.onDownloadStart notification"
@@ -228,9 +226,7 @@ mod tests {
             .unwrap();
 
         let ws_url = format!("ws://{}/jsonrpc", addrs.rpc);
-        let (mut ws_stream, _) = connect_async(&ws_url)
-            .await
-            .expect("WS connect failed");
+        let (mut ws_stream, _) = connect_async(&ws_url).await.expect("WS connect failed");
 
         // Trigger an event from another producer without authenticating this socket.
         let spec = raria_core::engine::AddUriSpec {
@@ -241,11 +237,8 @@ mod tests {
         };
         let _handle = engine.add_uri(&spec).unwrap();
 
-        let notification = tokio::time::timeout(
-            std::time::Duration::from_millis(500),
-            ws_stream.next(),
-        )
-        .await;
+        let notification =
+            tokio::time::timeout(std::time::Duration::from_millis(500), ws_stream.next()).await;
 
         assert!(
             notification.is_err(),
@@ -273,9 +266,7 @@ mod tests {
             .unwrap();
 
         let ws_url = format!("ws://{}/jsonrpc", addrs.rpc);
-        let (mut ws_stream, _) = connect_async(&ws_url)
-            .await
-            .expect("WS connect failed");
+        let (mut ws_stream, _) = connect_async(&ws_url).await.expect("WS connect failed");
 
         let auth_request = serde_json::json!({
             "jsonrpc": "2.0",
@@ -288,18 +279,18 @@ mod tests {
             .await
             .expect("send auth request over WS");
 
-        let response = tokio::time::timeout(
-            std::time::Duration::from_secs(1),
-            ws_stream.next(),
-        )
-        .await
-        .expect("timed out waiting for WS auth response")
-        .expect("stream ended before auth response")
-        .expect("WS auth response frame error");
+        let response = tokio::time::timeout(std::time::Duration::from_secs(1), ws_stream.next())
+            .await
+            .expect("timed out waiting for WS auth response")
+            .expect("stream ended before auth response")
+            .expect("WS auth response frame error");
         let response_json: serde_json::Value =
             serde_json::from_str(response.to_text().unwrap()).unwrap();
         assert_eq!(response_json["id"], 7);
-        assert!(response_json.get("result").is_some(), "expected successful auth response");
+        assert!(
+            response_json.get("result").is_some(),
+            "expected successful auth response"
+        );
 
         let spec = raria_core::engine::AddUriSpec {
             uris: vec!["https://example.com/authenticated.bin".into()],
@@ -309,16 +300,15 @@ mod tests {
         };
         let _handle = engine.add_uri(&spec).unwrap();
 
-        let notification = tokio::time::timeout(
-            std::time::Duration::from_secs(2),
-            ws_stream.next(),
-        )
-        .await
-        .expect("timed out waiting for authenticated WS notification")
-        .expect("stream ended before notification")
-        .expect("WS notification frame error");
+        let notification =
+            tokio::time::timeout(std::time::Duration::from_secs(2), ws_stream.next())
+                .await
+                .expect("timed out waiting for authenticated WS notification")
+                .expect("stream ended before notification")
+                .expect("WS notification frame error");
 
-        let json: serde_json::Value = serde_json::from_str(notification.to_text().unwrap()).unwrap();
+        let json: serde_json::Value =
+            serde_json::from_str(notification.to_text().unwrap()).unwrap();
         assert_eq!(json["method"], "aria2.onDownloadStart");
 
         cancel.cancel();
@@ -384,7 +374,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn authenticated_ws_with_origin_receives_notifications_when_origin_and_secret_policies_allow_it() {
+    async fn authenticated_ws_with_origin_receives_notifications_when_origin_and_secret_policies_allow_it()
+     {
         let config = GlobalConfig {
             rpc_secret: Some("topsecret".into()),
             rpc_allow_origin_all: true,
@@ -421,14 +412,11 @@ mod tests {
             .await
             .expect("send auth request over WS");
 
-        let response = tokio::time::timeout(
-            std::time::Duration::from_secs(1),
-            ws_stream.next(),
-        )
-        .await
-        .expect("timed out waiting for WS auth response")
-        .expect("stream ended before auth response")
-        .expect("WS auth response frame error");
+        let response = tokio::time::timeout(std::time::Duration::from_secs(1), ws_stream.next())
+            .await
+            .expect("timed out waiting for WS auth response")
+            .expect("stream ended before auth response")
+            .expect("WS auth response frame error");
         let response_json: serde_json::Value =
             serde_json::from_str(response.to_text().unwrap()).unwrap();
         assert_eq!(response_json["id"], 8);
@@ -442,14 +430,12 @@ mod tests {
         };
         let _handle = engine.add_uri(&spec).unwrap();
 
-        let notification = tokio::time::timeout(
-            std::time::Duration::from_secs(2),
-            ws_stream.next(),
-        )
-        .await
-        .expect("timed out waiting for authenticated WS notification")
-        .expect("stream ended before notification")
-        .expect("WS notification frame error");
+        let notification =
+            tokio::time::timeout(std::time::Duration::from_secs(2), ws_stream.next())
+                .await
+                .expect("timed out waiting for authenticated WS notification")
+                .expect("stream ended before notification")
+                .expect("WS notification frame error");
 
         let json: serde_json::Value =
             serde_json::from_str(notification.to_text().unwrap()).unwrap();

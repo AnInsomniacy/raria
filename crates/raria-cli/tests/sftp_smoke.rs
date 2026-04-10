@@ -7,10 +7,12 @@ use std::time::Duration;
 use russh::keys::ssh_key::rand_core::OsRng;
 use russh::server::{Auth, Msg, Server as _, Session};
 use russh::{Channel, ChannelId};
-use russh_sftp::protocol::{Attrs, Data, FileAttributes, Handle, Name, OpenFlags, Status, StatusCode, Version};
+use russh_sftp::protocol::{
+    Attrs, Data, FileAttributes, Handle, Name, OpenFlags, Status, StatusCode, Version,
+};
+use tempfile::tempdir;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
-use tempfile::tempdir;
 use tokio::sync::Mutex;
 
 fn cargo_bin(name: &str) -> String {
@@ -151,7 +153,10 @@ impl russh_sftp::server::Handler for TestSftpSession {
         if filename != self.file_path {
             return Err(StatusCode::NoSuchFile);
         }
-        Ok(Handle { id, handle: filename })
+        Ok(Handle {
+            id,
+            handle: filename,
+        })
     }
 
     async fn read(
@@ -203,16 +208,25 @@ async fn spawn_socks5_proxy() -> String {
             };
             tokio::spawn(async move {
                 let mut greeting = [0u8; 2];
-                downstream.read_exact(&mut greeting).await.expect("read socks greeting");
+                downstream
+                    .read_exact(&mut greeting)
+                    .await
+                    .expect("read socks greeting");
                 let mut methods = vec![0u8; greeting[1] as usize];
-                downstream.read_exact(&mut methods).await.expect("read socks methods");
+                downstream
+                    .read_exact(&mut methods)
+                    .await
+                    .expect("read socks methods");
                 downstream
                     .write_all(&[0x05, 0x00])
                     .await
                     .expect("write socks method select");
 
                 let mut req = [0u8; 4];
-                downstream.read_exact(&mut req).await.expect("read socks request header");
+                downstream
+                    .read_exact(&mut req)
+                    .await
+                    .expect("read socks request header");
                 let target = match req[3] {
                     0x01 => {
                         let mut ipv4 = [0u8; 4];
@@ -221,12 +235,19 @@ async fn spawn_socks5_proxy() -> String {
                         downstream.read_exact(&mut port).await.expect("read port");
                         format!(
                             "{}.{}.{}.{}:{}",
-                            ipv4[0], ipv4[1], ipv4[2], ipv4[3], u16::from_be_bytes(port)
+                            ipv4[0],
+                            ipv4[1],
+                            ipv4[2],
+                            ipv4[3],
+                            u16::from_be_bytes(port)
                         )
                     }
                     0x03 => {
                         let mut len = [0u8; 1];
-                        downstream.read_exact(&mut len).await.expect("read host len");
+                        downstream
+                            .read_exact(&mut len)
+                            .await
+                            .expect("read host len");
                         let mut host = vec![0u8; len[0] as usize];
                         downstream.read_exact(&mut host).await.expect("read host");
                         let mut port = [0u8; 2];
@@ -262,7 +283,10 @@ async fn spawn_sftp_server(temp: &std::path::Path, payload: &'static [u8]) -> Sf
 
     let host_key = russh::keys::PrivateKey::random(&mut OsRng, russh::keys::Algorithm::Ed25519)
         .expect("generate ssh host key");
-    let host_public_key = host_key.public_key().to_openssh().expect("public key openssh");
+    let host_public_key = host_key
+        .public_key()
+        .to_openssh()
+        .expect("public key openssh");
 
     let config = russh::server::Config {
         auth_rejection_time: Duration::from_secs(1),
@@ -285,7 +309,10 @@ async fn spawn_sftp_server(temp: &std::path::Path, payload: &'static [u8]) -> Sf
 
     let deadline = std::time::Instant::now() + Duration::from_secs(5);
     loop {
-        if tokio::net::TcpStream::connect(("127.0.0.1", port)).await.is_ok() {
+        if tokio::net::TcpStream::connect(("127.0.0.1", port))
+            .await
+            .is_ok()
+        {
             break;
         }
         assert!(
@@ -296,11 +323,17 @@ async fn spawn_sftp_server(temp: &std::path::Path, payload: &'static [u8]) -> Sf
     }
 
     let known_hosts = temp.join("known_hosts");
-    std::fs::write(&known_hosts, format!("[127.0.0.1]:{} {}\n", port, host_public_key))
-        .expect("write known_hosts");
+    std::fs::write(
+        &known_hosts,
+        format!("[127.0.0.1]:{} {}\n", port, host_public_key),
+    )
+    .expect("write known_hosts");
 
     SftpServerFixture {
-        url: format!("sftp://test-user:test-pass@127.0.0.1:{}/downloads/fixture.bin", port),
+        url: format!(
+            "sftp://test-user:test-pass@127.0.0.1:{}/downloads/fixture.bin",
+            port
+        ),
         known_hosts,
     }
 }

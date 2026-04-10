@@ -109,7 +109,9 @@ async fn http_backend_honors_redirect_limit() {
     })
     .expect("backend");
 
-    let url = format!("{}/redirect", redirector.uri()).parse().expect("url");
+    let url = format!("{}/redirect", redirector.uri())
+        .parse()
+        .expect("url");
     let error = backend
         .probe(&url, &ProbeContext::default())
         .await
@@ -134,17 +136,26 @@ async fn spawn_socks5_proxy(counter: Arc<AtomicUsize>) -> String {
                 counter.fetch_add(1, Ordering::SeqCst);
 
                 let mut greeting = [0u8; 2];
-                downstream.read_exact(&mut greeting).await.expect("read socks greeting");
+                downstream
+                    .read_exact(&mut greeting)
+                    .await
+                    .expect("read socks greeting");
                 let methods_len = greeting[1] as usize;
                 let mut methods = vec![0u8; methods_len];
-                downstream.read_exact(&mut methods).await.expect("read socks methods");
+                downstream
+                    .read_exact(&mut methods)
+                    .await
+                    .expect("read socks methods");
                 downstream
                     .write_all(&[0x05, 0x00])
                     .await
                     .expect("write socks method select");
 
                 let mut req = [0u8; 4];
-                downstream.read_exact(&mut req).await.expect("read socks request header");
+                downstream
+                    .read_exact(&mut req)
+                    .await
+                    .expect("read socks request header");
                 assert_eq!(req[0], 0x05, "socks version");
                 assert_eq!(req[1], 0x01, "socks command should be CONNECT");
 
@@ -156,12 +167,19 @@ async fn spawn_socks5_proxy(counter: Arc<AtomicUsize>) -> String {
                         downstream.read_exact(&mut port).await.expect("read port");
                         format!(
                             "{}.{}.{}.{}:{}",
-                            ipv4[0], ipv4[1], ipv4[2], ipv4[3], u16::from_be_bytes(port)
+                            ipv4[0],
+                            ipv4[1],
+                            ipv4[2],
+                            ipv4[3],
+                            u16::from_be_bytes(port)
                         )
                     }
                     0x03 => {
                         let mut len = [0u8; 1];
-                        downstream.read_exact(&mut len).await.expect("read host len");
+                        downstream
+                            .read_exact(&mut len)
+                            .await
+                            .expect("read host len");
                         let mut host = vec![0u8; len[0] as usize];
                         downstream.read_exact(&mut host).await.expect("read host");
                         let mut port = [0u8; 2];
@@ -192,7 +210,9 @@ async fn spawn_socks5_proxy(counter: Arc<AtomicUsize>) -> String {
 }
 
 async fn spawn_connect_proxy(counter: Arc<AtomicUsize>) -> String {
-    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind connect proxy");
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind connect proxy");
     let addr = listener.local_addr().expect("connect proxy addr");
     tokio::spawn(async move {
         loop {
@@ -203,7 +223,10 @@ async fn spawn_connect_proxy(counter: Arc<AtomicUsize>) -> String {
             tokio::spawn(async move {
                 counter.fetch_add(1, Ordering::SeqCst);
                 let mut buf = [0u8; 4096];
-                let n = downstream.read(&mut buf).await.expect("read connect request");
+                let n = downstream
+                    .read(&mut buf)
+                    .await
+                    .expect("read connect request");
                 let req = String::from_utf8_lossy(&buf[..n]);
                 let target = req
                     .lines()
@@ -227,7 +250,9 @@ async fn spawn_connect_proxy(counter: Arc<AtomicUsize>) -> String {
 }
 
 async fn spawn_http_proxy(counter: Arc<AtomicUsize>) -> String {
-    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind http proxy");
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind http proxy");
     let addr = listener.local_addr().expect("http proxy addr");
     tokio::spawn(async move {
         loop {
@@ -275,19 +300,27 @@ async fn spawn_mtls_server() -> MtlsFixture {
     let ca_key = KeyPair::generate().expect("generate ca key");
     let mut ca_params = CertificateParams::new(vec!["raria-test-ca".into()]).expect("ca params");
     ca_params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
-    ca_params.distinguished_name.push(DnType::CommonName, "raria-test-ca");
+    ca_params
+        .distinguished_name
+        .push(DnType::CommonName, "raria-test-ca");
     let ca_cert = ca_params.self_signed(&ca_key).expect("ca cert");
 
     let server_key = KeyPair::generate().expect("generate server key");
-    let mut server_params = CertificateParams::new(vec!["localhost".into()]).expect("server params");
-    server_params.distinguished_name.push(DnType::CommonName, "localhost");
+    let mut server_params =
+        CertificateParams::new(vec!["localhost".into()]).expect("server params");
+    server_params
+        .distinguished_name
+        .push(DnType::CommonName, "localhost");
     let server_cert = server_params
         .signed_by(&server_key, &ca_cert, &ca_key)
         .expect("server cert");
 
     let client_key = KeyPair::generate().expect("generate client key");
-    let mut client_params = CertificateParams::new(vec!["raria-client".into()]).expect("client params");
-    client_params.distinguished_name.push(DnType::CommonName, "raria-client");
+    let mut client_params =
+        CertificateParams::new(vec!["raria-client".into()]).expect("client params");
+    client_params
+        .distinguished_name
+        .push(DnType::CommonName, "raria-client");
     let client_cert = client_params
         .signed_by(&client_key, &ca_cert, &ca_key)
         .expect("client cert");
@@ -316,7 +349,9 @@ async fn spawn_mtls_server() -> MtlsFixture {
         )
         .expect("server config");
 
-    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind listener");
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind listener");
     let addr = listener.local_addr().expect("listener addr");
     let acceptor = TlsAcceptor::from(Arc::new(server_config));
 
@@ -333,7 +368,9 @@ async fn spawn_mtls_server() -> MtlsFixture {
         } else {
             "HTTP/1.1 404 Not Found\r\ncontent-length: 0\r\n\r\n".to_string()
         };
-        tls.write_all(response.as_bytes()).await.expect("write response");
+        tls.write_all(response.as_bytes())
+            .await
+            .expect("write response");
         tls.flush().await.expect("flush response");
     });
 
@@ -341,11 +378,15 @@ async fn spawn_mtls_server() -> MtlsFixture {
     let mut client_cert_pem = NamedTempFile::new().expect("client cert temp");
     let mut client_key_pem = NamedTempFile::new().expect("client key temp");
     std::io::Write::write_all(&mut ca_pem, ca_cert.pem().as_bytes()).expect("copy ca pem");
-    std::io::Write::write_all(&mut client_cert_pem, client_cert.pem().as_bytes()).expect("copy client cert");
-    std::io::Write::write_all(&mut client_key_pem, client_key.serialize_pem().as_bytes()).expect("copy client key");
+    std::io::Write::write_all(&mut client_cert_pem, client_cert.pem().as_bytes())
+        .expect("copy client cert");
+    std::io::Write::write_all(&mut client_key_pem, client_key.serialize_pem().as_bytes())
+        .expect("copy client key");
 
     MtlsFixture {
-        url: format!("https://localhost:{}/mtls", addr.port()).parse().expect("mtls url"),
+        url: format!("https://localhost:{}/mtls", addr.port())
+            .parse()
+            .expect("mtls url"),
         ca_pem,
         client_cert_pem,
         client_key_pem,
@@ -495,7 +536,9 @@ async fn http_backend_routes_https_requests_through_connect_proxy() {
 #[tokio::test]
 async fn http_backend_retries_with_digest_auth_when_challenged() {
     let digest_challenge = r#"Digest realm="raria", qop="auth", algorithm=MD5, nonce="abcdef123456", opaque="opaque-token""#;
-    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind digest listener");
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind digest listener");
     let addr = listener.local_addr().expect("digest addr");
     tokio::spawn(async move {
         let (mut stream, _) = listener.accept().await.expect("accept digest");
@@ -511,7 +554,10 @@ async fn http_backend_retries_with_digest_auth_when_challenged() {
                     "HTTP/1.1 401 Unauthorized\r\nwww-authenticate: {digest_challenge}\r\ncontent-length: 0\r\nconnection: keep-alive\r\n\r\n"
                 )
             };
-            stream.write_all(response.as_bytes()).await.expect("write digest response");
+            stream
+                .write_all(response.as_bytes())
+                .await
+                .expect("write digest response");
             stream.flush().await.expect("flush digest response");
             if req_lower.contains("authorization: digest ") {
                 break;
@@ -525,7 +571,9 @@ async fn http_backend_retries_with_digest_auth_when_challenged() {
     })
     .expect("backend");
 
-    let url = format!("http://127.0.0.1:{}/digest-head", addr.port()).parse().expect("url");
+    let url = format!("http://127.0.0.1:{}/digest-head", addr.port())
+        .parse()
+        .expect("url");
     let probe = backend
         .probe(
             &url,

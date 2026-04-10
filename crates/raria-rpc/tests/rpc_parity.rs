@@ -105,7 +105,10 @@ mod tests {
     #[test]
     fn tell_status_files_array_format() {
         let job = Job::new_range(
-            vec!["https://mirror1.com/f".into(), "https://mirror2.com/f".into()],
+            vec![
+                "https://mirror1.com/f".into(),
+                "https://mirror2.com/f".into(),
+            ],
             PathBuf::from("/tmp/downloads/f.zip"),
         );
         let status = job_to_aria2_status(&job);
@@ -265,15 +268,36 @@ mod tests {
         let obj = json.as_object().unwrap();
 
         // Must have camelCase keys
-        assert!(obj.contains_key("totalLength"), "missing camelCase key 'totalLength'");
-        assert!(obj.contains_key("completedLength"), "missing camelCase key 'completedLength'");
-        assert!(obj.contains_key("downloadSpeed"), "missing camelCase key 'downloadSpeed'");
-        assert!(obj.contains_key("uploadSpeed"), "missing camelCase key 'uploadSpeed'");
+        assert!(
+            obj.contains_key("totalLength"),
+            "missing camelCase key 'totalLength'"
+        );
+        assert!(
+            obj.contains_key("completedLength"),
+            "missing camelCase key 'completedLength'"
+        );
+        assert!(
+            obj.contains_key("downloadSpeed"),
+            "missing camelCase key 'downloadSpeed'"
+        );
+        assert!(
+            obj.contains_key("uploadSpeed"),
+            "missing camelCase key 'uploadSpeed'"
+        );
 
         // Must NOT have snake_case keys
-        assert!(!obj.contains_key("total_length"), "snake_case key 'total_length' found");
-        assert!(!obj.contains_key("completed_length"), "snake_case key 'completed_length' found");
-        assert!(!obj.contains_key("download_speed"), "snake_case key 'download_speed' found");
+        assert!(
+            !obj.contains_key("total_length"),
+            "snake_case key 'total_length' found"
+        );
+        assert!(
+            !obj.contains_key("completed_length"),
+            "snake_case key 'completed_length' found"
+        );
+        assert!(
+            !obj.contains_key("download_speed"),
+            "snake_case key 'download_speed' found"
+        );
     }
 
     /// getGlobalStat also uses camelCase.

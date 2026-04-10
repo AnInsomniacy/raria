@@ -2,8 +2,8 @@ use anyhow::{Context, Result};
 use base64::Engine as Base64Engine;
 use raria_bt::service::{BtService, BtServiceConfig, BtSource};
 use raria_core::engine::Engine;
-use raria_core::job::{BtFile, BtPeer};
 use raria_core::job::Gid;
+use raria_core::job::{BtFile, BtPeer};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -173,7 +173,8 @@ fn should_stop_seeding(
         }
     }
     if let Some(minutes) = seed_time_minutes {
-        if now.duration_since(seeding_started_at) >= Duration::from_secs(minutes.saturating_mul(60)) {
+        if now.duration_since(seeding_started_at) >= Duration::from_secs(minutes.saturating_mul(60))
+        {
             return true;
         }
     }
@@ -182,7 +183,9 @@ fn should_stop_seeding(
 
 #[cfg(test)]
 mod tests {
-    use super::{bt_service_config, handle_bt_cancellation, map_bt_files, map_bt_peers, should_stop_seeding};
+    use super::{
+        bt_service_config, handle_bt_cancellation, map_bt_files, map_bt_peers, should_stop_seeding,
+    };
     use raria_bt::service::{BtFileInfo, BtPeerInfo};
     use raria_core::config::GlobalConfig;
     use raria_core::engine::{AddUriSpec, Engine};
@@ -237,7 +240,10 @@ mod tests {
         };
         let engine = Engine::new(config);
         let bt_config = bt_service_config(&engine);
-        assert_eq!(bt_config.socks_proxy_url.as_deref(), Some("socks5://127.0.0.1:1080"));
+        assert_eq!(
+            bt_config.socks_proxy_url.as_deref(),
+            Some("socks5://127.0.0.1:1080")
+        );
 
         let config = GlobalConfig {
             all_proxy: Some("http://127.0.0.1:8080".into()),

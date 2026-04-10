@@ -4,9 +4,9 @@
 // Supports SHA-256 (primary), SHA-1, and MD5 (legacy).
 
 use anyhow::{Context, Result};
-use sha2::{Digest, Sha256};
-use sha1::Sha1;
 use md5::Md5;
+use sha1::Sha1;
+use sha2::{Digest, Sha256};
 use std::path::Path;
 use tokio::fs::File;
 use tokio::io::AsyncReadExt;
@@ -218,7 +218,11 @@ mod tests {
             f.write_all(b"hello world\n").unwrap();
         }
 
-        let result = verify_checksum(&path, "sha-256=0000000000000000000000000000000000000000000000000000000000000000").await;
+        let result = verify_checksum(
+            &path,
+            "sha-256=0000000000000000000000000000000000000000000000000000000000000000",
+        )
+        .await;
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(err.contains("checksum mismatch"), "error was: {err}");
@@ -226,11 +230,7 @@ mod tests {
 
     #[tokio::test]
     async fn verify_checksum_file_not_found() {
-        let result = verify_checksum(
-            Path::new("/nonexistent/path/file.bin"),
-            "sha-256=abc",
-        )
-        .await;
+        let result = verify_checksum(Path::new("/nonexistent/path/file.bin"), "sha-256=abc").await;
         assert!(result.is_err());
     }
 
@@ -277,11 +277,7 @@ mod tests {
             f.write_all(b"hello world\n").unwrap();
         }
 
-        let result = verify_checksum(
-            &path,
-            "sha-1=22596363b3de40b06f981fb85d82312e8c0ed511",
-        )
-        .await;
+        let result = verify_checksum(&path, "sha-1=22596363b3de40b06f981fb85d82312e8c0ed511").await;
         assert!(result.is_ok());
     }
 
@@ -321,11 +317,7 @@ mod tests {
             f.write_all(b"hello world\n").unwrap();
         }
 
-        let result = verify_checksum(
-            &path,
-            "md5=6f5902ac237024bdd0c176cb93063dc4",
-        )
-        .await;
+        let result = verify_checksum(&path, "md5=6f5902ac237024bdd0c176cb93063dc4").await;
         assert!(result.is_ok());
     }
 
@@ -338,12 +330,13 @@ mod tests {
             f.write_all(b"hello world\n").unwrap();
         }
 
-        let result = verify_checksum(
-            &path,
-            "md5=00000000000000000000000000000000",
-        )
-        .await;
+        let result = verify_checksum(&path, "md5=00000000000000000000000000000000").await;
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("checksum mismatch"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("checksum mismatch")
+        );
     }
 }

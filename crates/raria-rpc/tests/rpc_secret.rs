@@ -7,7 +7,7 @@
 mod tests {
     use raria_core::config::GlobalConfig;
     use raria_core::engine::Engine;
-    use raria_rpc::server::{start_rpc_server, RpcServerConfig};
+    use raria_rpc::server::{RpcServerConfig, start_rpc_server};
     use std::net::SocketAddr;
     use std::sync::Arc;
     use tokio_util::sync::CancellationToken;

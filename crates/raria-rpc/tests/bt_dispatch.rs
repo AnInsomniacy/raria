@@ -8,7 +8,7 @@ mod tests {
     use raria_core::config::GlobalConfig;
     use raria_core::engine::Engine;
     use raria_core::job::JobKind;
-    use raria_rpc::server::{start_rpc_server, RpcServerConfig};
+    use raria_rpc::server::{RpcServerConfig, start_rpc_server};
     use std::net::SocketAddr;
     use std::sync::Arc;
     use tokio_util::sync::CancellationToken;
@@ -56,9 +56,7 @@ mod tests {
         let resp = rpc_call(
             &url,
             "aria2.addUri",
-            serde_json::json!([
-                ["magnet:?xt=urn:btih:da39a3ee5e6b4b0d3255bfef95601890afd80709"]
-            ]),
+            serde_json::json!([["magnet:?xt=urn:btih:da39a3ee5e6b4b0d3255bfef95601890afd80709"]]),
         )
         .await;
 
@@ -67,11 +65,13 @@ mod tests {
             "addUri with magnet should succeed: {resp}"
         );
         let gid_str = resp["result"].as_str().unwrap();
-        let gid = raria_core::job::Gid::from_raw(
-            u64::from_str_radix(gid_str, 16).unwrap(),
-        );
+        let gid = raria_core::job::Gid::from_raw(u64::from_str_radix(gid_str, 16).unwrap());
         let job = engine.registry.get(gid).unwrap();
-        assert_eq!(job.kind, JobKind::Bt, "magnet URI should create Bt-kind job");
+        assert_eq!(
+            job.kind,
+            JobKind::Bt,
+            "magnet URI should create Bt-kind job"
+        );
 
         cancel.cancel();
     }
@@ -97,9 +97,7 @@ mod tests {
             "addUri with magnet and select-file should succeed: {resp}"
         );
         let gid_str = resp["result"].as_str().unwrap();
-        let gid = raria_core::job::Gid::from_raw(
-            u64::from_str_radix(gid_str, 16).unwrap(),
-        );
+        let gid = raria_core::job::Gid::from_raw(u64::from_str_radix(gid_str, 16).unwrap());
         let job = engine.registry.get(gid).unwrap();
         assert_eq!(job.kind, JobKind::Bt);
         assert_eq!(job.options.bt_selected_files, Some(vec![1, 3]));
@@ -119,21 +117,14 @@ mod tests {
         let fake_torrent = b"d8:announce35:http://tracker.example.com/announcee";
         let encoded = base64::engine::general_purpose::STANDARD.encode(fake_torrent);
 
-        let resp = rpc_call(
-            &url,
-            "aria2.addTorrent",
-            serde_json::json!([encoded]),
-        )
-        .await;
+        let resp = rpc_call(&url, "aria2.addTorrent", serde_json::json!([encoded])).await;
 
         assert!(
             resp.get("error").is_none(),
             "addTorrent should succeed: {resp}"
         );
         let gid_str = resp["result"].as_str().unwrap();
-        let gid = raria_core::job::Gid::from_raw(
-            u64::from_str_radix(gid_str, 16).unwrap(),
-        );
+        let gid = raria_core::job::Gid::from_raw(u64::from_str_radix(gid_str, 16).unwrap());
         let job = engine.registry.get(gid).unwrap();
         assert_eq!(job.kind, JobKind::Bt, "torrent should create Bt-kind job");
 
@@ -162,11 +153,12 @@ mod tests {
         )
         .await;
 
-        assert!(resp.get("error").is_none(), "addTorrent should succeed: {resp}");
-        let gid_str = resp["result"].as_str().unwrap();
-        let gid = raria_core::job::Gid::from_raw(
-            u64::from_str_radix(gid_str, 16).unwrap(),
+        assert!(
+            resp.get("error").is_none(),
+            "addTorrent should succeed: {resp}"
         );
+        let gid_str = resp["result"].as_str().unwrap();
+        let gid = raria_core::job::Gid::from_raw(u64::from_str_radix(gid_str, 16).unwrap());
         let job = engine.registry.get(gid).unwrap();
 
         assert_eq!(job.kind, JobKind::Bt);
@@ -200,11 +192,12 @@ mod tests {
         )
         .await;
 
-        assert!(resp.get("error").is_none(), "addTorrent should succeed: {resp}");
-        let gid_str = resp["result"].as_str().unwrap();
-        let gid = raria_core::job::Gid::from_raw(
-            u64::from_str_radix(gid_str, 16).unwrap(),
+        assert!(
+            resp.get("error").is_none(),
+            "addTorrent should succeed: {resp}"
         );
+        let gid_str = resp["result"].as_str().unwrap();
+        let gid = raria_core::job::Gid::from_raw(u64::from_str_radix(gid_str, 16).unwrap());
         let job = engine.registry.get(gid).unwrap();
         assert_eq!(
             job.options.bt_trackers,
@@ -230,12 +223,7 @@ mod tests {
         .await;
         let gid_str = add_resp["result"].as_str().unwrap();
 
-        let status_resp = rpc_call(
-            &url,
-            "aria2.tellStatus",
-            serde_json::json!([gid_str]),
-        )
-        .await;
+        let status_resp = rpc_call(&url, "aria2.tellStatus", serde_json::json!([gid_str])).await;
         let result = &status_resp["result"];
         // Status should exist and be valid.
         assert!(result.get("status").is_some());
@@ -263,7 +251,8 @@ mod tests {
         assert_eq!(paused.kind, JobKind::Bt);
         assert_eq!(paused.status, raria_core::job::Status::Paused);
 
-        let unpause_resp = rpc_call(&url, "aria2.unpause", serde_json::json!([gid_str.clone()])).await;
+        let unpause_resp =
+            rpc_call(&url, "aria2.unpause", serde_json::json!([gid_str.clone()])).await;
         assert_eq!(unpause_resp["result"], gid_str);
         let resumed = engine.registry.get(gid).unwrap();
         assert_eq!(resumed.kind, JobKind::Bt);

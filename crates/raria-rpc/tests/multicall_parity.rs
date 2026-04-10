@@ -10,7 +10,7 @@
 mod tests {
     use raria_core::config::GlobalConfig;
     use raria_core::engine::Engine;
-    use raria_rpc::server::{start_rpc_server, RpcServerConfig};
+    use raria_rpc::server::{RpcServerConfig, start_rpc_server};
     use std::net::SocketAddr;
     use std::sync::Arc;
     use tokio_util::sync::CancellationToken;
@@ -56,7 +56,10 @@ mod tests {
         let json: serde_json::Value = resp.json().await.unwrap();
 
         // Must have result (not error)
-        assert!(json.get("error").is_none(), "multicall returned error: {json}");
+        assert!(
+            json.get("error").is_none(),
+            "multicall returned error: {json}"
+        );
 
         let result = json["result"].as_array().unwrap();
         assert_eq!(result.len(), 2, "multicall should return 2 results");
@@ -143,11 +146,26 @@ mod tests {
 
         // Must include key aria2 methods
         let method_names: Vec<&str> = methods.iter().map(|v| v.as_str().unwrap()).collect();
-        assert!(method_names.contains(&"aria2.addUri"), "missing aria2.addUri");
-        assert!(method_names.contains(&"aria2.tellStatus"), "missing aria2.tellStatus");
-        assert!(method_names.contains(&"aria2.getVersion"), "missing aria2.getVersion");
-        assert!(method_names.contains(&"system.multicall"), "missing system.multicall");
-        assert!(method_names.contains(&"system.listMethods"), "missing system.listMethods");
+        assert!(
+            method_names.contains(&"aria2.addUri"),
+            "missing aria2.addUri"
+        );
+        assert!(
+            method_names.contains(&"aria2.tellStatus"),
+            "missing aria2.tellStatus"
+        );
+        assert!(
+            method_names.contains(&"aria2.getVersion"),
+            "missing aria2.getVersion"
+        );
+        assert!(
+            method_names.contains(&"system.multicall"),
+            "missing system.multicall"
+        );
+        assert!(
+            method_names.contains(&"system.listMethods"),
+            "missing system.listMethods"
+        );
 
         cancel.cancel();
     }
@@ -173,7 +191,10 @@ mod tests {
             .unwrap();
 
         let json: serde_json::Value = resp.json().await.unwrap();
-        assert!(json.get("error").is_none(), "listNotifications error: {json}");
+        assert!(
+            json.get("error").is_none(),
+            "listNotifications error: {json}"
+        );
 
         let notifications = json["result"].as_array().unwrap();
         let names: Vec<&str> = notifications.iter().map(|v| v.as_str().unwrap()).collect();

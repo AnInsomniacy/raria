@@ -3,8 +3,8 @@ use std::sync::Arc;
 use raria_ftp::backend::{FtpBackend, FtpBackendConfig};
 use raria_range::backend::{ByteSourceBackend, OpenContext, ProbeContext};
 use rcgen::{BasicConstraints, CertificateParams, DnType, IsCa, KeyPair};
-use rustls::pki_types::{PrivateKeyDer, PrivatePkcs8KeyDer};
 use rustls::ServerConfig;
+use rustls::pki_types::{PrivateKeyDer, PrivatePkcs8KeyDer};
 use tempfile::NamedTempFile;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
@@ -35,15 +35,20 @@ async fn spawn_explicit_ftps_server(
     let _ = provider.clone().install_default();
 
     let ca_key = KeyPair::generate().expect("generate ca key");
-    let mut ca_params = CertificateParams::new(vec!["raria-ftps-test-ca".into()]).expect("ca params");
+    let mut ca_params =
+        CertificateParams::new(vec!["raria-ftps-test-ca".into()]).expect("ca params");
     ca_params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
-    ca_params.distinguished_name.push(DnType::CommonName, "raria-ftps-test-ca");
+    ca_params
+        .distinguished_name
+        .push(DnType::CommonName, "raria-ftps-test-ca");
     let ca_cert = ca_params.self_signed(&ca_key).expect("ca cert");
 
     let server_key = KeyPair::generate().expect("generate server key");
-    let mut server_params =
-        CertificateParams::new(vec!["localhost".into(), "127.0.0.1".into()]).expect("server params");
-    server_params.distinguished_name.push(DnType::CommonName, "127.0.0.1");
+    let mut server_params = CertificateParams::new(vec!["localhost".into(), "127.0.0.1".into()])
+        .expect("server params");
+    server_params
+        .distinguished_name
+        .push(DnType::CommonName, "127.0.0.1");
     let server_cert = server_params
         .signed_by(&server_key, &ca_cert, &ca_key)
         .expect("server cert");
@@ -60,7 +65,9 @@ async fn spawn_explicit_ftps_server(
         .expect("server config");
     let acceptor = TlsAcceptor::from(Arc::new(server_config));
 
-    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind ftps listener");
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind ftps listener");
     let port = listener.local_addr().expect("ftps addr").port();
 
     tokio::spawn(async move {
@@ -117,7 +124,10 @@ async fn handle_ftps_client(
             write_reply(reader.get_mut(), 234, "AUTH TLS accepted")
                 .await
                 .expect("write auth reply");
-            let tls_stream = acceptor.accept(reader.into_inner()).await.expect("upgrade control tls");
+            let tls_stream = acceptor
+                .accept(reader.into_inner())
+                .await
+                .expect("upgrade control tls");
             handle_ftps_tls_session(
                 tls_stream,
                 acceptor,
@@ -176,12 +186,17 @@ async fn handle_ftps_tls_session(
                     .expect("write user reply");
             }
             "PASS" => {
-                authenticated = seen_user.as_deref() == Some(expected_user) && arg == expected_password;
+                authenticated =
+                    seen_user.as_deref() == Some(expected_user) && arg == expected_password;
                 let code = if authenticated { 230 } else { 530 };
                 write_reply(
                     reader.get_mut(),
                     code,
-                    if authenticated { "login successful" } else { "login incorrect" },
+                    if authenticated {
+                        "login successful"
+                    } else {
+                        "login incorrect"
+                    },
                 )
                 .await
                 .expect("write pass reply");
@@ -219,7 +234,9 @@ async fn handle_ftps_tls_session(
                     .expect("write rest");
             }
             "PASV" => {
-                let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind ftps data listener");
+                let listener = TcpListener::bind("127.0.0.1:0")
+                    .await
+                    .expect("bind ftps data listener");
                 let addr = listener.local_addr().expect("data addr");
                 let octets = match addr.ip() {
                     std::net::IpAddr::V4(ip) => ip.octets(),
@@ -250,7 +267,10 @@ async fn handle_ftps_tls_session(
                     .expect("write retr");
                 let (data_stream, _) = listener.accept().await.expect("accept data");
                 if protect_private {
-                    let mut data_stream = acceptor.accept(data_stream).await.expect("upgrade data tls");
+                    let mut data_stream = acceptor
+                        .accept(data_stream)
+                        .await
+                        .expect("upgrade data tls");
                     data_stream
                         .write_all(&file_data[pending_offset.min(file_data.len())..])
                         .await
@@ -304,9 +324,12 @@ async fn ftps_backend_supports_explicit_tls_with_custom_ca() {
         ca_certificate: Some(fixture.ca_pem.path().to_path_buf()),
         ..Default::default()
     });
-    let url = format!("ftps://ftps-user:ftps-pass@127.0.0.1:{}/secure/file.bin", fixture.port)
-        .parse()
-        .expect("ftps url");
+    let url = format!(
+        "ftps://ftps-user:ftps-pass@127.0.0.1:{}/secure/file.bin",
+        fixture.port
+    )
+    .parse()
+    .expect("ftps url");
 
     let probe = backend
         .probe(&url, &ProbeContext::default())

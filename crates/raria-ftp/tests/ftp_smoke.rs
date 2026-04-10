@@ -28,7 +28,9 @@ async fn spawn_ftp_server(
     file_path: &'static str,
     file_data: &'static [u8],
 ) -> FtpFixture {
-    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind ftp listener");
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind ftp listener");
     let port = listener.local_addr().expect("control addr").port();
 
     tokio::spawn(async move {
@@ -91,7 +93,8 @@ async fn handle_ftp_client(
                     .expect("write user reply");
             }
             "PASS" => {
-                authenticated = seen_user.as_deref() == Some(expected_user) && arg == expected_password;
+                authenticated =
+                    seen_user.as_deref() == Some(expected_user) && arg == expected_password;
                 let code = if authenticated { 230 } else { 530 };
                 let message = if authenticated {
                     "login successful"
@@ -124,7 +127,9 @@ async fn handle_ftp_client(
             }
             "PASV" => {
                 assert!(authenticated, "PASV before authentication");
-                let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind data listener");
+                let listener = TcpListener::bind("127.0.0.1:0")
+                    .await
+                    .expect("bind data listener");
                 let addr = listener.local_addr().expect("data addr");
                 let octets = match addr.ip() {
                     std::net::IpAddr::V4(ip) => ip.octets(),
@@ -201,16 +206,25 @@ async fn spawn_socks5_proxy(connect_count: Arc<AtomicUsize>) -> String {
             let connect_count = Arc::clone(&connect_count);
             tokio::spawn(async move {
                 let mut greeting = [0u8; 2];
-                downstream.read_exact(&mut greeting).await.expect("read greeting");
+                downstream
+                    .read_exact(&mut greeting)
+                    .await
+                    .expect("read greeting");
                 let mut methods = vec![0u8; greeting[1] as usize];
-                downstream.read_exact(&mut methods).await.expect("read methods");
+                downstream
+                    .read_exact(&mut methods)
+                    .await
+                    .expect("read methods");
                 downstream
                     .write_all(&[0x05, 0x00])
                     .await
                     .expect("write method select");
 
                 let mut req = [0u8; 4];
-                downstream.read_exact(&mut req).await.expect("read request header");
+                downstream
+                    .read_exact(&mut req)
+                    .await
+                    .expect("read request header");
                 let target = match req[3] {
                     0x01 => {
                         let mut ipv4 = [0u8; 4];
@@ -219,12 +233,19 @@ async fn spawn_socks5_proxy(connect_count: Arc<AtomicUsize>) -> String {
                         downstream.read_exact(&mut port).await.expect("read port");
                         format!(
                             "{}.{}.{}.{}:{}",
-                            ipv4[0], ipv4[1], ipv4[2], ipv4[3], u16::from_be_bytes(port)
+                            ipv4[0],
+                            ipv4[1],
+                            ipv4[2],
+                            ipv4[3],
+                            u16::from_be_bytes(port)
                         )
                     }
                     0x03 => {
                         let mut len = [0u8; 1];
-                        downstream.read_exact(&mut len).await.expect("read host len");
+                        downstream
+                            .read_exact(&mut len)
+                            .await
+                            .expect("read host len");
                         let mut host = vec![0u8; len[0] as usize];
                         downstream.read_exact(&mut host).await.expect("read host");
                         let mut port = [0u8; 2];
@@ -244,7 +265,9 @@ async fn spawn_socks5_proxy(connect_count: Arc<AtomicUsize>) -> String {
                     .write_all(&[0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0])
                     .await
                     .expect("write connect reply");
-                if let Err(error) = tokio::io::copy_bidirectional(&mut downstream, &mut upstream).await {
+                if let Err(error) =
+                    tokio::io::copy_bidirectional(&mut downstream, &mut upstream).await
+                {
                     assert!(is_disconnect(&error), "relay socks5: {error}");
                 }
             });
@@ -256,11 +279,15 @@ async fn spawn_socks5_proxy(connect_count: Arc<AtomicUsize>) -> String {
 
 #[tokio::test]
 async fn ftp_backend_probes_size_and_resumes_with_rest() {
-    let fixture = spawn_ftp_server("ftp-user", "ftp-pass", "/pub/file.bin", b"hello-ftp-world").await;
+    let fixture =
+        spawn_ftp_server("ftp-user", "ftp-pass", "/pub/file.bin", b"hello-ftp-world").await;
     let backend = FtpBackend::new();
-    let url = format!("ftp://ftp-user:ftp-pass@127.0.0.1:{}/pub/file.bin", fixture.port)
-        .parse()
-        .expect("ftp url");
+    let url = format!(
+        "ftp://ftp-user:ftp-pass@127.0.0.1:{}/pub/file.bin",
+        fixture.port
+    )
+    .parse()
+    .expect("ftp url");
 
     let probe = backend
         .probe(&url, &ProbeContext::default())
@@ -274,13 +301,17 @@ async fn ftp_backend_probes_size_and_resumes_with_rest() {
         .await
         .expect("open_from should succeed");
     let mut body = Vec::new();
-    stream.read_to_end(&mut body).await.expect("read ftp stream");
+    stream
+        .read_to_end(&mut body)
+        .await
+        .expect("read ftp stream");
     assert_eq!(body, b"ftp-world");
 }
 
 #[tokio::test]
 async fn ftp_backend_uses_socks5_proxy_when_configured() {
-    let fixture = spawn_ftp_server("proxy-user", "proxy-pass", "/pub/proxy.bin", b"proxy-body").await;
+    let fixture =
+        spawn_ftp_server("proxy-user", "proxy-pass", "/pub/proxy.bin", b"proxy-body").await;
     let connect_count = Arc::new(AtomicUsize::new(0));
     let proxy = spawn_socks5_proxy(Arc::clone(&connect_count)).await;
 
@@ -307,7 +338,10 @@ async fn ftp_backend_uses_socks5_proxy_when_configured() {
         .await
         .expect("open_from should succeed through socks5");
     let mut body = Vec::new();
-    stream.read_to_end(&mut body).await.expect("read ftp stream");
+    stream
+        .read_to_end(&mut body)
+        .await
+        .expect("read ftp stream");
     assert_eq!(body, b"proxy-body");
     assert!(
         connect_count.load(Ordering::SeqCst) >= 2,

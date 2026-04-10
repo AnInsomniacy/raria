@@ -67,7 +67,8 @@ impl Engine {
     /// Create a new Engine with the given configuration (no persistence).
     pub fn new(config: GlobalConfig) -> Self {
         let max_concurrent = config.max_concurrent_downloads;
-        let global_rate_limiter = Arc::new(SharedRateLimiter::new(config.max_overall_download_limit));
+        let global_rate_limiter =
+            Arc::new(SharedRateLimiter::new(config.max_overall_download_limit));
         Self {
             registry: Arc::new(JobRegistry::new()),
             scheduler: Scheduler::new(max_concurrent),
@@ -85,7 +86,8 @@ impl Engine {
     /// Create a new Engine with persistence enabled.
     pub fn with_store(config: GlobalConfig, store: Arc<Store>) -> Self {
         let max_concurrent = config.max_concurrent_downloads;
-        let global_rate_limiter = Arc::new(SharedRateLimiter::new(config.max_overall_download_limit));
+        let global_rate_limiter =
+            Arc::new(SharedRateLimiter::new(config.max_overall_download_limit));
         Self {
             registry: Arc::new(JobRegistry::new()),
             scheduler: Scheduler::new(max_concurrent),
@@ -116,7 +118,9 @@ impl Engine {
             .as_ref()
             .context("restore called without a store")?;
 
-        let jobs = store.list_jobs().context("failed to list jobs from store")?;
+        let jobs = store
+            .list_jobs()
+            .context("failed to list jobs from store")?;
         let count = jobs.len();
 
         for mut job in jobs {
@@ -198,8 +202,7 @@ impl Engine {
             .context("failed to insert job into registry")?;
         self.scheduler.enqueue(gid);
 
-        self.event_bus
-            .publish(DownloadEvent::Started { gid });
+        self.event_bus.publish(DownloadEvent::Started { gid });
 
         self.work_notify.notify_one();
         info!(%gid, "job added");
@@ -289,13 +292,10 @@ impl Engine {
 
         // Return the cancel token for this job.
         // If one doesn't exist (shouldn't happen), create one.
-        let token = self
-            .cancel_registry
-            .child_token(gid)
-            .unwrap_or_else(|| {
-                warn!(%gid, "no cancel token found during activation, creating one");
-                self.cancel_registry.register(gid)
-            });
+        let token = self.cancel_registry.child_token(gid).unwrap_or_else(|| {
+            warn!(%gid, "no cancel token found during activation, creating one");
+            self.cancel_registry.register(gid)
+        });
         Ok(token)
     }
 
@@ -600,12 +600,14 @@ mod tests {
     #[test]
     fn add_uri_extracts_filename() {
         let engine = Engine::new(default_config());
-        let handle = engine.add_uri(&AddUriSpec {
-            uris: vec!["https://example.com/path/to/bigfile.tar.gz".into()],
-            dir: PathBuf::from("/downloads"),
-            filename: None,
-            connections: 4,
-        }).unwrap();
+        let handle = engine
+            .add_uri(&AddUriSpec {
+                uris: vec!["https://example.com/path/to/bigfile.tar.gz".into()],
+                dir: PathBuf::from("/downloads"),
+                filename: None,
+                connections: 4,
+            })
+            .unwrap();
 
         let job = engine.registry.get(handle.gid).unwrap();
         assert_eq!(job.out_path, PathBuf::from("/downloads/bigfile.tar.gz"));
@@ -614,12 +616,14 @@ mod tests {
     #[test]
     fn add_uri_uses_explicit_filename() {
         let engine = Engine::new(default_config());
-        let handle = engine.add_uri(&AddUriSpec {
-            uris: vec!["https://example.com/file.zip".into()],
-            dir: PathBuf::from("/output"),
-            filename: Some("custom.dat".into()),
-            connections: 1,
-        }).unwrap();
+        let handle = engine
+            .add_uri(&AddUriSpec {
+                uris: vec!["https://example.com/file.zip".into()],
+                dir: PathBuf::from("/output"),
+                filename: Some("custom.dat".into()),
+                connections: 1,
+            })
+            .unwrap();
 
         let job = engine.registry.get(handle.gid).unwrap();
         assert_eq!(job.out_path, PathBuf::from("/output/custom.dat"));
@@ -761,7 +765,10 @@ mod tests {
 
         // Verify the job was persisted to the store.
         let store = engine.store.as_ref().unwrap();
-        let persisted = store.get_job(handle.gid).unwrap().expect("job should be in store");
+        let persisted = store
+            .get_job(handle.gid)
+            .unwrap()
+            .expect("job should be in store");
         assert_eq!(persisted.gid, handle.gid);
         assert_eq!(persisted.status, Status::Waiting);
         assert_eq!(persisted.uris, vec!["https://example.com/file.zip"]);
@@ -1110,9 +1117,7 @@ mod tests {
         let _h2 = engine.add_uri(&default_spec()).unwrap();
         let h3 = engine.add_uri(&default_spec()).unwrap();
 
-        let new_pos = engine
-            .change_position(h3.gid, 0, PositionHow::Set)
-            .unwrap();
+        let new_pos = engine.change_position(h3.gid, 0, PositionHow::Set).unwrap();
         assert_eq!(new_pos, 0);
 
         let queue = engine.scheduler.waiting_queue();
@@ -1127,9 +1132,7 @@ mod tests {
         let h3 = engine.add_uri(&default_spec()).unwrap();
 
         // h1 at pos 0, move +2 = pos 2.
-        let new_pos = engine
-            .change_position(h1.gid, 2, PositionHow::Cur)
-            .unwrap();
+        let new_pos = engine.change_position(h1.gid, 2, PositionHow::Cur).unwrap();
         assert_eq!(new_pos, 2);
 
         let queue = engine.scheduler.waiting_queue();
@@ -1142,9 +1145,7 @@ mod tests {
         let h = engine.add_uri(&default_spec()).unwrap();
         engine.activate_job(h.gid).unwrap();
 
-        assert!(engine
-            .change_position(h.gid, 0, PositionHow::Set)
-            .is_err());
+        assert!(engine.change_position(h.gid, 0, PositionHow::Set).is_err());
     }
 
     #[test]

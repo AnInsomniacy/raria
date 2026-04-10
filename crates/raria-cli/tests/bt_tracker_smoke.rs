@@ -5,8 +5,9 @@ use std::time::{Duration, Instant};
 
 use base64::Engine;
 use librqbit::{
-    AddTorrent as RqbitAddTorrent, AddTorrentOptions as RqbitAddTorrentOptions, CreateTorrentOptions,
-    Session as RqbitSession, SessionOptions as RqbitSessionOptions, create_torrent,
+    AddTorrent as RqbitAddTorrent, AddTorrentOptions as RqbitAddTorrentOptions,
+    CreateTorrentOptions, Session as RqbitSession, SessionOptions as RqbitSessionOptions,
+    create_torrent,
 };
 use tempfile::tempdir;
 use wiremock::matchers::{method, path};
@@ -76,18 +77,22 @@ async fn wait_for_rpc_ready_with_child(port: u16, child: &mut ChildGuard) -> Res
         }
 
         if Instant::now() >= deadline {
-            return Err(format!("daemon RPC server did not become ready on port {port}"));
+            return Err(format!(
+                "daemon RPC server did not become ready on port {port}"
+            ));
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
 }
 
-async fn spawn_ready_daemon(download_dir: &std::path::Path, session_file: &std::path::Path) -> (ChildGuard, u16) {
+async fn spawn_ready_daemon(
+    download_dir: &std::path::Path,
+    session_file: &std::path::Path,
+) -> (ChildGuard, u16) {
     for _ in 0..8 {
         let rpc_port = allocate_port();
         let mut cmd = Command::new(cargo_bin("raria"));
-        cmd
-            .arg("daemon")
+        cmd.arg("daemon")
             .arg("-d")
             .arg(download_dir)
             .arg("--rpc-port")
@@ -179,9 +184,8 @@ async fn spawn_bt_seed_fixture_with_payload(payload: Vec<u8>) -> BtSeedFixture {
 
     BtSeedFixture {
         tracker_url: format!("{}/announce", tracker.uri()),
-        torrent_b64: base64::engine::general_purpose::STANDARD.encode(
-        torrent.as_bytes().expect("torrent bytes"),
-        ),
+        torrent_b64: base64::engine::general_purpose::STANDARD
+            .encode(torrent.as_bytes().expect("torrent bytes")),
         tracker,
         _seed_root: seed_root,
         _seed_session: session,
@@ -243,8 +247,14 @@ async fn daemon_bt_tracker_option_announces_to_tracker_on_real_daemon_path() {
                 assert_eq!(status_resp["result"]["status"].as_str(), Some("active"));
                 let request_url = &requests[0].url;
                 let query = request_url.query().expect("tracker query string");
-                assert!(query.contains("event=started"), "tracker query should announce start: {query}");
-                assert!(query.contains("left=21"), "tracker query should advertise remaining bytes: {query}");
+                assert!(
+                    query.contains("event=started"),
+                    "tracker query should announce start: {query}"
+                );
+                assert!(
+                    query.contains("left=21"),
+                    "tracker query should advertise remaining bytes: {query}"
+                );
                 break;
             }
         }
@@ -281,7 +291,10 @@ async fn daemon_bt_tracker_option_announces_to_tracker_on_real_daemon_path() {
                 break;
             }
             Ok(None) => {
-                assert!(Instant::now() < deadline, "daemon did not exit after shutdown RPC");
+                assert!(
+                    Instant::now() < deadline,
+                    "daemon did not exit after shutdown RPC"
+                );
                 tokio::time::sleep(Duration::from_millis(100)).await;
             }
             Err(error) => panic!("failed waiting for daemon exit: {error}"),

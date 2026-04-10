@@ -1,17 +1,17 @@
 use crate::backend_factory::create_backend_with_config;
 use crate::bt_runtime::run_bt_download;
 use crate::executor_config::apply_global_retry_policy;
-use crate::hooks::{spawn_hook_runner, HookConfig};
+use crate::hooks::{HookConfig, spawn_hook_runner};
 use crate::util::parse_header_args;
 use anyhow::{Context, Result};
 use raria_core::config::GlobalConfig;
 use raria_core::engine::{AddUriSpec, Engine};
 use raria_core::job::Gid;
 use raria_core::persist::Store;
-use raria_core::segment::{init_segment_states, plan_segments, SegmentStatus};
+use raria_core::segment::{SegmentStatus, init_segment_states, plan_segments};
 use raria_range::backend::{ByteSourceBackend, Credentials, ProbeContext};
-use raria_range::executor::{apply_results, ExecutorConfig, SegmentExecutor};
-use raria_rpc::server::{start_rpc_server, RpcServerConfig};
+use raria_range::executor::{ExecutorConfig, SegmentExecutor, apply_results};
+use raria_rpc::server::{RpcServerConfig, start_rpc_server};
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
@@ -67,7 +67,7 @@ pub(crate) async fn run_daemon_with_config(
         let engine_ref = Arc::clone(&engine);
         let shutdown_ref = shutdown_token.clone();
         tokio::spawn(async move {
-            use tokio::signal::unix::{signal, SignalKind};
+            use tokio::signal::unix::{SignalKind, signal};
 
             let mut sigusr1 = match signal(SignalKind::user_defined1()) {
                 Ok(stream) => stream,
@@ -94,7 +94,7 @@ pub(crate) async fn run_daemon_with_config(
     {
         let shutdown_ref = shutdown_token.clone();
         tokio::spawn(async move {
-            use tokio::signal::unix::{signal, SignalKind};
+            use tokio::signal::unix::{SignalKind, signal};
 
             let mut sigterm = match signal(SignalKind::terminate()) {
                 Ok(stream) => stream,
@@ -126,13 +126,17 @@ pub(crate) async fn run_daemon_with_config(
     let rpc_addrs = start_rpc_server(Arc::clone(&engine), &rpc_config, rpc_cancel.clone()).await?;
     info!(rpc = %rpc_addrs.rpc, "RPC server ready");
     if !config.quiet {
-        println!("raria daemon running — RPC at http://{}/jsonrpc", rpc_addrs.rpc);
+        println!(
+            "raria daemon running — RPC at http://{}/jsonrpc",
+            rpc_addrs.rpc
+        );
     }
 
     let rate_limiter = Some(Arc::clone(&engine.global_rate_limiter));
 
     let work_notify = engine.work_notify();
-    let session_save_interval = config.save_session_interval
+    let session_save_interval = config
+        .save_session_interval
         .filter(|interval| *interval > 0)
         .map(|interval| tokio::time::interval(std::time::Duration::from_secs(interval)));
     let mut session_save_interval = session_save_interval;
@@ -173,14 +177,17 @@ pub(crate) async fn run_daemon_with_config(
                             token,
                             limiter_ref,
                             default_headers.clone(),
-                        ).await {
+                        )
+                        .await
+                        {
                             error!(%gid, error = %e, "job download task failed");
                         }
                     });
                 }
                 raria_core::job::JobKind::Bt => {
                     tokio::spawn(async move {
-                        if let Err(e) = run_bt_download(engine_ref, gid, token, download_dir).await {
+                        if let Err(e) = run_bt_download(engine_ref, gid, token, download_dir).await
+                        {
                             error!(%gid, error = %e, "BT download task failed");
                         }
                     });
@@ -236,15 +243,24 @@ async fn run_job_download(
         .context("job not found in registry")?;
     let mut request_headers = default_headers;
     request_headers.extend(job.options.headers.clone());
-    let request_auth = job.options.http_user.as_ref().map(|username| Credentials {
-        username: username.clone(),
-        password: job.options.http_passwd.clone().unwrap_or_default(),
-    }).or_else(|| {
-        engine.config.http_user.as_ref().map(|username| Credentials {
+    let request_auth = job
+        .options
+        .http_user
+        .as_ref()
+        .map(|username| Credentials {
             username: username.clone(),
-            password: engine.config.http_passwd.clone().unwrap_or_default(),
+            password: job.options.http_passwd.clone().unwrap_or_default(),
         })
-    });
+        .or_else(|| {
+            engine
+                .config
+                .http_user
+                .as_ref()
+                .map(|username| Credentials {
+                    username: username.clone(),
+                    password: engine.config.http_passwd.clone().unwrap_or_default(),
+                })
+        });
 
     let http_cfg = raria_http::backend::HttpBackendConfig {
         all_proxy: engine.config.all_proxy.clone(),
@@ -297,7 +313,12 @@ async fn run_job_download(
         let parsed_url: url::Url = uri_str.parse().context("invalid URI")?;
         info!(%gid, uri = %parsed_url, "daemon: starting download");
 
-        let backend = match create_backend_with_config(uri_str, Some(&http_cfg), Some(&ftp_cfg), Some(&sftp_cfg)) {
+        let backend = match create_backend_with_config(
+            uri_str,
+            Some(&http_cfg),
+            Some(&ftp_cfg),
+            Some(&sftp_cfg),
+        ) {
             Ok(backend) => backend,
             Err(error) => {
                 warn!(%gid, uri = %parsed_url, error = %error, "failed to create backend for mirror");
@@ -366,7 +387,9 @@ async fn run_job_download(
                     Ok(persisted) if !persisted.is_empty() => {
                         for (seg_id, persisted_state) in &persisted {
                             if let Some(seg) = resolved_segments.get_mut(*seg_id as usize) {
-                                if persisted_state.downloaded > 0 && persisted_state.downloaded <= seg.size() {
+                                if persisted_state.downloaded > 0
+                                    && persisted_state.downloaded <= seg.size()
+                                {
                                     seg.downloaded = persisted_state.downloaded;
                                     seg.status = SegmentStatus::Pending;
                                     info!(
@@ -412,7 +435,9 @@ async fn run_job_download(
                 rate_limiter: rate_limiter.clone(),
                 on_checkpoint: on_checkpoint.clone(),
                 file_allocation: engine.config.file_allocation,
-                request_timeout: std::time::Duration::from_secs(engine.config.timeout.unwrap_or(60)),
+                request_timeout: std::time::Duration::from_secs(
+                    engine.config.timeout.unwrap_or(60),
+                ),
                 request_headers: request_headers.clone(),
                 request_auth: request_auth.clone(),
                 request_etag: probe.etag.clone(),

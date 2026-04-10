@@ -12,7 +12,7 @@
 
 use crate::backend::{ByteSourceBackend, Credentials, OpenContext};
 use anyhow::{Context, Result};
-use raria_core::file_alloc::{preallocate, FileAllocation};
+use raria_core::file_alloc::{FileAllocation, preallocate};
 use raria_core::limiter::SharedRateLimiter;
 use raria_core::segment::{SegmentState, SegmentStatus};
 use std::path::Path;
@@ -331,7 +331,10 @@ impl SegmentExecutor {
                     retries += 1;
                     let delay_ms = config.retry_base_delay_ms * 2u64.pow(retries - 1);
                     warn!(
-                        seg_id, retries, delay_ms, bytes_so_far = total_downloaded,
+                        seg_id,
+                        retries,
+                        delay_ms,
+                        bytes_so_far = total_downloaded,
                         "segment incomplete, retrying"
                     );
 
@@ -359,9 +362,7 @@ impl SegmentExecutor {
                                 segment_id: seg_id,
                                 bytes_downloaded: total_downloaded,
                                 status: SegmentStatus::Failed,
-                                error: Some(format!(
-                                    "file not found after {count} attempts"
-                                )),
+                                error: Some(format!("file not found after {count} attempts")),
                                 retries_used: retries,
                             };
                         }
@@ -512,7 +513,11 @@ impl SegmentExecutor {
         }
 
         file.flush().await?;
-        debug!(seg_id, bytes = bytes_this_attempt, "segment attempt complete");
+        debug!(
+            seg_id,
+            bytes = bytes_this_attempt,
+            "segment attempt complete"
+        );
         Ok(bytes_this_attempt)
     }
 }
@@ -998,7 +1003,10 @@ mod tests {
         }
 
         let written = std::fs::read(&out_path).unwrap();
-        assert_eq!(written, data, "assembled file must match original byte-for-byte");
+        assert_eq!(
+            written, data,
+            "assembled file must match original byte-for-byte"
+        );
     }
 
     // ═══════════════════════════════════════════════════════════════════
@@ -1145,7 +1153,10 @@ mod tests {
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].status, SegmentStatus::Done);
         assert_eq!(results[0].bytes_downloaded, 500);
-        assert!(results[0].retries_used >= 2, "should have retried at least twice");
+        assert!(
+            results[0].retries_used >= 2,
+            "should have retried at least twice"
+        );
 
         // Verify the fail count was actually used.
         assert_eq!(fail_count.load(Ordering::SeqCst), 2);
@@ -1288,7 +1299,10 @@ mod tests {
             .unwrap();
 
         let total = total_downloaded(&results);
-        assert!(total < 100_000, "should not have downloaded everything after cancel");
+        assert!(
+            total < 100_000,
+            "should not have downloaded everything after cancel"
+        );
     }
 
     // ═══════════════════════════════════════════════════════════════════
@@ -1319,11 +1333,10 @@ mod tests {
         let pt = Arc::clone(&progress_total);
         let pc = Arc::clone(&progress_count);
 
-        let on_progress: Arc<dyn Fn(u32, u64) + Send + Sync> =
-            Arc::new(move |_seg_id, bytes| {
-                pt.fetch_add(bytes, Ordering::Relaxed);
-                pc.fetch_add(1, Ordering::Relaxed);
-            });
+        let on_progress: Arc<dyn Fn(u32, u64) + Send + Sync> = Arc::new(move |_seg_id, bytes| {
+            pt.fetch_add(bytes, Ordering::Relaxed);
+            pc.fetch_add(1, Ordering::Relaxed);
+        });
 
         let results = executor
             .execute(backend, &uri, &out_path, &segments, cancel, on_progress)

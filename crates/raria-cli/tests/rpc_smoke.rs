@@ -32,7 +32,6 @@ fn allocate_port() -> u16 {
     port
 }
 
-
 async fn wait_for_rpc_ready_with_child(port: u16, child: &mut ChildGuard) -> Result<(), String> {
     let deadline = Instant::now() + Duration::from_secs(60);
     let client = reqwest::Client::new();
@@ -75,13 +74,18 @@ async fn wait_for_rpc_ready_with_child(port: u16, child: &mut ChildGuard) -> Res
         }
 
         if Instant::now() >= deadline {
-            return Err(format!("daemon RPC server did not become ready on port {port}"));
+            return Err(format!(
+                "daemon RPC server did not become ready on port {port}"
+            ));
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
 }
 
-async fn spawn_ready_daemon(download_dir: &std::path::Path, session_file: &std::path::Path) -> (ChildGuard, u16) {
+async fn spawn_ready_daemon(
+    download_dir: &std::path::Path,
+    session_file: &std::path::Path,
+) -> (ChildGuard, u16) {
     spawn_ready_daemon_with_args(download_dir, session_file, &[]).await
 }
 
@@ -93,8 +97,7 @@ async fn spawn_ready_daemon_with_args(
     for _ in 0..8 {
         let rpc_port = allocate_port();
         let mut cmd = Command::new(cargo_bin("raria"));
-        cmd
-            .arg("daemon")
+        cmd.arg("daemon")
             .arg("-d")
             .arg(download_dir)
             .arg("--rpc-port")
@@ -123,12 +126,8 @@ async fn spawn_ready_daemon_with_args(
 async fn daemon_emits_cors_headers_when_rpc_allow_origin_all_is_enabled() {
     let temp = tempdir().expect("tempdir");
     let session_file = temp.path().join("cors.session.redb");
-    let (mut child, rpc_port) = spawn_ready_daemon_with_args(
-        temp.path(),
-        &session_file,
-        &["--rpc-allow-origin-all"],
-    )
-    .await;
+    let (mut child, rpc_port) =
+        spawn_ready_daemon_with_args(temp.path(), &session_file, &["--rpc-allow-origin-all"]).await;
 
     let client = reqwest::Client::new();
     let preflight = client
@@ -179,7 +178,10 @@ async fn daemon_emits_cors_headers_when_rpc_allow_origin_all_is_enabled() {
                 break;
             }
             Ok(None) => {
-                assert!(Instant::now() < deadline, "daemon did not exit after shutdown RPC");
+                assert!(
+                    Instant::now() < deadline,
+                    "daemon did not exit after shutdown RPC"
+                );
                 tokio::time::sleep(Duration::from_millis(100)).await;
             }
             Err(error) => panic!("failed waiting for daemon exit: {error}"),
@@ -211,12 +213,8 @@ async fn daemon_rejects_ws_origin_by_default() {
 async fn daemon_allows_ws_origin_when_rpc_allow_origin_all_is_enabled() {
     let temp = tempdir().expect("tempdir");
     let session_file = temp.path().join("ws-origin-allow.session.redb");
-    let (_child, rpc_port) = spawn_ready_daemon_with_args(
-        temp.path(),
-        &session_file,
-        &["--rpc-allow-origin-all"],
-    )
-    .await;
+    let (_child, rpc_port) =
+        spawn_ready_daemon_with_args(temp.path(), &session_file, &["--rpc-allow-origin-all"]).await;
 
     let mut request = format!("ws://127.0.0.1:{rpc_port}/jsonrpc")
         .into_client_request()
@@ -329,7 +327,10 @@ async fn daemon_accepts_rpc_add_uri_and_shutdown() {
                 break;
             }
             Ok(None) => {
-                assert!(Instant::now() < deadline, "daemon did not exit after shutdown RPC");
+                assert!(
+                    Instant::now() < deadline,
+                    "daemon did not exit after shutdown RPC"
+                );
                 tokio::time::sleep(Duration::from_millis(100)).await;
             }
             Err(error) => panic!("failed waiting for daemon exit: {error}"),
@@ -351,7 +352,6 @@ async fn daemon_accepts_rpc_add_uri_and_shutdown() {
         thread::sleep(Duration::from_millis(50));
     }
 }
-
 
 #[tokio::test]
 async fn daemon_bt_job_pause_and_unpause_round_trip_over_rpc() {
@@ -490,7 +490,10 @@ async fn daemon_bt_job_pause_and_unpause_round_trip_over_rpc() {
                 break;
             }
             Ok(None) => {
-                assert!(Instant::now() < deadline, "daemon did not exit after shutdown RPC");
+                assert!(
+                    Instant::now() < deadline,
+                    "daemon did not exit after shutdown RPC"
+                );
                 tokio::time::sleep(Duration::from_millis(100)).await;
             }
             Err(error) => panic!("failed waiting for daemon exit: {error}"),
@@ -536,12 +539,9 @@ async fn daemon_respects_min_split_size_when_calculating_effective_connections()
 
     let temp = tempdir().expect("tempdir");
     let session_file = temp.path().join("minsplit.session.redb");
-    let (mut child, rpc_port) = spawn_ready_daemon_with_args(
-        temp.path(),
-        &session_file,
-        &["--min-split-size", "262144"],
-    )
-    .await;
+    let (mut child, rpc_port) =
+        spawn_ready_daemon_with_args(temp.path(), &session_file, &["--min-split-size", "262144"])
+            .await;
 
     let client = reqwest::Client::new();
     let add_resp: serde_json::Value = client
@@ -629,7 +629,10 @@ async fn daemon_respects_min_split_size_when_calculating_effective_connections()
                 break;
             }
             Ok(None) => {
-                assert!(Instant::now() < deadline, "daemon did not exit after shutdown RPC");
+                assert!(
+                    Instant::now() < deadline,
+                    "daemon did not exit after shutdown RPC"
+                );
                 tokio::time::sleep(Duration::from_millis(100)).await;
             }
             Err(error) => panic!("failed waiting for daemon exit: {error}"),
@@ -716,7 +719,9 @@ async fn daemon_respects_split_and_max_connection_per_server_options() {
             break;
         }
         if status == "complete" {
-            panic!("download completed before surfacing the configured connection count: {status_resp}");
+            panic!(
+                "download completed before surfacing the configured connection count: {status_resp}"
+            );
         }
 
         assert!(
@@ -750,7 +755,10 @@ async fn daemon_respects_split_and_max_connection_per_server_options() {
                 break;
             }
             Ok(None) => {
-                assert!(Instant::now() < deadline, "daemon did not exit after shutdown RPC");
+                assert!(
+                    Instant::now() < deadline,
+                    "daemon did not exit after shutdown RPC"
+                );
                 tokio::time::sleep(Duration::from_millis(100)).await;
             }
             Err(error) => panic!("failed waiting for daemon exit: {error}"),
@@ -848,7 +856,10 @@ async fn daemon_stops_retrying_after_max_file_not_found() {
         .iter()
         .filter(|req| req.method.as_str() == "GET" && req.url.path() == "/missing.bin")
         .count();
-    assert_eq!(get_count, 1, "expected exactly one GET attempt for missing file");
+    assert_eq!(
+        get_count, 1,
+        "expected exactly one GET attempt for missing file"
+    );
 
     let shutdown_resp: serde_json::Value = client
         .post(format!("http://127.0.0.1:{rpc_port}"))
@@ -874,7 +885,10 @@ async fn daemon_stops_retrying_after_max_file_not_found() {
                 break;
             }
             Ok(None) => {
-                assert!(Instant::now() < deadline, "daemon did not exit after shutdown RPC");
+                assert!(
+                    Instant::now() < deadline,
+                    "daemon did not exit after shutdown RPC"
+                );
                 tokio::time::sleep(Duration::from_millis(100)).await;
             }
             Err(error) => panic!("failed waiting for daemon exit: {error}"),
@@ -990,7 +1004,10 @@ async fn daemon_uses_rpc_supplied_headers_on_real_download_requests() {
                 break;
             }
             Ok(None) => {
-                assert!(Instant::now() < deadline, "daemon did not exit after shutdown RPC");
+                assert!(
+                    Instant::now() < deadline,
+                    "daemon did not exit after shutdown RPC"
+                );
                 tokio::time::sleep(Duration::from_millis(100)).await;
             }
             Err(error) => panic!("failed waiting for daemon exit: {error}"),
@@ -1003,12 +1020,18 @@ async fn daemon_uses_rpc_supplied_basic_auth_on_real_download_requests() {
     let download_server = MockServer::start().await;
     let auth_value = format!(
         "Basic {}",
-        base64::Engine::encode(&base64::engine::general_purpose::STANDARD, b"rpc-user:rpc-pass")
+        base64::Engine::encode(
+            &base64::engine::general_purpose::STANDARD,
+            b"rpc-user:rpc-pass"
+        )
     );
 
     Mock::given(method("HEAD"))
         .and(path("/auth.bin"))
-        .and(wiremock::matchers::header("authorization", auth_value.as_str()))
+        .and(wiremock::matchers::header(
+            "authorization",
+            auth_value.as_str(),
+        ))
         .respond_with(
             ResponseTemplate::new(200)
                 .insert_header("content-length", "4")
@@ -1019,7 +1042,10 @@ async fn daemon_uses_rpc_supplied_basic_auth_on_real_download_requests() {
 
     Mock::given(method("GET"))
         .and(path("/auth.bin"))
-        .and(wiremock::matchers::header("authorization", auth_value.as_str()))
+        .and(wiremock::matchers::header(
+            "authorization",
+            auth_value.as_str(),
+        ))
         .respond_with(ResponseTemplate::new(200).set_body_bytes(b"auth"))
         .mount(&download_server)
         .await;
@@ -1111,7 +1137,10 @@ async fn daemon_uses_rpc_supplied_basic_auth_on_real_download_requests() {
                 break;
             }
             Ok(None) => {
-                assert!(Instant::now() < deadline, "daemon did not exit after shutdown RPC");
+                assert!(
+                    Instant::now() < deadline,
+                    "daemon did not exit after shutdown RPC"
+                );
                 tokio::time::sleep(Duration::from_millis(100)).await;
             }
             Err(error) => panic!("failed waiting for daemon exit: {error}"),
@@ -1155,14 +1184,20 @@ async fn daemon_writes_logs_to_requested_file() {
                 break;
             }
             Ok(None) => {
-                assert!(Instant::now() < deadline, "daemon did not exit after shutdown RPC");
+                assert!(
+                    Instant::now() < deadline,
+                    "daemon did not exit after shutdown RPC"
+                );
                 tokio::time::sleep(Duration::from_millis(100)).await;
             }
             Err(error) => panic!("failed waiting for daemon exit: {error}"),
         }
     }
 
-    assert!(log_path.is_file(), "daemon should create the requested log file");
+    assert!(
+        log_path.is_file(),
+        "daemon should create the requested log file"
+    );
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
         let log = std::fs::read_to_string(&log_path).expect("read log file");
@@ -1203,11 +1238,17 @@ async fn daemon_flag_detaches_process_and_keeps_rpc_alive() {
     loop {
         match child.try_wait() {
             Ok(Some(status)) => {
-                assert!(status.success(), "daemonizing parent exited unsuccessfully: {status}");
+                assert!(
+                    status.success(),
+                    "daemonizing parent exited unsuccessfully: {status}"
+                );
                 break;
             }
             Ok(None) => {
-                assert!(Instant::now() < exit_deadline, "daemonizing parent did not exit promptly");
+                assert!(
+                    Instant::now() < exit_deadline,
+                    "daemonizing parent did not exit promptly"
+                );
                 tokio::time::sleep(Duration::from_millis(100)).await;
             }
             Err(error) => panic!("failed waiting for daemonizing parent: {error}"),
@@ -1235,7 +1276,10 @@ async fn daemon_flag_detaches_process_and_keeps_rpc_alive() {
             }
         }
 
-        assert!(Instant::now() < rpc_deadline, "background daemon never became RPC-ready");
+        assert!(
+            Instant::now() < rpc_deadline,
+            "background daemon never became RPC-ready"
+        );
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
 
@@ -1365,7 +1409,10 @@ async fn tell_status_reports_non_zero_connections_while_download_is_active() {
                 break;
             }
             Ok(None) => {
-                assert!(Instant::now() < deadline, "daemon did not exit after shutdown RPC");
+                assert!(
+                    Instant::now() < deadline,
+                    "daemon did not exit after shutdown RPC"
+                );
                 tokio::time::sleep(Duration::from_millis(100)).await;
             }
             Err(error) => panic!("failed waiting for daemon exit: {error}"),
@@ -1530,7 +1577,10 @@ async fn change_global_option_updates_active_download_limit_in_product_path() {
                 break;
             }
             Ok(None) => {
-                assert!(Instant::now() < deadline, "daemon did not exit after shutdown RPC");
+                assert!(
+                    Instant::now() < deadline,
+                    "daemon did not exit after shutdown RPC"
+                );
                 tokio::time::sleep(Duration::from_millis(100)).await;
             }
             Err(error) => panic!("failed waiting for daemon exit: {error}"),
@@ -1655,8 +1705,7 @@ async fn change_global_option_can_enable_a_limit_for_an_already_active_download(
         let status = status_resp["result"]["status"].as_str().expect("status");
         if Instant::now() >= stall_window {
             assert_ne!(
-                status,
-                "complete",
+                status, "complete",
                 "download completed too quickly after enabling a very low global limit: {status_resp}"
             );
             break;
@@ -1688,7 +1737,10 @@ async fn change_global_option_can_enable_a_limit_for_an_already_active_download(
                 break;
             }
             Ok(None) => {
-                assert!(Instant::now() < deadline, "daemon did not exit after shutdown RPC");
+                assert!(
+                    Instant::now() < deadline,
+                    "daemon did not exit after shutdown RPC"
+                );
                 tokio::time::sleep(Duration::from_millis(100)).await;
             }
             Err(error) => panic!("failed waiting for daemon exit: {error}"),

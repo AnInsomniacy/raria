@@ -27,7 +27,10 @@ user-agent=raria-config/2.0
 
         assert_eq!(config.dir, PathBuf::from("/from-config-file"));
         assert_eq!(config.max_concurrent_downloads, 16);
-        assert_eq!(config.all_proxy, Some("http://proxy-from-config:3128".into()));
+        assert_eq!(
+            config.all_proxy,
+            Some("http://proxy-from-config:3128".into())
+        );
         assert_eq!(config.user_agent, Some("raria-config/2.0".into()));
     }
 
@@ -79,7 +82,10 @@ user-agent=raria-config/2.0
         };
         let json = serde_json::to_string(&config).unwrap();
         let recovered: GlobalConfig = serde_json::from_str(&json).unwrap();
-        assert_eq!(recovered.cookie_file, Some(PathBuf::from("/tmp/cookies.txt")));
+        assert_eq!(
+            recovered.cookie_file,
+            Some(PathBuf::from("/tmp/cookies.txt"))
+        );
     }
 
     /// Empty load-cookies value clears the field.
@@ -100,7 +106,7 @@ user-agent=raria-config/2.0
     /// The job source detection must correctly identify magnet URIs as BT.
     #[test]
     fn job_source_detects_magnet() {
-        use raria_core::service::{detect_scheme, JobSource};
+        use raria_core::service::{JobSource, detect_scheme};
         let source = detect_scheme("magnet:?xt=urn:btih:abc123");
         assert_eq!(source, Some(JobSource::Magnet));
     }
@@ -108,10 +114,16 @@ user-agent=raria-config/2.0
     /// HTTP URIs are correctly detected.
     #[test]
     fn job_source_detects_http_variants() {
-        use raria_core::service::{detect_scheme, JobSource};
+        use raria_core::service::{JobSource, detect_scheme};
         assert_eq!(detect_scheme("http://example.com/f"), Some(JobSource::Http));
-        assert_eq!(detect_scheme("https://example.com/f"), Some(JobSource::Http));
-        assert_eq!(detect_scheme("ftp://ftp.example.com/f"), Some(JobSource::Ftp));
+        assert_eq!(
+            detect_scheme("https://example.com/f"),
+            Some(JobSource::Http)
+        );
+        assert_eq!(
+            detect_scheme("ftp://ftp.example.com/f"),
+            Some(JobSource::Ftp)
+        );
         assert_eq!(detect_scheme("sftp://srv/f"), Some(JobSource::Sftp));
     }
 }

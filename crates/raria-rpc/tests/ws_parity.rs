@@ -70,13 +70,21 @@ mod tests {
 
         // Must have exactly these top-level keys: jsonrpc, method, params
         let obj = json.as_object().unwrap();
-        assert_eq!(obj.len(), 3, "notification must have exactly 3 fields: jsonrpc, method, params");
+        assert_eq!(
+            obj.len(),
+            3,
+            "notification must have exactly 3 fields: jsonrpc, method, params"
+        );
         assert_eq!(obj["jsonrpc"], "2.0");
         assert_eq!(obj["method"], "aria2.onDownloadStart");
 
         // params[0] must have exactly one key: "gid"
         let gid_obj = obj["params"][0].as_object().unwrap();
-        assert_eq!(gid_obj.len(), 1, "params[0] must have exactly one key: 'gid'");
+        assert_eq!(
+            gid_obj.len(),
+            1,
+            "params[0] must have exactly one key: 'gid'"
+        );
         assert_eq!(gid_obj["gid"], "0a0b0c0d0e0f0001");
     }
 
@@ -92,9 +100,13 @@ mod tests {
         let gid = json["params"][0]["gid"].as_str().unwrap();
 
         assert_eq!(gid.len(), 16, "GID must be exactly 16 characters");
-        assert_eq!(gid, "00000000000000ff", "GID must be zero-padded lowercase hex");
+        assert_eq!(
+            gid, "00000000000000ff",
+            "GID must be zero-padded lowercase hex"
+        );
         assert!(
-            gid.chars().all(|c| c.is_ascii_hexdigit() && !c.is_uppercase()),
+            gid.chars()
+                .all(|c| c.is_ascii_hexdigit() && !c.is_uppercase()),
             "GID must be lowercase hex only"
         );
     }

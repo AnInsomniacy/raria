@@ -13,7 +13,15 @@ use std::sync::Arc;
 /// A limit of 0 means unlimited (no limiter is created).
 #[derive(Debug, Clone)]
 pub struct RateLimiter {
-    limiter: Option<Arc<GovRateLimiter<governor::state::NotKeyed, governor::state::InMemoryState, governor::clock::DefaultClock>>>,
+    limiter: Option<
+        Arc<
+            GovRateLimiter<
+                governor::state::NotKeyed,
+                governor::state::InMemoryState,
+                governor::clock::DefaultClock,
+            >,
+        >,
+    >,
     limit_bps: u64,
 }
 

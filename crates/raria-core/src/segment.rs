@@ -253,7 +253,10 @@ mod tests {
         // Verify segments are contiguous.
         for i in 1..segs.len() {
             let prev = i - 1;
-            assert_eq!(segs[i].0, segs[prev].1, "gap between segments {prev} and {i}");
+            assert_eq!(
+                segs[i].0, segs[prev].1,
+                "gap between segments {prev} and {i}"
+            );
         }
         // Verify total coverage.
         assert_eq!(segs[0].0, 0);

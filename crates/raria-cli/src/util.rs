@@ -14,9 +14,9 @@ pub(crate) fn parse_header_args(values: &[String]) -> anyhow::Result<Vec<(String
     values
         .iter()
         .map(|header| {
-            let (name, value) = header
-                .split_once(':')
-                .ok_or_else(|| anyhow::anyhow!("invalid header '{header}': expected Name: Value"))?;
+            let (name, value) = header.split_once(':').ok_or_else(|| {
+                anyhow::anyhow!("invalid header '{header}': expected Name: Value")
+            })?;
             let name = name.trim();
             let value = value.trim();
             anyhow::ensure!(!name.is_empty(), "invalid header '{header}': empty name");
