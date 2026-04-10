@@ -13,12 +13,12 @@ use anyhow::{Context, Result};
 use librqbit::api::{Api, TorrentIdOrHash};
 use librqbit::{
     AddTorrent, AddTorrentOptions, AddTorrentResponse, ManagedTorrent, Session,
-    SessionOptions,
+    SessionOptions, SessionPersistenceConfig,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::net::SocketAddr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 use tracing::{debug, info, warn};
 
@@ -47,6 +47,23 @@ fn parse_peer_addr(addr: &str) -> (String, u16) {
     }
 
     (addr.to_string(), 0)
+}
+
+fn bt_session_persistence_dir(output_dir: &Path) -> PathBuf {
+    output_dir.join(".raria-bt-session")
+}
+
+fn bt_session_options(output_dir: &Path, config: &BtServiceConfig) -> SessionOptions {
+    SessionOptions {
+        disable_dht: config.disable_dht,
+        disable_dht_persistence: config.disable_dht_persistence,
+        socks_proxy_url: config.socks_proxy_url.clone(),
+        fastresume: true,
+        persistence: Some(SessionPersistenceConfig::Json {
+            folder: Some(bt_session_persistence_dir(output_dir)),
+        }),
+        ..Default::default()
+    }
 }
 
 /// Source for a BitTorrent download.
@@ -176,12 +193,7 @@ impl BtService {
 
         // Slow path: initialize.
         info!(dir = %self.output_dir.display(), "initializing librqbit session");
-        let opts = SessionOptions {
-            disable_dht: self.config.disable_dht,
-            disable_dht_persistence: self.config.disable_dht_persistence,
-            socks_proxy_url: self.config.socks_proxy_url.clone(),
-            ..Default::default()
-        };
+        let opts = bt_session_options(&self.output_dir, &self.config);
         let session = Session::new_with_opts(self.output_dir.clone(), opts)
             .await
             .context("failed to initialize librqbit session")?;
@@ -533,6 +545,31 @@ mod tests {
                 || error_chain.contains("socks5"),
             "unexpected BT proxy error: {error_chain}"
         );
+    }
+
+    #[test]
+    fn bt_service_session_options_enable_fastresume_and_json_persistence() {
+        let output_dir = PathBuf::from("/tmp/raria-bt");
+        let options = bt_session_options(
+            &output_dir,
+            &BtServiceConfig {
+                socks_proxy_url: Some("socks5://127.0.0.1:1080".into()),
+                disable_dht: true,
+                disable_dht_persistence: true,
+                initial_peers: None,
+            },
+        );
+
+        assert!(options.fastresume, "BtService must enable librqbit fastresume");
+        assert_eq!(options.socks_proxy_url.as_deref(), Some("socks5://127.0.0.1:1080"));
+        assert!(options.disable_dht);
+        assert!(options.disable_dht_persistence);
+        match options.persistence {
+            Some(SessionPersistenceConfig::Json { folder }) => {
+                assert_eq!(folder, Some(bt_session_persistence_dir(&output_dir)));
+            }
+            other => panic!("expected JSON persistence config, got {other:?}"),
+        }
     }
 
     #[test]
