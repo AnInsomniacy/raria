@@ -567,7 +567,7 @@ mod tests {
             Some(SessionPersistenceConfig::Json { folder }) => {
                 assert_eq!(folder, Some(bt_session_persistence_dir(&output_dir)));
             }
-            other => panic!("expected JSON persistence config, got {other:?}"),
+            _ => panic!("expected JSON persistence config"),
         }
     }
 

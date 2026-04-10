@@ -75,7 +75,7 @@
 | uTP | ✅ | ✅ | `wired` | librqbit support |
 | File selection | ✅ | ✅ | `tested` | BT selection is wired and covered by unit + RPC tests |
 | Pause / Resume | ✅ | ✅ | `client_verified` | BT dispatch tests verify control flow, and daemon RPC smoke now proves pause/unpause status transitions on a real BT daemon path |
-| Fastresume | ✅ | ✅ | `wired` | librqbit native behavior |
+| Fastresume | ✅ | ✅ | `tested` | `raria-bt` smoke now verifies fastresume persistence files are written and non-zero download progress is restored after restart |
 | MSE/PSE encryption | ✅ | ❌ | `gap` | BT-GAP-001 |
 | WebSeed (BEP-17/19) | ✅ | ❌ | `gap` | BT-GAP-002 |
 | Rarest-first | ✅ | ❌ | `gap` | BT-GAP-003 |
