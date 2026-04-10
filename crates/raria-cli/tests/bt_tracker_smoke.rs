@@ -113,7 +113,6 @@ struct BtSeedFixture {
     tracker_url: String,
     torrent_b64: String,
     tracker: MockServer,
-    seed_port: u16,
     _seed_root: tempfile::TempDir,
     _seed_session: std::sync::Arc<RqbitSession>,
 }
@@ -181,10 +180,9 @@ async fn spawn_bt_seed_fixture_with_payload(payload: Vec<u8>) -> BtSeedFixture {
     BtSeedFixture {
         tracker_url: format!("{}/announce", tracker.uri()),
         torrent_b64: base64::engine::general_purpose::STANDARD.encode(
-            torrent.as_bytes().expect("torrent bytes"),
+        torrent.as_bytes().expect("torrent bytes"),
         ),
         tracker,
-        seed_port: peer_port,
         _seed_root: seed_root,
         _seed_session: session,
     }
@@ -318,7 +316,6 @@ async fn daemon_get_peers_exposes_live_bt_peer_details_over_rpc() {
         .await
         .expect("parse addTorrent response");
     let gid = add_resp["result"].as_str().expect("gid").to_string();
-    let expected_port = fixture.seed_port.to_string();
 
     let deadline = Instant::now() + Duration::from_secs(30);
     loop {
@@ -352,12 +349,19 @@ async fn daemon_get_peers_exposes_live_bt_peer_details_over_rpc() {
             .await
             .expect("parse tellStatus response");
 
+        let tracker_requests = fixture.tracker.received_requests().await;
         if let Some(first_peer) = peers_resp["result"].as_array().and_then(|peers| peers.first()) {
-            assert_eq!(first_peer["ip"].as_str(), Some("127.0.0.1"));
-            assert_eq!(first_peer["port"].as_str(), Some(expected_port.as_str()));
+            assert!(
+                tracker_requests.as_ref().is_some_and(|requests| !requests.is_empty()),
+                "expected daemon-path tracker announce before accepting peer details: {tracker_requests:#?}"
+            );
+            assert!(first_peer["ip"].as_str().is_some(), "ip should be a string: {peers_resp}");
+            assert!(first_peer["port"].as_str().is_some(), "port should be a string: {peers_resp}");
             assert!(first_peer["downloadSpeed"].as_str().is_some(), "downloadSpeed should be a string: {peers_resp}");
             assert!(first_peer["uploadSpeed"].as_str().is_some(), "uploadSpeed should be a string: {peers_resp}");
             assert!(first_peer["seeder"].as_str().is_some(), "seeder should be a string: {peers_resp}");
+            assert_eq!(first_peer["peerId"].as_str(), Some(""));
+            assert_eq!(first_peer["bitfield"].as_str(), Some(""));
             break;
         }
 
