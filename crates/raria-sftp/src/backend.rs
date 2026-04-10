@@ -27,6 +27,8 @@ use russh_sftp::client::SftpSession;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::io::AsyncSeekExt;
+use tokio::net::TcpStream;
+use tokio_socks::tcp::Socks5Stream;
 use tracing::{debug, info};
 use url::Url;
 
@@ -41,6 +43,10 @@ pub struct SftpBackendConfig {
     pub private_key_path: Option<PathBuf>,
     /// Optional passphrase for the private key.
     pub private_key_passphrase: Option<String>,
+    /// Proxy URL for all protocols; currently only socks5:// is supported on SFTP.
+    pub all_proxy: Option<String>,
+    /// Comma-separated no-proxy host list.
+    pub no_proxy: Option<String>,
 }
 
 /// SFTP download backend.
@@ -114,6 +120,34 @@ fn verify_known_host(
     }
 }
 
+fn should_bypass_proxy(host: &str, no_proxy: Option<&str>) -> bool {
+    no_proxy
+        .map(|entries| {
+            entries
+                .split(',')
+                .map(str::trim)
+                .filter(|entry| !entry.is_empty())
+                .any(|entry| entry == host)
+        })
+        .unwrap_or(false)
+}
+
+async fn connect_tcp_stream(host: &str, port: u16, config: &SftpBackendConfig) -> Result<TcpStream> {
+    let addr = format!("{host}:{port}");
+    if let Some(proxy) = config.all_proxy.as_deref() {
+        if proxy.starts_with("socks5://") && !should_bypass_proxy(host, config.no_proxy.as_deref()) {
+            let proxy_addr = proxy.trim_start_matches("socks5://");
+            let stream = Socks5Stream::connect(proxy_addr, addr.as_str())
+                .await
+                .with_context(|| format!("failed to connect to SFTP server through SOCKS5 proxy {proxy_addr}"))?;
+            return Ok(stream.into_inner());
+        }
+    }
+    TcpStream::connect((host, port))
+        .await
+        .with_context(|| format!("SSH connection failed to {host}:{port}"))
+}
+
 impl client::Handler for SshHandler {
     type Error = anyhow::Error;
 
@@ -138,7 +172,8 @@ async fn connect_sftp(uri: &Url, backend_config: &SftpBackendConfig) -> Result<(
     let ssh_config = Arc::new(client::Config::default());
     let handler = SshHandler::new(host.clone(), port, backend_config.clone());
 
-    let mut session = client::connect(ssh_config, (host.as_str(), port), handler)
+    let stream = connect_tcp_stream(&host, port, backend_config).await?;
+    let mut session = client::connect_stream(ssh_config, stream, handler)
         .await
         .with_context(|| format!("SSH connection failed to {host}:{port}"))?;
 
@@ -256,11 +291,15 @@ mod tests {
             known_hosts_path: Some(PathBuf::from("/tmp/known_hosts")),
             private_key_path: Some(PathBuf::from("/tmp/id_ed25519")),
             private_key_passphrase: Some("secret".into()),
+            all_proxy: Some("socks5://127.0.0.1:1080".into()),
+            no_proxy: Some("localhost".into()),
         });
         assert!(backend.config.strict_host_key_check);
         assert_eq!(backend.config.known_hosts_path, Some(PathBuf::from("/tmp/known_hosts")));
         assert_eq!(backend.config.private_key_path, Some(PathBuf::from("/tmp/id_ed25519")));
         assert_eq!(backend.config.private_key_passphrase.as_deref(), Some("secret"));
+        assert_eq!(backend.config.all_proxy.as_deref(), Some("socks5://127.0.0.1:1080"));
+        assert_eq!(backend.config.no_proxy.as_deref(), Some("localhost"));
     }
 
     #[test]
@@ -319,6 +358,8 @@ mod tests {
                 known_hosts_path: None,
                 private_key_path: None,
                 private_key_passphrase: None,
+                all_proxy: None,
+                no_proxy: None,
             },
         )
         .unwrap();
@@ -347,6 +388,8 @@ mod tests {
                 known_hosts_path: Some(path),
                 private_key_path: None,
                 private_key_passphrase: None,
+                all_proxy: None,
+                no_proxy: None,
             },
         )
         .unwrap();
@@ -375,6 +418,8 @@ mod tests {
                 known_hosts_path: Some(path),
                 private_key_path: None,
                 private_key_passphrase: None,
+                all_proxy: None,
+                no_proxy: None,
             },
         )
         .unwrap();

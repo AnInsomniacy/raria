@@ -352,6 +352,390 @@ async fn daemon_accepts_rpc_add_uri_and_shutdown() {
 }
 
 #[tokio::test]
+async fn daemon_respects_min_split_size_when_calculating_effective_connections() {
+    let download_server = MockServer::start().await;
+
+    Mock::given(method("HEAD"))
+        .and(path("/minsplit.bin"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-length", "524288")
+                .insert_header("accept-ranges", "bytes"),
+        )
+        .mount(&download_server)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path("/minsplit.bin"))
+        .and(wiremock::matchers::header("range", "bytes=0-262143"))
+        .respond_with(
+            ResponseTemplate::new(206)
+                .set_delay(Duration::from_secs(3))
+                .set_body_bytes(vec![b'a'; 256 * 1024]),
+        )
+        .mount(&download_server)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path("/minsplit.bin"))
+        .and(wiremock::matchers::header("range", "bytes=262144-524287"))
+        .respond_with(
+            ResponseTemplate::new(206)
+                .set_delay(Duration::from_secs(3))
+                .set_body_bytes(vec![b'b'; 256 * 1024]),
+        )
+        .mount(&download_server)
+        .await;
+
+    let temp = tempdir().expect("tempdir");
+    let session_file = temp.path().join("minsplit.session.redb");
+    let (mut child, rpc_port) = spawn_ready_daemon_with_args(
+        temp.path(),
+        &session_file,
+        &["--min-split-size", "262144"],
+    )
+    .await;
+
+    let client = reqwest::Client::new();
+    let add_resp: serde_json::Value = client
+        .post(format!("http://127.0.0.1:{rpc_port}"))
+        .json(&serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "aria2.addUri",
+            "params": [
+                [format!("{}/minsplit.bin", download_server.uri())],
+                {
+                    "split": "8",
+                    "max-connection-per-server": "8",
+                    "out": "minsplit.bin"
+                }
+            ],
+        }))
+        .send()
+        .await
+        .expect("send addUri")
+        .json()
+        .await
+        .expect("parse addUri response");
+
+    let gid = add_resp["result"].as_str().expect("gid").to_string();
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        let status_resp: serde_json::Value = client
+            .post(format!("http://127.0.0.1:{rpc_port}"))
+            .json(&serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "aria2.tellStatus",
+                "params": [gid.clone()],
+            }))
+            .send()
+            .await
+            .expect("send tellStatus")
+            .json()
+            .await
+            .expect("parse tellStatus");
+
+        let status = status_resp["result"]["status"].as_str().expect("status");
+        let connections = status_resp["result"]["connections"]
+            .as_str()
+            .expect("connections string")
+            .parse::<u32>()
+            .expect("connections should parse as integer");
+
+        if status == "active" && connections == 2 {
+            break;
+        }
+        if status == "complete" {
+            panic!("download completed before reaching 2 active connections: {status_resp}");
+        }
+
+        assert!(
+            Instant::now() < deadline,
+            "daemon never reached 2 active connections under min-split-size: {status_resp}"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+
+    let shutdown_resp: serde_json::Value = client
+        .post(format!("http://127.0.0.1:{rpc_port}"))
+        .json(&serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "aria2.shutdown",
+            "params": [],
+        }))
+        .send()
+        .await
+        .expect("send shutdown")
+        .json()
+        .await
+        .expect("parse shutdown response");
+    assert_eq!(shutdown_resp["result"], "OK");
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        match child.child.try_wait() {
+            Ok(Some(status)) => {
+                assert!(status.success(), "daemon exited unsuccessfully: {status}");
+                break;
+            }
+            Ok(None) => {
+                assert!(Instant::now() < deadline, "daemon did not exit after shutdown RPC");
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            Err(error) => panic!("failed waiting for daemon exit: {error}"),
+        }
+    }
+}
+
+#[tokio::test]
+async fn daemon_respects_split_and_max_connection_per_server_options() {
+    let download_server = MockServer::start().await;
+
+    Mock::given(method("HEAD"))
+        .and(path("/connections.bin"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-length", "1048576")
+                .insert_header("accept-ranges", "bytes"),
+        )
+        .mount(&download_server)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path("/connections.bin"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_delay(Duration::from_secs(3))
+                .set_body_bytes(vec![b'c'; 1024 * 1024]),
+        )
+        .mount(&download_server)
+        .await;
+
+    let temp = tempdir().expect("tempdir");
+    let session_file = temp.path().join("connections-options.session.redb");
+    let (mut child, rpc_port) = spawn_ready_daemon(temp.path(), &session_file).await;
+
+    let client = reqwest::Client::new();
+    let add_resp: serde_json::Value = client
+        .post(format!("http://127.0.0.1:{rpc_port}"))
+        .json(&serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "aria2.addUri",
+            "params": [
+                [format!("{}/connections.bin", download_server.uri())],
+                {
+                    "split": "4",
+                    "max-connection-per-server": "4"
+                }
+            ],
+        }))
+        .send()
+        .await
+        .expect("send addUri")
+        .json()
+        .await
+        .expect("parse addUri response");
+
+    let gid = add_resp["result"].as_str().expect("gid").to_string();
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        let status_resp: serde_json::Value = client
+            .post(format!("http://127.0.0.1:{rpc_port}"))
+            .json(&serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "aria2.tellStatus",
+                "params": [gid.clone()],
+            }))
+            .send()
+            .await
+            .expect("send tellStatus")
+            .json()
+            .await
+            .expect("parse tellStatus");
+
+        let status = status_resp["result"]["status"].as_str().expect("status");
+        let connections = status_resp["result"]["connections"]
+            .as_str()
+            .expect("connections string")
+            .parse::<u32>()
+            .expect("connections should parse as integer");
+
+        if status == "active" && connections == 4 {
+            break;
+        }
+        if status == "complete" {
+            panic!("download completed before surfacing the configured connection count: {status_resp}");
+        }
+
+        assert!(
+            Instant::now() < deadline,
+            "daemon never surfaced the configured split/max-connection-per-server count: {status_resp}"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+
+    let shutdown_resp: serde_json::Value = client
+        .post(format!("http://127.0.0.1:{rpc_port}"))
+        .json(&serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "aria2.shutdown",
+            "params": [],
+        }))
+        .send()
+        .await
+        .expect("send shutdown")
+        .json()
+        .await
+        .expect("parse shutdown response");
+    assert_eq!(shutdown_resp["result"], "OK");
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        match child.child.try_wait() {
+            Ok(Some(status)) => {
+                assert!(status.success(), "daemon exited unsuccessfully: {status}");
+                break;
+            }
+            Ok(None) => {
+                assert!(Instant::now() < deadline, "daemon did not exit after shutdown RPC");
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            Err(error) => panic!("failed waiting for daemon exit: {error}"),
+        }
+    }
+}
+
+#[tokio::test]
+async fn daemon_stops_retrying_after_max_file_not_found() {
+    let download_server = MockServer::start().await;
+
+    Mock::given(method("HEAD"))
+        .and(path("/missing.bin"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-length", "1024")
+                .insert_header("accept-ranges", "bytes"),
+        )
+        .mount(&download_server)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path("/missing.bin"))
+        .respond_with(ResponseTemplate::new(404))
+        .mount(&download_server)
+        .await;
+
+    let temp = tempdir().expect("tempdir");
+    let session_file = temp.path().join("missing.session.redb");
+    let (mut child, rpc_port) = spawn_ready_daemon_with_args(
+        temp.path(),
+        &session_file,
+        &["--max-file-not-found", "1", "--max-tries", "10"],
+    )
+    .await;
+
+    let client = reqwest::Client::new();
+    let add_resp: serde_json::Value = client
+        .post(format!("http://127.0.0.1:{rpc_port}"))
+        .json(&serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "aria2.addUri",
+            "params": [
+                [format!("{}/missing.bin", download_server.uri())],
+                {
+                    "split": "1",
+                    "max-connection-per-server": "1",
+                    "out": "missing.bin"
+                }
+            ],
+        }))
+        .send()
+        .await
+        .expect("send addUri")
+        .json()
+        .await
+        .expect("parse addUri response");
+
+    let gid = add_resp["result"].as_str().expect("gid").to_string();
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        let status_resp: serde_json::Value = client
+            .post(format!("http://127.0.0.1:{rpc_port}"))
+            .json(&serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "aria2.tellStatus",
+                "params": [gid.clone()],
+            }))
+            .send()
+            .await
+            .expect("send tellStatus")
+            .json()
+            .await
+            .expect("parse tellStatus");
+
+        let status = status_resp["result"]["status"].as_str().expect("status");
+        if status == "error" {
+            break;
+        }
+
+        assert!(
+            Instant::now() < deadline,
+            "daemon never marked missing file as error: {status_resp}"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+
+    let requests = download_server
+        .received_requests()
+        .await
+        .expect("received requests");
+    let get_count = requests
+        .iter()
+        .filter(|req| req.method.as_str() == "GET" && req.url.path() == "/missing.bin")
+        .count();
+    assert_eq!(get_count, 1, "expected exactly one GET attempt for missing file");
+
+    let shutdown_resp: serde_json::Value = client
+        .post(format!("http://127.0.0.1:{rpc_port}"))
+        .json(&serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "aria2.shutdown",
+            "params": [],
+        }))
+        .send()
+        .await
+        .expect("send shutdown")
+        .json()
+        .await
+        .expect("parse shutdown response");
+    assert_eq!(shutdown_resp["result"], "OK");
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        match child.child.try_wait() {
+            Ok(Some(status)) => {
+                assert!(status.success(), "daemon exited unsuccessfully: {status}");
+                break;
+            }
+            Ok(None) => {
+                assert!(Instant::now() < deadline, "daemon did not exit after shutdown RPC");
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            Err(error) => panic!("failed waiting for daemon exit: {error}"),
+        }
+    }
+}
+
+#[tokio::test]
 async fn daemon_uses_rpc_supplied_headers_on_real_download_requests() {
     let download_server = MockServer::start().await;
 
@@ -586,6 +970,143 @@ async fn daemon_uses_rpc_supplied_basic_auth_on_real_download_requests() {
             Err(error) => panic!("failed waiting for daemon exit: {error}"),
         }
     }
+}
+
+#[tokio::test]
+async fn daemon_writes_logs_to_requested_file() {
+    let temp = tempdir().expect("tempdir");
+    let session_file = temp.path().join("log.session.redb");
+    let log_path = temp.path().join("daemon.log");
+    let (mut child, rpc_port) = spawn_ready_daemon_with_args(
+        temp.path(),
+        &session_file,
+        &["--log", log_path.to_str().unwrap()],
+    )
+    .await;
+
+    let shutdown_resp: serde_json::Value = reqwest::Client::new()
+        .post(format!("http://127.0.0.1:{rpc_port}"))
+        .json(&serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 50,
+            "method": "aria2.shutdown",
+            "params": [],
+        }))
+        .send()
+        .await
+        .expect("send shutdown")
+        .json()
+        .await
+        .expect("parse shutdown response");
+    assert_eq!(shutdown_resp["result"], "OK");
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        match child.child.try_wait() {
+            Ok(Some(status)) => {
+                assert!(status.success(), "daemon exited unsuccessfully: {status}");
+                break;
+            }
+            Ok(None) => {
+                assert!(Instant::now() < deadline, "daemon did not exit after shutdown RPC");
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            Err(error) => panic!("failed waiting for daemon exit: {error}"),
+        }
+    }
+
+    assert!(log_path.is_file(), "daemon should create the requested log file");
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let log = std::fs::read_to_string(&log_path).expect("read log file");
+        if !log.trim().is_empty() {
+            break;
+        }
+
+        assert!(
+            Instant::now() < deadline,
+            "daemon log file should not remain empty after process shutdown"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn daemon_flag_detaches_process_and_keeps_rpc_alive() {
+    let temp = tempdir().expect("tempdir");
+    let session_file = temp.path().join("daemonize.session.redb");
+    let rpc_port = allocate_port();
+
+    let mut child = Command::new(cargo_bin("raria"))
+        .arg("daemon")
+        .arg("-d")
+        .arg(temp.path())
+        .arg("--rpc-port")
+        .arg(rpc_port.to_string())
+        .arg("--session-file")
+        .arg(&session_file)
+        .arg("--daemon")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn daemonize request");
+
+    let exit_deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                assert!(status.success(), "daemonizing parent exited unsuccessfully: {status}");
+                break;
+            }
+            Ok(None) => {
+                assert!(Instant::now() < exit_deadline, "daemonizing parent did not exit promptly");
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            Err(error) => panic!("failed waiting for daemonizing parent: {error}"),
+        }
+    }
+
+    let rpc_deadline = Instant::now() + Duration::from_secs(30);
+    let client = reqwest::Client::new();
+    loop {
+        let body = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "aria2.getVersion",
+            "params": [],
+        });
+
+        if let Ok(resp) = client
+            .post(format!("http://127.0.0.1:{rpc_port}"))
+            .json(&body)
+            .send()
+            .await
+        {
+            if resp.status().is_success() {
+                break;
+            }
+        }
+
+        assert!(Instant::now() < rpc_deadline, "background daemon never became RPC-ready");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+
+    let shutdown_resp: serde_json::Value = client
+        .post(format!("http://127.0.0.1:{rpc_port}"))
+        .json(&serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "aria2.shutdown",
+            "params": [],
+        }))
+        .send()
+        .await
+        .expect("send shutdown")
+        .json()
+        .await
+        .expect("parse shutdown response");
+    assert_eq!(shutdown_resp["result"], "OK");
 }
 
 #[tokio::test]

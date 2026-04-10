@@ -50,6 +50,16 @@ pub struct ExecutorConfig {
     pub request_headers: Vec<(String, String)>,
     /// Optional per-request credentials passed to stream-opening backends.
     pub request_auth: Option<Credentials>,
+    /// Optional validator token (typically HTTP ETag) propagated to open_from.
+    pub request_etag: Option<String>,
+    /// Abort segment attempt when observed download speed is below this limit.
+    /// 0 disables the check (default).
+    pub lowest_speed_limit_bps: u64,
+    /// Grace period before enforcing `lowest_speed_limit_bps`.
+    pub lowest_speed_grace: std::time::Duration,
+    /// Maximum number of file-not-found errors before failing the job.
+    /// 0 disables the check.
+    pub max_file_not_found: u32,
 }
 
 impl std::fmt::Debug for ExecutorConfig {
@@ -65,6 +75,10 @@ impl std::fmt::Debug for ExecutorConfig {
             .field("request_timeout", &self.request_timeout)
             .field("request_headers", &self.request_headers.len())
             .field("request_auth", &self.request_auth.is_some())
+            .field("request_etag", &self.request_etag.is_some())
+            .field("lowest_speed_limit_bps", &self.lowest_speed_limit_bps)
+            .field("lowest_speed_grace", &self.lowest_speed_grace)
+            .field("max_file_not_found", &self.max_file_not_found)
             .finish()
     }
 }
@@ -82,6 +96,10 @@ impl Default for ExecutorConfig {
             request_timeout: std::time::Duration::from_secs(60),
             request_headers: Vec::new(),
             request_auth: None,
+            request_etag: None,
+            lowest_speed_limit_bps: 0,
+            lowest_speed_grace: std::time::Duration::from_secs(10),
+            max_file_not_found: 0,
         }
     }
 }
@@ -127,6 +145,7 @@ impl SegmentExecutor {
         on_progress: Arc<dyn Fn(u32, u64) + Send + Sync>,
     ) -> Result<Vec<SegmentResult>> {
         let semaphore = Arc::new(Semaphore::new(self.config.max_connections as usize));
+        let not_found_count = Arc::new(std::sync::atomic::AtomicU32::new(0));
 
         let total_size = segments.last().map(|last_seg| last_seg.end);
         prepare_output_file(out_path, total_size, self.config.file_allocation).await?;
@@ -157,6 +176,7 @@ impl SegmentExecutor {
             let cancel = cancel.clone();
             let on_progress = Arc::clone(&on_progress);
             let results = Arc::clone(&results);
+            let not_found_count = Arc::clone(&not_found_count);
             let uri = uri.clone();
             let out_path = out_path.to_path_buf();
             let config = self.config.clone();
@@ -189,6 +209,7 @@ impl SegmentExecutor {
                     &config,
                     &cancel,
                     on_progress.as_ref(),
+                    &not_found_count,
                 )
                 .await;
 
@@ -224,6 +245,7 @@ impl SegmentExecutor {
         config: &ExecutorConfig,
         cancel: &CancellationToken,
         on_progress: &(dyn Fn(u32, u64) + Send + Sync),
+        not_found_count: &std::sync::Arc<std::sync::atomic::AtomicU32>,
     ) -> SegmentResult {
         let mut retries = 0u32;
         let mut total_downloaded = 0u64;
@@ -256,6 +278,9 @@ impl SegmentExecutor {
                 config.request_timeout,
                 &config.request_headers,
                 config.request_auth.as_ref(),
+                config.request_etag.as_deref(),
+                config.lowest_speed_limit_bps,
+                config.lowest_speed_grace,
                 cancel,
                 on_progress,
                 config.rate_limiter.as_ref().map(|l| l.as_ref()),
@@ -324,6 +349,23 @@ impl SegmentExecutor {
                     }
                 }
                 Err(e) => {
+                    if Self::is_not_found_error(&e) {
+                        let count = not_found_count
+                            .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+                            .saturating_add(1);
+                        if config.max_file_not_found > 0 && count >= config.max_file_not_found {
+                            cancel.cancel();
+                            return SegmentResult {
+                                segment_id: seg_id,
+                                bytes_downloaded: total_downloaded,
+                                status: SegmentStatus::Failed,
+                                error: Some(format!(
+                                    "file not found after {count} attempts"
+                                )),
+                                retries_used: retries,
+                            };
+                        }
+                    }
                     if retries >= config.max_retries {
                         error!(seg_id, retries, error = %e, "segment failed permanently");
                         return SegmentResult {
@@ -363,6 +405,13 @@ impl SegmentExecutor {
         }
     }
 
+    fn is_not_found_error(error: &anyhow::Error) -> bool {
+        error.chain().any(|cause| {
+            let msg = cause.to_string().to_lowercase();
+            msg.contains("404") || msg.contains("not found")
+        })
+    }
+
     /// Execute a single attempt at downloading a segment's remaining bytes.
     ///
     /// Writes directly to the file at the correct offset. Returns how many
@@ -379,6 +428,9 @@ impl SegmentExecutor {
         request_timeout: std::time::Duration,
         request_headers: &[(String, String)],
         request_auth: Option<&Credentials>,
+        request_etag: Option<&str>,
+        lowest_speed_limit_bps: u64,
+        lowest_speed_grace: std::time::Duration,
         cancel: &CancellationToken,
         on_progress: &(dyn Fn(u32, u64) + Send + Sync),
         rate_limiter: Option<&SharedRateLimiter>,
@@ -390,7 +442,7 @@ impl SegmentExecutor {
             timeout: request_timeout,
             headers: request_headers.to_vec(),
             auth: request_auth.cloned(),
-            ..OpenContext::default()
+            etag: request_etag.map(ToOwned::to_owned),
         };
         let mut stream = backend
             .open_from(uri, offset, &ctx)
@@ -410,6 +462,7 @@ impl SegmentExecutor {
         let mut buf = vec![0u8; buffer_size];
         let mut bytes_this_attempt = 0u64;
         let mut bytes_since_checkpoint = 0u64;
+        let attempt_started_at = std::time::Instant::now();
         // Checkpoint every 1 MiB to avoid excessive I/O.
         const CHECKPOINT_INTERVAL: u64 = 1024 * 1024;
 
@@ -438,6 +491,16 @@ impl SegmentExecutor {
             }
 
             on_progress(seg_id, n as u64);
+
+            if lowest_speed_limit_bps > 0 && attempt_started_at.elapsed() >= lowest_speed_grace {
+                let elapsed_secs = attempt_started_at.elapsed().as_secs_f64().max(0.001);
+                let avg_bps = (bytes_this_attempt as f64 / elapsed_secs) as u64;
+                if avg_bps < lowest_speed_limit_bps {
+                    anyhow::bail!(
+                        "download speed {avg_bps} B/s below lowest-speed-limit {lowest_speed_limit_bps} B/s"
+                    );
+                }
+            }
 
             // Periodic checkpoint for crash recovery.
             if bytes_since_checkpoint >= CHECKPOINT_INTERVAL {
@@ -528,6 +591,7 @@ mod tests {
     use raria_core::segment::{init_segment_states, plan_segments};
     use std::io::Cursor;
     use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+    use tokio::io::AsyncWriteExt;
 
     // ═══════════════════════════════════════════════════════════════════
     // Test Helpers
@@ -710,6 +774,98 @@ mod tests {
 
         fn name(&self) -> &'static str {
             "flakey"
+        }
+    }
+
+    #[derive(Debug)]
+    struct NotFoundBackend;
+
+    #[async_trait::async_trait]
+    impl ByteSourceBackend for NotFoundBackend {
+        async fn probe(&self, _uri: &Url, _ctx: &ProbeContext) -> Result<FileProbe> {
+            Ok(FileProbe {
+                size: Some(1024),
+                supports_range: true,
+                etag: None,
+                last_modified: None,
+                content_type: None,
+                suggested_filename: None,
+                not_modified: false,
+            })
+        }
+
+        async fn open_from(
+            &self,
+            _uri: &Url,
+            _offset: u64,
+            _ctx: &OpenContext,
+        ) -> Result<ByteStream> {
+            anyhow::bail!("http status 404 not found");
+        }
+
+        fn name(&self) -> &'static str {
+            "not-found"
+        }
+    }
+
+    #[derive(Debug)]
+    struct SlowBackend {
+        data: Vec<u8>,
+        chunk_size: usize,
+        delay: std::time::Duration,
+    }
+
+    #[async_trait::async_trait]
+    impl ByteSourceBackend for SlowBackend {
+        async fn probe(&self, _uri: &Url, _ctx: &ProbeContext) -> Result<FileProbe> {
+            Ok(FileProbe {
+                size: Some(self.data.len() as u64),
+                supports_range: true,
+                etag: None,
+                last_modified: None,
+                content_type: None,
+                suggested_filename: None,
+                not_modified: false,
+            })
+        }
+
+        async fn open_from(
+            &self,
+            _uri: &Url,
+            offset: u64,
+            _ctx: &OpenContext,
+        ) -> Result<ByteStream> {
+            let offset = offset as usize;
+            let slice = if offset < self.data.len() {
+                self.data[offset..].to_vec()
+            } else {
+                vec![]
+            };
+
+            let (mut writer, reader) = tokio::io::duplex(64 * 1024);
+            let chunk_size = self.chunk_size.max(1);
+            let delay = self.delay;
+
+            tokio::spawn(async move {
+                let mut sent = 0usize;
+                while sent < slice.len() {
+                    let end = (sent + chunk_size).min(slice.len());
+                    if writer.write_all(&slice[sent..end]).await.is_err() {
+                        break;
+                    }
+                    if writer.flush().await.is_err() {
+                        break;
+                    }
+                    sent = end;
+                    tokio::time::sleep(delay).await;
+                }
+            });
+
+            Ok(Box::pin(reader))
+        }
+
+        fn name(&self) -> &'static str {
+            "slow"
         }
     }
 
@@ -1031,6 +1187,79 @@ mod tests {
         assert_eq!(results[0].status, SegmentStatus::Failed);
         assert!(results[0].error.is_some());
         assert_eq!(results[0].retries_used, 3);
+    }
+
+    #[tokio::test]
+    async fn lowest_speed_limit_aborts_segment_attempt() {
+        let data = vec![1u8; 2048];
+        let backend: Arc<dyn ByteSourceBackend> = Arc::new(SlowBackend {
+            data,
+            chunk_size: 32,
+            delay: std::time::Duration::from_millis(100),
+        });
+
+        let dir = tempfile::tempdir().unwrap();
+        let out_path = dir.path().join("slow.bin");
+        let uri: Url = "http://example.com/slow".parse().unwrap();
+
+        let ranges = plan_segments(2048, 1);
+        let segments = init_segment_states(&ranges);
+
+        let executor = SegmentExecutor::new(ExecutorConfig {
+            max_connections: 1,
+            max_retries: 0,
+            buffer_size: 64,
+            lowest_speed_limit_bps: 10_000, // 10 KB/s, unattainable given delays
+            lowest_speed_grace: std::time::Duration::from_millis(200),
+            ..Default::default()
+        });
+        let cancel = CancellationToken::new();
+
+        let results = executor
+            .execute(backend, &uri, &out_path, &segments, cancel, noop_progress())
+            .await
+            .unwrap();
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].status, SegmentStatus::Failed);
+        let err = results[0].error.clone().unwrap_or_default();
+        assert!(
+            err.contains("lowest-speed-limit") || err.contains("lowest speed"),
+            "expected lowest-speed-limit failure, got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn max_file_not_found_aborts_after_threshold() {
+        let backend: Arc<dyn ByteSourceBackend> = Arc::new(NotFoundBackend);
+
+        let dir = tempfile::tempdir().unwrap();
+        let out_path = dir.path().join("missing.bin");
+        let uri: Url = "http://example.com/missing".parse().unwrap();
+
+        let ranges = plan_segments(1024, 1);
+        let segments = init_segment_states(&ranges);
+
+        let executor = SegmentExecutor::new(ExecutorConfig {
+            max_connections: 1,
+            max_retries: 5,
+            max_file_not_found: 1,
+            ..Default::default()
+        });
+        let cancel = CancellationToken::new();
+
+        let results = executor
+            .execute(backend, &uri, &out_path, &segments, cancel, noop_progress())
+            .await
+            .unwrap();
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].status, SegmentStatus::Failed);
+        let err = results[0].error.clone().unwrap_or_default();
+        assert!(
+            err.contains("file not found"),
+            "expected file-not-found error, got: {err}"
+        );
     }
 
     // ═══════════════════════════════════════════════════════════════════

@@ -23,6 +23,8 @@ pub struct GlobalConfig {
     pub enable_rpc: bool,
     /// Path to the session file for persistence.
     pub session_file: PathBuf,
+    /// Save the current session periodically while the daemon is running.
+    pub save_session_interval: Option<u64>,
     /// Log level.
     pub log_level: String,
     /// Suppress normal user-facing output.
@@ -39,6 +41,10 @@ pub struct GlobalConfig {
     pub check_certificate: bool,
     /// Path to custom CA certificate file.
     pub ca_certificate: Option<PathBuf>,
+    /// Path to client certificate chain for mTLS.
+    pub certificate: Option<PathBuf>,
+    /// Path to client private key for mTLS.
+    pub private_key: Option<PathBuf>,
     /// User-Agent string override.
     pub user_agent: Option<String>,
     /// Global HTTP Basic auth username.
@@ -47,6 +53,8 @@ pub struct GlobalConfig {
     pub http_passwd: Option<String>,
     /// Path to Netscape cookie file (aria2: --load-cookies).
     pub cookie_file: Option<PathBuf>,
+    /// Path to Netscape cookie file for persistence (aria2: --save-cookies).
+    pub save_cookie_file: Option<PathBuf>,
     /// RPC secret token (aria2: --rpc-secret). When set, all RPC
     /// requests must include "token:<secret>" as the first parameter.
     pub rpc_secret: Option<String>,
@@ -60,6 +68,18 @@ pub struct GlobalConfig {
     pub split: u32,
     /// Continue downloading a partially downloaded file (aria2: --continue / -c).
     pub continue_download: bool,
+    /// Minimum size in bytes for a split segment (aria2: --min-split-size).
+    ///
+    /// When set to a non-zero value, the effective number of connections for a
+    /// range-capable download will be reduced so that each segment is at least
+    /// this many bytes.
+    pub min_split_size: u64,
+    /// Abort connections when download speed is below this limit (bytes/sec).
+    /// 0 disables the check (aria2: --lowest-speed-limit).
+    pub lowest_speed_limit: u64,
+    /// Maximum number of file-not-found errors before giving up (aria2: --max-file-not-found).
+    /// 0 disables the check.
+    pub max_file_not_found: u32,
     /// Maximum retries per download (aria2: --max-tries, 0 = infinite).
     pub max_tries: u32,
     /// Seconds to wait between retries (aria2: --retry-wait).
@@ -88,6 +108,12 @@ pub struct GlobalConfig {
     pub sftp_private_key: Option<PathBuf>,
     /// Optional SSH private key passphrase used for SFTP authentication.
     pub sftp_private_key_passphrase: Option<String>,
+    /// Hook script fired when a download starts.
+    pub on_download_start: Option<PathBuf>,
+    /// Hook script fired when a download completes.
+    pub on_download_complete: Option<PathBuf>,
+    /// Hook script fired when a download errors.
+    pub on_download_error: Option<PathBuf>,
 }
 
 impl Default for GlobalConfig {
@@ -100,6 +126,7 @@ impl Default for GlobalConfig {
             rpc_listen_port: 6800,
             enable_rpc: false,
             session_file: PathBuf::from("raria.session"),
+            save_session_interval: None,
             log_level: "info".into(),
             quiet: false,
             all_proxy: None,
@@ -108,16 +135,22 @@ impl Default for GlobalConfig {
             no_proxy: None,
             check_certificate: true,
             ca_certificate: None,
+            certificate: None,
+            private_key: None,
             user_agent: None,
             http_user: None,
             http_passwd: None,
             cookie_file: None,
+            save_cookie_file: None,
             rpc_secret: None,
             rpc_allow_origin_all: false,
             file_allocation: FileAllocation::None,
             max_connection_per_server: 16,
             split: 5,
             continue_download: false,
+            min_split_size: 0,
+            lowest_speed_limit: 0,
+            max_file_not_found: 0,
             max_tries: 5,
             retry_wait: 0,
             max_redirects: None,
@@ -132,6 +165,9 @@ impl Default for GlobalConfig {
             sftp_known_hosts: None,
             sftp_private_key: None,
             sftp_private_key_passphrase: None,
+            on_download_start: None,
+            on_download_complete: None,
+            on_download_error: None,
         }
     }
 }
@@ -160,6 +196,12 @@ pub struct JobOptions {
     pub checksum: Option<String>,
     /// Zero-based BT file indices selected for download.
     pub bt_selected_files: Option<Vec<usize>>,
+    /// Additional BT trackers appended to the torrent.
+    pub bt_trackers: Option<Vec<String>>,
+    /// Stop seeding after this upload ratio is reached.
+    pub seed_ratio: Option<f64>,
+    /// Stop seeding after this many minutes.
+    pub seed_time: Option<u64>,
 }
 
 impl Default for JobOptions {
@@ -175,6 +217,9 @@ impl Default for JobOptions {
             http_passwd: None,
             checksum: None,
             bt_selected_files: None,
+            bt_trackers: None,
+            seed_ratio: None,
+            seed_time: None,
         }
     }
 }

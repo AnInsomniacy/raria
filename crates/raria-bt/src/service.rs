@@ -10,7 +10,7 @@
 // and status aggregation.
 
 use anyhow::{Context, Result};
-use librqbit::api::TorrentIdOrHash;
+use librqbit::api::{Api, TorrentIdOrHash};
 use librqbit::{
     AddTorrent, AddTorrentOptions, AddTorrentResponse, ManagedTorrent, Session,
     SessionOptions,
@@ -54,6 +54,8 @@ pub struct BtStatus {
     pub total_size: u64,
     /// Bytes downloaded.
     pub downloaded: u64,
+    /// Bytes uploaded while seeding.
+    pub uploaded: u64,
     /// Download speed in bytes/sec.
     pub download_speed: u64,
     /// Upload speed in bytes/sec.
@@ -81,6 +83,17 @@ pub struct BtFileInfo {
     pub completed_length: u64,
     /// Whether this file is selected for download.
     pub selected: bool,
+}
+
+/// Information about a peer connected to a torrent.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BtPeerInfo {
+    pub addr: String,
+    pub ip: String,
+    pub port: u16,
+    pub download_speed: u64,
+    pub upload_speed: u64,
+    pub seeder: bool,
 }
 
 /// BitTorrent download service.
@@ -148,6 +161,7 @@ impl BtService {
         source: BtSource,
         gid: raria_core::job::Gid,
         selected_files: Option<Vec<usize>>,
+        trackers: Option<Vec<String>>,
     ) -> Result<BtHandle> {
         let session = self.ensure_session().await?;
 
@@ -165,6 +179,7 @@ impl BtService {
         let opts = AddTorrentOptions {
             output_folder: Some(self.output_dir.clone().to_string_lossy().to_string()),
             only_files: selected_files,
+            trackers,
             ..Default::default()
         };
 
@@ -263,6 +278,7 @@ impl BtService {
         Ok(BtStatus {
             total_size: stats.total_bytes,
             downloaded: stats.progress_bytes,
+            uploaded: stats.uploaded_bytes,
             download_speed,
             upload_speed,
             num_peers,
@@ -300,6 +316,42 @@ impl BtService {
             .collect();
 
         Ok(files)
+    }
+
+    /// List peers in a torrent.
+    pub async fn peer_list(&self, handle: &BtHandle) -> Result<Vec<BtPeerInfo>> {
+        let session = self.ensure_session().await?;
+        let api = Api::new(session, None);
+        let snapshot = api
+            .api_peer_stats(TorrentIdOrHash::Id(handle.torrent_id), Default::default())
+            .context("failed to query BT peer stats")?;
+
+        let peers = snapshot
+            .peers
+            .into_iter()
+            .map(|(addr, stats)| {
+                let (ip, port) = addr
+                    .rsplit_once(':')
+                    .and_then(|(ip, port)| port.parse::<u16>().ok().map(|port| (ip.to_string(), port)))
+                    .unwrap_or_else(|| (addr.clone(), 0));
+                let download_speed = if stats.counters.total_piece_download_ms > 0 {
+                    stats.counters.fetched_bytes.saturating_mul(1000)
+                        / stats.counters.total_piece_download_ms
+                } else {
+                    0
+                };
+                BtPeerInfo {
+                    addr,
+                    ip,
+                    port,
+                    download_speed,
+                    upload_speed: 0,
+                    seeder: stats.counters.downloaded_and_checked_pieces > 0,
+                }
+            })
+            .collect();
+
+        Ok(peers)
     }
 
     /// Get the output directory.
@@ -372,6 +424,7 @@ mod tests {
         let status = BtStatus {
             total_size: 1_000_000,
             downloaded: 500_000,
+            uploaded: 123_000,
             download_speed: 1024,
             upload_speed: 256,
             num_peers: 10,
@@ -383,6 +436,7 @@ mod tests {
         let recovered: BtStatus = serde_json::from_str(&json).unwrap();
         assert_eq!(recovered.total_size, 1_000_000);
         assert_eq!(recovered.downloaded, 500_000);
+        assert_eq!(recovered.uploaded, 123_000);
         assert_eq!(recovered.info_hash, "abcdef1234567890");
     }
 

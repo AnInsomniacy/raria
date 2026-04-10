@@ -97,6 +97,20 @@ pub fn apply_config_map(config: &mut GlobalConfig, map: &HashMap<String, String>
                     Some(PathBuf::from(value))
                 };
             }
+            "certificate" => {
+                config.certificate = if value.is_empty() {
+                    None
+                } else {
+                    Some(PathBuf::from(value))
+                };
+            }
+            "private-key" => {
+                config.private_key = if value.is_empty() {
+                    None
+                } else {
+                    Some(PathBuf::from(value))
+                };
+            }
             "user-agent" => {
                 config.user_agent = if value.is_empty() { None } else { Some(value.clone()) };
             }
@@ -113,8 +127,18 @@ pub fn apply_config_map(config: &mut GlobalConfig, map: &HashMap<String, String>
                     Some(PathBuf::from(value))
                 };
             }
+            "save-cookies" => {
+                config.save_cookie_file = if value.is_empty() {
+                    None
+                } else {
+                    Some(PathBuf::from(value))
+                };
+            }
             "rpc-secret" => {
                 config.rpc_secret = if value.is_empty() { None } else { Some(value.clone()) };
+            }
+            "save-session-interval" => {
+                config.save_session_interval = value.parse::<u64>().ok();
             }
             "rpc-allow-origin-all" => {
                 config.rpc_allow_origin_all = value == "true" || value == "1";
@@ -132,6 +156,15 @@ pub fn apply_config_map(config: &mut GlobalConfig, map: &HashMap<String, String>
             }
             "continue" => {
                 config.continue_download = value == "true" || value.is_empty();
+            }
+            "min-split-size" => {
+                if let Ok(n) = value.parse() { config.min_split_size = n; }
+            }
+            "lowest-speed-limit" => {
+                if let Ok(n) = value.parse() { config.lowest_speed_limit = n; }
+            }
+            "max-file-not-found" => {
+                if let Ok(n) = value.parse() { config.max_file_not_found = n; }
             }
             "max-tries" => {
                 if let Ok(n) = value.parse() { config.max_tries = n; }
@@ -186,6 +219,27 @@ pub fn apply_config_map(config: &mut GlobalConfig, map: &HashMap<String, String>
                     None
                 } else {
                     Some(value.clone())
+                };
+            }
+            "on-download-start" => {
+                config.on_download_start = if value.is_empty() {
+                    None
+                } else {
+                    Some(PathBuf::from(value))
+                };
+            }
+            "on-download-complete" => {
+                config.on_download_complete = if value.is_empty() {
+                    None
+                } else {
+                    Some(PathBuf::from(value))
+                };
+            }
+            "on-download-error" => {
+                config.on_download_error = if value.is_empty() {
+                    None
+                } else {
+                    Some(PathBuf::from(value))
                 };
             }
             "auto-file-renaming" => {
@@ -312,6 +366,55 @@ mod tests {
     }
 
     #[test]
+    fn apply_config_min_split_size() {
+        let mut config = GlobalConfig::default();
+        let mut map = HashMap::new();
+        map.insert("min-split-size".into(), "262144".into());
+        apply_config_map(&mut config, &map);
+        assert_eq!(config.min_split_size, 262144);
+    }
+
+    #[test]
+    fn apply_config_lowest_speed_limit() {
+        let mut config = GlobalConfig::default();
+        let mut map = HashMap::new();
+        map.insert("lowest-speed-limit".into(), "1024".into());
+        apply_config_map(&mut config, &map);
+        assert_eq!(config.lowest_speed_limit, 1024);
+    }
+
+    #[test]
+    fn apply_config_max_file_not_found() {
+        let mut config = GlobalConfig::default();
+        let mut map = HashMap::new();
+        map.insert("max-file-not-found".into(), "2".into());
+        apply_config_map(&mut config, &map);
+        assert_eq!(config.max_file_not_found, 2);
+    }
+
+    #[test]
+    fn apply_config_save_cookies() {
+        let mut config = GlobalConfig::default();
+        let mut map = HashMap::new();
+        map.insert("save-cookies".into(), "/tmp/cookies.txt".into());
+        apply_config_map(&mut config, &map);
+        assert_eq!(config.save_cookie_file, Some(PathBuf::from("/tmp/cookies.txt")));
+    }
+
+    #[test]
+    fn apply_config_hook_scripts() {
+        let mut config = GlobalConfig::default();
+        let mut map = HashMap::new();
+        map.insert("on-download-start".into(), "/tmp/start.sh".into());
+        map.insert("on-download-complete".into(), "/tmp/complete.sh".into());
+        map.insert("on-download-error".into(), "/tmp/error.sh".into());
+        apply_config_map(&mut config, &map);
+        assert_eq!(config.on_download_start, Some(PathBuf::from("/tmp/start.sh")));
+        assert_eq!(config.on_download_complete, Some(PathBuf::from("/tmp/complete.sh")));
+        assert_eq!(config.on_download_error, Some(PathBuf::from("/tmp/error.sh")));
+    }
+
+    #[test]
     fn apply_config_proxy() {
         let mut config = GlobalConfig::default();
         let mut map = HashMap::new();
@@ -328,9 +431,13 @@ mod tests {
         let mut map = HashMap::new();
         map.insert("check-certificate".into(), "false".into());
         map.insert("ca-certificate".into(), "/etc/ssl/ca.pem".into());
+        map.insert("certificate".into(), "/etc/ssl/client.pem".into());
+        map.insert("private-key".into(), "/etc/ssl/client.key".into());
         apply_config_map(&mut config, &map);
         assert!(!config.check_certificate);
         assert_eq!(config.ca_certificate, Some(PathBuf::from("/etc/ssl/ca.pem")));
+        assert_eq!(config.certificate, Some(PathBuf::from("/etc/ssl/client.pem")));
+        assert_eq!(config.private_key, Some(PathBuf::from("/etc/ssl/client.key")));
     }
 
     #[test]

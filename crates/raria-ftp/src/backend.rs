@@ -24,6 +24,8 @@ use std::task::{self, Poll};
 use suppaftp::tokio::AsyncNativeTlsFtpStream;
 use suppaftp::types::FileType;
 use tokio::io::AsyncRead;
+use tokio::net::TcpStream;
+use tokio_socks::tcp::Socks5Stream;
 use tracing::{debug, info, warn};
 use url::Url;
 
@@ -64,12 +66,24 @@ impl<S: AsyncRead + Unpin> AsyncRead for FtpOwnedStream<S> {
 unsafe impl<S: AsyncRead + Unpin + Send> Send for FtpOwnedStream<S> {}
 
 /// FTP/FTPS download backend.
-#[derive(Debug)]
-pub struct FtpBackend;
+#[derive(Debug, Clone, Default)]
+pub struct FtpBackendConfig {
+    pub all_proxy: Option<String>,
+    pub no_proxy: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct FtpBackend {
+    config: FtpBackendConfig,
+}
 
 impl FtpBackend {
     pub fn new() -> Self {
-        Self
+        Self::with_config(FtpBackendConfig::default())
+    }
+
+    pub fn with_config(config: FtpBackendConfig) -> Self {
+        Self { config }
     }
 }
 
@@ -88,23 +102,71 @@ fn parse_ftp_url(uri: &Url) -> Result<(String, String, String, String)> {
     let user = if uri.username().is_empty() {
         "anonymous".to_string()
     } else {
-        uri.username().to_string()
+        percent_decode(uri.username())
     };
-    let password = uri.password().unwrap_or("").to_string();
-    let path = uri.path().to_string();
+    let password = uri.password().map(percent_decode).unwrap_or_default();
+    let path = percent_decode(uri.path());
 
     Ok((addr, user, password, path))
 }
 
+fn percent_decode(value: &str) -> String {
+    url::form_urlencoded::parse(value.as_bytes())
+        .map(|(key, _)| key.into_owned())
+        .next()
+        .unwrap_or_else(|| value.to_string())
+}
+
+fn should_bypass_proxy(host: &str, no_proxy: Option<&str>) -> bool {
+    no_proxy
+        .map(|entries| {
+            entries
+                .split(',')
+                .map(str::trim)
+                .filter(|entry| !entry.is_empty())
+                .any(|entry| entry == host)
+        })
+        .unwrap_or(false)
+}
+
+async fn connect_tcp(addr: &str, host: &str, config: &FtpBackendConfig) -> Result<TcpStream> {
+    if let Some(proxy) = config.all_proxy.as_deref() {
+        if proxy.starts_with("socks5://") && !should_bypass_proxy(host, config.no_proxy.as_deref()) {
+            let proxy_addr = proxy.trim_start_matches("socks5://");
+            let stream = Socks5Stream::connect(proxy_addr, addr)
+                .await
+                .with_context(|| format!("failed to connect to FTP server through SOCKS5 proxy {proxy_addr}"))?;
+            return Ok(stream.into_inner());
+        }
+    }
+    TcpStream::connect(addr)
+        .await
+        .with_context(|| format!("failed to connect to FTP server at {addr}"))
+}
+
 /// Create an authenticated FTP connection.
-async fn connect_ftp(uri: &Url) -> Result<(AsyncNativeTlsFtpStream, String)> {
+async fn connect_ftp(uri: &Url, config: &FtpBackendConfig) -> Result<(AsyncNativeTlsFtpStream, String)> {
     let (addr, user, password, path) = parse_ftp_url(uri)?;
+    let host = uri.host_str().context("FTP URL missing host")?;
 
     debug!(addr = %addr, user = %user, "connecting to FTP server");
+    let stream = connect_tcp(&addr, host, config).await?;
     let mut ftp: AsyncNativeTlsFtpStream =
-        AsyncNativeTlsFtpStream::connect(&addr)
+        AsyncNativeTlsFtpStream::connect_with_stream(stream)
             .await
-            .with_context(|| format!("failed to connect to FTP server at {addr}"))?;
+            .with_context(|| format!("failed to initialize FTP stream for {addr}"))?;
+
+    if uri.scheme() == "ftps" {
+        ftp = ftp
+            .into_secure(
+                suppaftp::tokio::AsyncNativeTlsConnector::from(
+                    suppaftp::async_native_tls::TlsConnector::new(),
+                ),
+                host,
+            )
+            .await
+            .with_context(|| format!("failed to switch FTP connection to TLS for {host}"))?;
+    }
 
     ftp.login(&user, &password)
         .await
@@ -124,7 +186,7 @@ impl ByteSourceBackend for FtpBackend {
     async fn probe(&self, uri: &Url, _ctx: &ProbeContext) -> Result<FileProbe> {
         debug!(uri = %uri, "probing FTP resource");
 
-        let (mut ftp, path) = connect_ftp(uri).await?;
+        let (mut ftp, path) = connect_ftp(uri, &self.config).await?;
 
         // SIZE command to get file size. Not all servers support this.
         let size = match ftp.size(&path).await {
@@ -155,7 +217,7 @@ impl ByteSourceBackend for FtpBackend {
     async fn open_from(&self, uri: &Url, offset: u64, _ctx: &OpenContext) -> Result<ByteStream> {
         debug!(uri = %uri, offset, "opening FTP stream");
 
-        let (mut ftp, path) = connect_ftp(uri).await?;
+        let (mut ftp, path) = connect_ftp(uri, &self.config).await?;
 
         // If offset > 0, send REST command to resume from that point.
         if offset > 0 {
@@ -234,7 +296,16 @@ mod tests {
             .parse()
             .unwrap();
         let (_, _, pass, _) = parse_ftp_url(&url).unwrap();
-        assert_eq!(pass, "p%40ssword");
+        assert_eq!(pass, "p@ssword");
+    }
+
+    #[test]
+    fn parse_ftp_url_decodes_path() {
+        let url: Url = "ftp://ftp.example.com/a%20b/file%23name.zip"
+            .parse()
+            .unwrap();
+        let (_, _, _, path) = parse_ftp_url(&url).unwrap();
+        assert_eq!(path, "/a b/file#name.zip");
     }
 
     #[test]

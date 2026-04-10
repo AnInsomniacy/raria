@@ -140,6 +140,42 @@ mod tests {
         cancel.cancel();
     }
 
+    #[tokio::test]
+    async fn get_option_round_trips_bt_tracker() {
+        let (engine, url, cancel) = spawn_server().await;
+        let resp = rpc_call(
+            &url,
+            "aria2.addUri",
+            serde_json::json!([
+                ["magnet:?xt=urn:btih:da39a3ee5e6b4b0d3255bfef95601890afd80709"],
+                {
+                    "bt-tracker": "http://tracker1.example/announce,http://tracker2.example/announce"
+                }
+            ]),
+        )
+        .await;
+        assert!(resp.get("error").is_none(), "addUri should succeed: {resp}");
+
+        let gid = resp["result"].as_str().unwrap().to_string();
+        let option = rpc_call(&url, "aria2.getOption", serde_json::json!([gid.clone()])).await;
+        assert_eq!(
+            option["result"]["bt-tracker"],
+            "http://tracker1.example/announce,http://tracker2.example/announce"
+        );
+
+        let parsed_gid = raria_core::job::Gid::from_raw(u64::from_str_radix(&gid, 16).unwrap());
+        let job = engine.registry.get(parsed_gid).unwrap();
+        assert_eq!(
+            job.options.bt_trackers,
+            Some(vec![
+                "http://tracker1.example/announce".into(),
+                "http://tracker2.example/announce".into(),
+            ])
+        );
+
+        cancel.cancel();
+    }
+
     // ── changeOption ────────────────────────────────────────────────
 
     #[tokio::test]
@@ -282,6 +318,114 @@ mod tests {
 
         let option = rpc_call(&url, "aria2.getOption", serde_json::json!([gid_str])).await;
         assert_eq!(option["result"]["select-file"], "1,3");
+        cancel.cancel();
+    }
+
+    #[tokio::test]
+    async fn get_option_round_trips_bt_seed_controls() {
+        use base64::Engine as Base64Engine;
+
+        let (engine, url, cancel) = spawn_server().await;
+        let encoded = base64::engine::general_purpose::STANDARD.encode(
+            b"d8:announce35:http://tracker.example.com/announcee",
+        );
+
+        let add_resp = rpc_call(
+            &url,
+            "aria2.addTorrent",
+            serde_json::json!([
+                encoded,
+                [],
+                {
+                    "seed-ratio": "1.5",
+                    "seed-time": "60"
+                }
+            ]),
+        )
+        .await;
+        assert!(add_resp.get("error").is_none(), "addTorrent should succeed: {add_resp}");
+        let gid_str = add_resp["result"].as_str().unwrap();
+
+        let option = rpc_call(&url, "aria2.getOption", serde_json::json!([gid_str])).await;
+        assert_eq!(option["result"]["seed-ratio"], "1.5");
+        assert_eq!(option["result"]["seed-time"], "60");
+
+        let gid = raria_core::job::Gid::from_raw(u64::from_str_radix(gid_str, 16).unwrap());
+        let job = engine.registry.get(gid).unwrap();
+        assert_eq!(job.options.seed_ratio, Some(1.5));
+        assert_eq!(job.options.seed_time, Some(60));
+
+        cancel.cancel();
+    }
+
+    #[tokio::test]
+    async fn change_option_updates_bt_seed_controls_and_trackers() {
+        use base64::Engine as Base64Engine;
+
+        let (engine, url, cancel) = spawn_server().await;
+        let encoded = base64::engine::general_purpose::STANDARD.encode(
+            b"d8:announce35:http://tracker.example.com/announcee",
+        );
+
+        let add_resp = rpc_call(&url, "aria2.addTorrent", serde_json::json!([encoded, [], {}])).await;
+        assert!(add_resp.get("error").is_none(), "addTorrent should succeed: {add_resp}");
+        let gid_str = add_resp["result"].as_str().unwrap().to_string();
+
+        let change_resp = rpc_call(
+            &url,
+            "aria2.changeOption",
+            serde_json::json!([
+                gid_str.clone(),
+                {
+                    "bt-tracker": "http://tracker3.example/announce",
+                    "seed-ratio": "2",
+                    "seed-time": "30"
+                }
+            ]),
+        )
+        .await;
+        assert_eq!(change_resp["result"], "OK");
+
+        let gid = raria_core::job::Gid::from_raw(u64::from_str_radix(&gid_str, 16).unwrap());
+        let job = engine.registry.get(gid).unwrap();
+        assert_eq!(job.options.bt_trackers, Some(vec!["http://tracker3.example/announce".into()]));
+        assert_eq!(job.options.seed_ratio, Some(2.0));
+        assert_eq!(job.options.seed_time, Some(30));
+
+        cancel.cancel();
+    }
+
+    #[tokio::test]
+    async fn change_option_updates_bt_select_file_and_get_option_round_trips_it() {
+        use base64::Engine as Base64Engine;
+
+        let (engine, url, cancel) = spawn_server().await;
+        let encoded = base64::engine::general_purpose::STANDARD.encode(
+            b"d8:announce35:http://tracker.example.com/announcee",
+        );
+
+        let add_resp = rpc_call(&url, "aria2.addTorrent", serde_json::json!([encoded])).await;
+        assert!(add_resp.get("error").is_none(), "addTorrent should succeed: {add_resp}");
+        let gid_str = add_resp["result"].as_str().unwrap().to_string();
+
+        let change_resp = rpc_call(
+            &url,
+            "aria2.changeOption",
+            serde_json::json!([
+                gid_str.clone(),
+                {"select-file": "2,4"}
+            ]),
+        )
+        .await;
+        assert_eq!(change_resp["result"], "OK");
+
+        let gid = raria_core::job::Gid::from_raw(u64::from_str_radix(&gid_str, 16).unwrap());
+        let job = engine.registry.get(gid).unwrap();
+        assert_eq!(job.options.bt_selected_files, Some(vec![1, 3]));
+
+        let option = rpc_call(&url, "aria2.getOption", serde_json::json!([gid_str])).await;
+        assert_eq!(option["result"]["select-file"], "2,4");
+
         cancel.cancel();
     }
 

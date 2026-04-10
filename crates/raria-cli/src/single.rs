@@ -1,4 +1,5 @@
 use crate::backend_factory::create_backend_with_config;
+use crate::executor_config::apply_global_retry_policy;
 use crate::util::{format_bytes, parse_header_args};
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
@@ -18,14 +19,24 @@ pub(crate) struct SingleDownloadOptions {
     pub dir: PathBuf,
     pub filename: Option<String>,
     pub connections: u32,
+    pub continue_download: bool,
     pub max_concurrent: u32,
     pub max_download_limit: u64,
+    pub max_tries: Option<u32>,
+    pub retry_wait: Option<u32>,
+    pub min_split_size: Option<u64>,
+    pub lowest_speed_limit: Option<u64>,
+    pub max_file_not_found: Option<u32>,
     pub checksum_spec: Option<String>,
     pub all_proxy: Option<String>,
     pub check_certificate: bool,
+    pub ca_certificate: Option<PathBuf>,
     pub user_agent: Option<String>,
     pub http_user: Option<String>,
     pub http_passwd: Option<String>,
+    pub save_cookies: Option<PathBuf>,
+    pub certificate: Option<PathBuf>,
+    pub private_key: Option<PathBuf>,
     pub max_redirect: Option<usize>,
     pub netrc_path: Option<PathBuf>,
     pub no_netrc: bool,
@@ -47,6 +58,7 @@ pub(crate) async fn run_download(options: SingleDownloadOptions) -> Result<()> {
         max_concurrent_downloads: options.max_concurrent,
         all_proxy: options.all_proxy.clone(),
         check_certificate: options.check_certificate,
+        ca_certificate: options.ca_certificate.clone(),
         user_agent: options.user_agent.clone(),
         max_redirects: options.max_redirect,
         netrc_path: options.netrc_path.clone(),
@@ -54,11 +66,20 @@ pub(crate) async fn run_download(options: SingleDownloadOptions) -> Result<()> {
         timeout: options.timeout_secs,
         connect_timeout: options.connect_timeout_secs,
         conditional_get: options.conditional_get,
-        allow_overwrite: options.allow_overwrite,
+        continue_download: options.continue_download,
+        max_tries: options.max_tries.unwrap_or(5),
+        retry_wait: options.retry_wait.unwrap_or(0),
+        min_split_size: options.min_split_size.unwrap_or(0),
+        lowest_speed_limit: options.lowest_speed_limit.unwrap_or(0),
+        max_file_not_found: options.max_file_not_found.unwrap_or(0),
+        allow_overwrite: options.allow_overwrite || options.continue_download,
         sftp_strict_host_key_check: options.sftp_strict_host_key_check,
         sftp_known_hosts: options.sftp_known_hosts.clone(),
         sftp_private_key: options.sftp_private_key.clone(),
         sftp_private_key_passphrase: options.sftp_private_key_passphrase.clone(),
+        save_cookie_file: options.save_cookies.clone(),
+        certificate: options.certificate.clone(),
+        private_key: options.private_key.clone(),
         ..Default::default()
     };
     let engine = Engine::new(config.clone());
@@ -70,20 +91,29 @@ pub(crate) async fn run_download(options: SingleDownloadOptions) -> Result<()> {
         no_proxy: config.no_proxy.clone(),
         check_certificate: config.check_certificate,
         ca_certificate: config.ca_certificate.clone(),
+        client_certificate: config.certificate.clone(),
+        client_private_key: config.private_key.clone(),
         user_agent: config.user_agent.clone(),
         cookie_file: config.cookie_file.clone(),
+        save_cookie_file: config.save_cookie_file.clone(),
         max_redirects: config.max_redirects,
         connect_timeout: config.connect_timeout,
         netrc_path: config.netrc_path.clone(),
         no_netrc: config.no_netrc,
+    };
+    let ftp_cfg = raria_ftp::backend::FtpBackendConfig {
+        all_proxy: config.all_proxy.clone(),
+        no_proxy: config.no_proxy.clone(),
     };
     let sftp_cfg = raria_sftp::backend::SftpBackendConfig {
         strict_host_key_check: config.sftp_strict_host_key_check,
         known_hosts_path: config.sftp_known_hosts.clone(),
         private_key_path: config.sftp_private_key.clone(),
         private_key_passphrase: config.sftp_private_key_passphrase.clone(),
+        all_proxy: config.all_proxy.clone(),
+        no_proxy: config.no_proxy.clone(),
     };
-    let backend = create_backend_with_config(&options.url, Some(&http_cfg), Some(&sftp_cfg))?;
+    let backend = create_backend_with_config(&options.url, Some(&http_cfg), Some(&ftp_cfg), Some(&sftp_cfg))?;
     let probe_timeout = std::time::Duration::from_secs(config.timeout.unwrap_or(30));
     let parsed_url: url::Url = options.url.parse().context("invalid URL")?;
     let auth = options.http_user.clone().map(|username| Credentials {
@@ -161,11 +191,15 @@ pub(crate) async fn run_download(options: SingleDownloadOptions) -> Result<()> {
     info!(%gid, url = %options.url, out = %job.out_path.display(), "starting download");
 
     let file_size = probe.size.unwrap_or(0);
-    let effective_connections = if probe.supports_range && file_size > 0 {
+    let mut effective_connections = if probe.supports_range && file_size > 0 {
         options.connections.min((file_size / 1024).max(1) as u32)
     } else {
         1
     };
+    if probe.supports_range && file_size > 0 && config.min_split_size > 0 {
+        let max_by_min = (file_size / config.min_split_size).max(1) as u32;
+        effective_connections = effective_connections.min(max_by_min);
+    }
 
     info!(
         file_size,
@@ -178,12 +212,34 @@ pub(crate) async fn run_download(options: SingleDownloadOptions) -> Result<()> {
         job.total_size = Some(file_size);
     });
 
+    let existing_len = if options.continue_download
+        && probe.supports_range
+        && !control_file_path.exists()
+        && job.out_path.is_file()
+    {
+        std::fs::metadata(&job.out_path)
+            .map(|meta| meta.len().min(file_size))
+            .unwrap_or(0)
+    } else {
+        0
+    };
+
+    let effective_connections = if existing_len > 0 { 1 } else { effective_connections };
+
     let ranges = if file_size > 0 {
         plan_segments(file_size, effective_connections)
     } else {
         vec![(0u64, u64::MAX)]
     };
     let mut segments = init_segment_states(&ranges);
+    if existing_len > 0 {
+        if let Some(first) = segments.first_mut() {
+            first.downloaded = existing_len;
+        }
+        engine.registry.update(gid, |job| {
+            job.downloaded = existing_len;
+        });
+    }
 
     let cancel_registry = engine.cancel_registry.clone();
     tokio::spawn(async move {
@@ -223,16 +279,20 @@ pub(crate) async fn run_download(options: SingleDownloadOptions) -> Result<()> {
         None
     };
 
-    let executor = SegmentExecutor::new(ExecutorConfig {
+    let executor_cfg = apply_global_retry_policy(
+        ExecutorConfig {
         max_connections: effective_connections,
-        max_retries: 5,
         rate_limiter,
         file_allocation: config.file_allocation,
         request_timeout: std::time::Duration::from_secs(config.timeout.unwrap_or(60)),
         request_headers: headers,
         request_auth: auth,
+        request_etag: probe.etag.clone(),
         ..Default::default()
-    });
+        },
+        &config,
+    );
+    let executor = SegmentExecutor::new(executor_cfg);
 
     let results = executor
         .execute(

@@ -1,15 +1,52 @@
 mod backend_factory;
 mod bt_runtime;
 mod daemon;
+mod executor_config;
+mod hooks;
 mod single;
 mod util;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use raria_core::config::GlobalConfig;
+use std::ffi::OsString;
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
+
+#[derive(Clone)]
+struct SharedLogFile(Arc<Mutex<std::fs::File>>);
+
+impl std::io::Write for SharedLogFile {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().unwrap().write(buf)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.0.lock().unwrap().flush()
+    }
+}
+
+#[cfg(unix)]
+fn spawn_background_daemon(raw_args: &[OsString]) -> Result<()> {
+    let current_exe = std::env::current_exe()?;
+    let filtered_args: Vec<OsString> = raw_args
+        .iter()
+        .skip(1)
+        .filter(|arg| *arg != "--daemon" && *arg != "-D")
+        .cloned()
+        .collect();
+
+    std::process::Command::new(current_exe)
+        .args(filtered_args)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map_err(|e| anyhow::anyhow!("failed to spawn background daemon: {e}"))?;
+    Ok(())
+}
 
 #[derive(Parser)]
 #[command(name = "raria", version, about = "A high-performance download utility")]
@@ -25,6 +62,10 @@ struct Cli {
     #[arg(long, default_value = "info", global = true)]
     log_level: String,
 
+    /// Write structured logs to the given file path.
+    #[arg(long, global = true)]
+    log: Option<PathBuf>,
+
     /// Suppress normal user-facing output
     #[arg(long, short = 'q', default_value_t = false, global = true)]
     quiet: bool,
@@ -35,6 +76,7 @@ struct Cli {
 }
 
 #[derive(Subcommand)]
+#[allow(clippy::large_enum_variant)]
 enum Commands {
     /// Download a file from a URL
     Download {
@@ -53,9 +95,37 @@ enum Commands {
         #[arg(short = 'x', long, default_value_t = 16)]
         connections: u32,
 
+        /// Continue downloading a partially downloaded file.
+        #[arg(short = 'c', long = "continue", default_value_t = false)]
+        continue_download: bool,
+
         /// Maximum download speed (bytes/sec, 0 = unlimited)
         #[arg(long, default_value_t = 0)]
         max_download_limit: u64,
+
+        /// Maximum retries per segment (aria2: --max-tries, 0 = infinite).
+        #[arg(long)]
+        max_tries: Option<u32>,
+
+        /// Seconds to wait between retries (aria2: --retry-wait).
+        #[arg(long)]
+        retry_wait: Option<u32>,
+
+        /// Minimum size in bytes for a split segment (aria2: --min-split-size).
+        #[arg(long = "min-split-size")]
+        min_split_size: Option<u64>,
+
+        /// Abort connections when download speed is below this limit (bytes/sec).
+        #[arg(long = "lowest-speed-limit")]
+        lowest_speed_limit: Option<u64>,
+
+        /// Maximum number of file-not-found errors before giving up.
+        #[arg(long = "max-file-not-found")]
+        max_file_not_found: Option<u32>,
+
+        /// Path to Netscape cookie file for persistence.
+        #[arg(long)]
+        save_cookies: Option<PathBuf>,
 
         /// Checksum for verification (format: algo=hex, e.g. sha-256=abc...)
         #[arg(long)]
@@ -69,9 +139,21 @@ enum Commands {
         #[arg(long)]
         check_certificate: Option<bool>,
 
+        /// Path to custom CA certificate
+        #[arg(long)]
+        ca_certificate: Option<PathBuf>,
+
         /// Custom user-agent string
         #[arg(long)]
         user_agent: Option<String>,
+
+        /// Path to client certificate chain for mTLS.
+        #[arg(long)]
+        certificate: Option<PathBuf>,
+
+        /// Path to client private key for mTLS.
+        #[arg(long = "private-key")]
+        private_key: Option<PathBuf>,
 
         /// HTTP Basic auth username
         #[arg(long)]
@@ -140,6 +222,14 @@ enum Commands {
         #[arg(long, default_value = "raria.session.redb")]
         session_file: PathBuf,
 
+        /// Detach and keep the daemon running in the background.
+        #[arg(short = 'D', long = "daemon", default_value_t = false)]
+        daemonize: bool,
+
+        /// Save the current session periodically while running.
+        #[arg(long)]
+        save_session_interval: Option<u64>,
+
         /// RPC listen port
         #[arg(long, default_value_t = 6800)]
         rpc_port: u16,
@@ -147,6 +237,26 @@ enum Commands {
         /// Maximum download speed (bytes/sec, 0 = unlimited)
         #[arg(long, default_value_t = 0)]
         max_download_limit: u64,
+
+        /// Maximum retries per segment (aria2: --max-tries, 0 = infinite).
+        #[arg(long)]
+        max_tries: Option<u32>,
+
+        /// Seconds to wait between retries (aria2: --retry-wait).
+        #[arg(long)]
+        retry_wait: Option<u32>,
+
+        /// Minimum size in bytes for a split segment (aria2: --min-split-size).
+        #[arg(long = "min-split-size")]
+        min_split_size: Option<u64>,
+
+        /// Abort connections when download speed is below this limit (bytes/sec).
+        #[arg(long = "lowest-speed-limit")]
+        lowest_speed_limit: Option<u64>,
+
+        /// Maximum number of file-not-found errors before giving up.
+        #[arg(long = "max-file-not-found")]
+        max_file_not_found: Option<u32>,
 
         /// Proxy URL for all protocols
         #[arg(long)]
@@ -172,6 +282,14 @@ enum Commands {
         #[arg(long)]
         ca_certificate: Option<PathBuf>,
 
+        /// Path to client certificate chain for mTLS.
+        #[arg(long)]
+        certificate: Option<PathBuf>,
+
+        /// Path to client private key for mTLS.
+        #[arg(long = "private-key")]
+        private_key: Option<PathBuf>,
+
         /// Custom user-agent string
         #[arg(long)]
         user_agent: Option<String>,
@@ -188,6 +306,18 @@ enum Commands {
         #[arg(short = 'i', long)]
         input_file: Option<PathBuf>,
 
+        /// Hook script fired when a download starts.
+        #[arg(long)]
+        on_download_start: Option<PathBuf>,
+
+        /// Hook script fired when a download completes.
+        #[arg(long)]
+        on_download_complete: Option<PathBuf>,
+
+        /// Hook script fired when a download errors.
+        #[arg(long)]
+        on_download_error: Option<PathBuf>,
+
         /// RPC secret token for authentication
         #[arg(long)]
         rpc_secret: Option<String>,
@@ -199,6 +329,10 @@ enum Commands {
         /// Path to Netscape cookie file
         #[arg(long)]
         load_cookies: Option<PathBuf>,
+
+        /// Path to Netscape cookie file for persistence
+        #[arg(long)]
+        save_cookies: Option<PathBuf>,
 
         /// File allocation strategy: none, prealloc, trunc, falloc
         #[arg(long, default_value = "none")]
@@ -256,15 +390,53 @@ enum Commands {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    let raw_args: Vec<OsString> = std::env::args_os().collect();
     let cli = Cli::parse();
+
+    #[cfg(unix)]
+    {
+        let daemonize_requested = matches!(
+            &cli.command,
+            Commands::Daemon { daemonize: true, .. }
+        );
+        if daemonize_requested {
+            spawn_background_daemon(&raw_args)?;
+            // Exit immediately to ensure the parent returns promptly even under load.
+            // The detached child continues running the daemon process.
+            std::process::exit(0);
+        }
+    }
 
     let env_filter = EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| EnvFilter::new(&cli.log_level));
-    let subscriber = tracing_subscriber::fmt().with_env_filter(env_filter);
-    if cli.quiet {
-        subscriber.with_writer(std::io::sink).init();
+    if let Some(ref log_path) = cli.log {
+        let directory = log_path
+            .parent()
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("."));
+        std::fs::create_dir_all(&directory)?;
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(log_path)?;
+        let shared = Arc::new(Mutex::new(file));
+        {
+            use std::io::Write as _;
+            let mut guard = shared.lock().unwrap();
+            writeln!(guard, "raria logging initialized").ok();
+            guard.flush().ok();
+        }
+        tracing_subscriber::fmt()
+            .with_env_filter(env_filter)
+            .with_writer(move || SharedLogFile(Arc::clone(&shared)))
+            .init();
+    } else if cli.quiet {
+        tracing_subscriber::fmt()
+            .with_env_filter(env_filter)
+            .with_writer(std::io::sink)
+            .init();
     } else {
-        subscriber.init();
+        tracing_subscriber::fmt().with_env_filter(env_filter).init();
     }
 
     let mut base_config = GlobalConfig::default();
@@ -285,10 +457,20 @@ async fn main() -> Result<()> {
             dir,
             out,
             connections,
+            continue_download,
             max_download_limit,
+            max_tries,
+            retry_wait,
+            min_split_size,
+            lowest_speed_limit,
+            max_file_not_found,
+            save_cookies,
             checksum,
             all_proxy,
             check_certificate,
+            ca_certificate,
+            certificate,
+            private_key,
             user_agent,
             http_user,
             http_passwd,
@@ -310,11 +492,21 @@ async fn main() -> Result<()> {
                 dir,
                 filename: out,
                 connections,
+                continue_download,
                 max_concurrent: cli.max_concurrent,
                 max_download_limit,
+                max_tries,
+                retry_wait,
+                min_split_size,
+                lowest_speed_limit,
+                max_file_not_found,
+                save_cookies,
                 checksum_spec: checksum,
                 all_proxy,
                 check_certificate: check_certificate.unwrap_or(true),
+                ca_certificate,
+                certificate,
+                private_key,
                 user_agent,
                 http_user,
                 http_passwd,
@@ -336,21 +528,34 @@ async fn main() -> Result<()> {
         Commands::Daemon {
             dir,
             session_file,
+            daemonize,
+            save_session_interval,
             rpc_port,
             max_download_limit,
+            max_tries,
+            retry_wait,
+            min_split_size,
+            lowest_speed_limit,
+            max_file_not_found,
             all_proxy,
             http_proxy,
             https_proxy,
             no_proxy,
             check_certificate,
             ca_certificate,
+            certificate,
+            private_key,
             user_agent,
             http_user,
             http_passwd,
             input_file,
+            on_download_start,
+            on_download_complete,
+            on_download_error,
             rpc_secret,
             rpc_allow_origin_all,
             load_cookies,
+            save_cookies,
             file_allocation,
             max_redirect,
             netrc_path,
@@ -373,6 +578,24 @@ async fn main() -> Result<()> {
             config.rpc_listen_port = rpc_port;
             config.enable_rpc = true;
             config.session_file = session_file.clone();
+            if let Some(max_tries) = max_tries {
+                config.max_tries = max_tries;
+            }
+            if let Some(retry_wait) = retry_wait {
+                config.retry_wait = retry_wait;
+            }
+            if let Some(min_split_size) = min_split_size {
+                config.min_split_size = min_split_size;
+            }
+            if let Some(lowest_speed_limit) = lowest_speed_limit {
+                config.lowest_speed_limit = lowest_speed_limit;
+            }
+            if let Some(max_file_not_found) = max_file_not_found {
+                config.max_file_not_found = max_file_not_found;
+            }
+            if save_session_interval.is_some() {
+                config.save_session_interval = save_session_interval;
+            }
             if all_proxy.is_some() {
                 config.all_proxy = all_proxy;
             }
@@ -389,6 +612,12 @@ async fn main() -> Result<()> {
             if ca_certificate.is_some() {
                 config.ca_certificate = ca_certificate;
             }
+            if certificate.is_some() {
+                config.certificate = certificate;
+            }
+            if private_key.is_some() {
+                config.private_key = private_key;
+            }
             if user_agent.is_some() {
                 config.user_agent = user_agent;
             }
@@ -398,12 +627,24 @@ async fn main() -> Result<()> {
             if http_passwd.is_some() {
                 config.http_passwd = http_passwd;
             }
+            if on_download_start.is_some() {
+                config.on_download_start = on_download_start;
+            }
+            if on_download_complete.is_some() {
+                config.on_download_complete = on_download_complete;
+            }
+            if on_download_error.is_some() {
+                config.on_download_error = on_download_error;
+            }
             if rpc_secret.is_some() {
                 config.rpc_secret = rpc_secret;
             }
             config.rpc_allow_origin_all = rpc_allow_origin_all;
             if load_cookies.is_some() {
                 config.cookie_file = load_cookies;
+            }
+            if save_cookies.is_some() {
+                config.save_cookie_file = save_cookies;
             }
             if max_redirect.is_some() {
                 config.max_redirects = max_redirect;
@@ -435,6 +676,8 @@ async fn main() -> Result<()> {
             } else {
                 Vec::new()
             };
+
+            let _ = daemonize;
 
             daemon::run_daemon_with_config(
                 config,

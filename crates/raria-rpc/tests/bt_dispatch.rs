@@ -179,6 +179,44 @@ mod tests {
         cancel.cancel();
     }
 
+    #[tokio::test]
+    async fn add_torrent_with_bt_tracker_stores_trackers() {
+        let (engine, url, cancel) = spawn_server().await;
+
+        use base64::Engine as Base64Engine;
+        let fake_torrent = b"d8:announce35:http://tracker.example.com/announcee";
+        let encoded = base64::engine::general_purpose::STANDARD.encode(fake_torrent);
+
+        let resp = rpc_call(
+            &url,
+            "aria2.addTorrent",
+            serde_json::json!([
+                encoded,
+                [],
+                {
+                    "bt-tracker": "http://tracker1.example/announce,http://tracker2.example/announce"
+                }
+            ]),
+        )
+        .await;
+
+        assert!(resp.get("error").is_none(), "addTorrent should succeed: {resp}");
+        let gid_str = resp["result"].as_str().unwrap();
+        let gid = raria_core::job::Gid::from_raw(
+            u64::from_str_radix(gid_str, 16).unwrap(),
+        );
+        let job = engine.registry.get(gid).unwrap();
+        assert_eq!(
+            job.options.bt_trackers,
+            Some(vec![
+                "http://tracker1.example/announce".into(),
+                "http://tracker2.example/announce".into(),
+            ])
+        );
+
+        cancel.cancel();
+    }
+
     /// tellStatus for a BT job should include bittorrent-specific fields.
     #[tokio::test]
     async fn tell_status_bt_job_shows_kind() {

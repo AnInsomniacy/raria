@@ -1,11 +1,107 @@
 use std::process::Command;
 use std::{fs, io::Write};
+use rustls::pki_types::{PrivateKeyDer, PrivatePkcs8KeyDer};
+use rustls::{RootCertStore, ServerConfig};
 use tempfile::tempdir;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::TcpListener;
+use tokio_rustls::TlsAcceptor;
 use wiremock::matchers::{header, header_exists, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 fn cargo_bin(name: &str) -> String {
     std::env::var(format!("CARGO_BIN_EXE_{name}")).expect("cargo should provide binary path")
+}
+
+struct MtlsFixture {
+    url: String,
+    ca_path: std::path::PathBuf,
+    client_cert_path: std::path::PathBuf,
+    client_key_path: std::path::PathBuf,
+}
+
+async fn spawn_mtls_server(temp: &std::path::Path) -> MtlsFixture {
+    use rcgen::{BasicConstraints, CertificateParams, DnType, IsCa, KeyPair};
+    use rustls::server::WebPkiClientVerifier;
+    use std::sync::Arc;
+
+    let provider = rustls::crypto::aws_lc_rs::default_provider();
+    let _ = provider.clone().install_default();
+    let provider = Arc::new(provider);
+
+    let ca_key = KeyPair::generate().expect("generate ca key");
+    let mut ca_params = CertificateParams::new(vec!["raria-test-ca".into()]).expect("ca params");
+    ca_params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
+    ca_params.distinguished_name.push(DnType::CommonName, "raria-test-ca");
+    let ca_cert = ca_params.self_signed(&ca_key).expect("ca cert");
+
+    let server_key = KeyPair::generate().expect("generate server key");
+    let mut server_params =
+        CertificateParams::new(vec!["localhost".into(), "127.0.0.1".into()]).expect("server params");
+    server_params.distinguished_name.push(DnType::CommonName, "localhost");
+    let server_cert = server_params
+        .signed_by(&server_key, &ca_cert, &ca_key)
+        .expect("server cert");
+
+    let client_key = KeyPair::generate().expect("generate client key");
+    let mut client_params = CertificateParams::new(vec!["raria-client".into()]).expect("client params");
+    client_params.distinguished_name.push(DnType::CommonName, "raria-client");
+    let client_cert = client_params
+        .signed_by(&client_key, &ca_cert, &ca_key)
+        .expect("client cert");
+
+    let ca_path = temp.join("ca.pem");
+    let client_cert_path = temp.join("client.pem");
+    let client_key_path = temp.join("client.key");
+    fs::write(&ca_path, ca_cert.pem()).expect("write ca pem");
+    fs::write(&client_cert_path, client_cert.pem()).expect("write client cert");
+    fs::write(&client_key_path, client_key.serialize_pem()).expect("write client key");
+
+    let mut roots = RootCertStore::empty();
+    roots.add(ca_cert.der().clone()).expect("add ca");
+    let verifier = WebPkiClientVerifier::builder_with_provider(Arc::new(roots), provider.clone())
+        .build()
+        .expect("client verifier");
+
+    let server_config = ServerConfig::builder_with_provider(provider)
+        .with_protocol_versions(&[&rustls::version::TLS13])
+        .expect("tls13")
+        .with_client_cert_verifier(verifier)
+        .with_single_cert(
+            vec![server_cert.der().clone()],
+            PrivateKeyDer::from(PrivatePkcs8KeyDer::from(server_key.serialize_der())),
+        )
+        .expect("server config");
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind listener");
+    let addr = listener.local_addr().expect("listener addr");
+    let acceptor = TlsAcceptor::from(Arc::new(server_config));
+
+    tokio::spawn(async move {
+        for _ in 0..2 {
+            let (stream, _) = listener.accept().await.expect("accept tcp");
+            let mut tls = acceptor.accept(stream).await.expect("accept tls");
+            let mut buf = [0u8; 4096];
+            let n = tls.read(&mut buf).await.expect("read request");
+            let req = String::from_utf8_lossy(&buf[..n]);
+            let response = if req.starts_with("HEAD /mtls.bin ") {
+                "HTTP/1.1 200 OK\r\ncontent-length: 5\r\naccept-ranges: bytes\r\n\r\n".to_string()
+            } else if req.starts_with("GET /mtls.bin ") {
+                "HTTP/1.1 200 OK\r\ncontent-length: 5\r\n\r\nhello".to_string()
+            } else {
+                "HTTP/1.1 404 Not Found\r\ncontent-length: 0\r\n\r\n".to_string()
+            };
+            tls.write_all(response.as_bytes()).await.expect("write response");
+            tls.flush().await.expect("flush response");
+        }
+    });
+
+    MtlsFixture {
+        url: format!("https://127.0.0.1:{}/mtls.bin", addr.port()),
+        ca_path,
+        client_cert_path,
+        client_key_path,
+    }
 }
 
 #[tokio::test]
@@ -182,6 +278,98 @@ async fn single_download_sends_basic_auth_from_cli_flags() {
         "stdout:\n{}\n\nstderr:\n{}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[tokio::test]
+async fn single_download_presents_client_identity_for_mtls() {
+    let tmp = tempdir().expect("tempdir");
+    let fixture = spawn_mtls_server(tmp.path()).await;
+
+    let url = fixture.url.clone();
+    let ca_path = fixture.ca_path.clone();
+    let client_cert_path = fixture.client_cert_path.clone();
+    let client_key_path = fixture.client_key_path.clone();
+    let out_dir = tmp.path().to_path_buf();
+    let output = tokio::task::spawn_blocking(move || {
+        Command::new(cargo_bin("raria"))
+            .arg("download")
+            .arg(&url)
+            .arg("-d")
+            .arg(&out_dir)
+            .arg("--ca-certificate")
+            .arg(&ca_path)
+            .arg("--certificate")
+            .arg(&client_cert_path)
+            .arg("--private-key")
+            .arg(&client_key_path)
+            .output()
+            .expect("run raria")
+    })
+    .await
+    .expect("join blocking command");
+
+    assert!(
+        output.status.success(),
+        "stdout:\n{}\n\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    assert_eq!(
+        fs::read(tmp.path().join("mtls.bin")).expect("read downloaded file"),
+        b"hello"
+    );
+}
+
+#[tokio::test]
+async fn single_download_writes_save_cookies_file() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("HEAD"))
+        .and(path("/cookie.bin"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-length", "4")
+                .insert_header("accept-ranges", "bytes"),
+        )
+        .mount(&server)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path("/cookie.bin"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("set-cookie", "session_id=abc123; Path=/")
+                .set_body_bytes(b"done"),
+        )
+        .mount(&server)
+        .await;
+
+    let tmp = tempdir().expect("tempdir");
+    let cookies_path = tmp.path().join("cookies.txt");
+
+    let output = Command::new(cargo_bin("raria"))
+        .arg("download")
+        .arg(server.uri().to_string() + "/cookie.bin")
+        .arg("-d")
+        .arg(tmp.path())
+        .arg("--save-cookies")
+        .arg(&cookies_path)
+        .output()
+        .expect("run raria");
+
+    assert!(
+        output.status.success(),
+        "stdout:\n{}\n\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let content = fs::read_to_string(&cookies_path).expect("read saved cookie file");
+    assert!(
+        content.contains("session_id\tabc123"),
+        "expected cookie contents to include session_id, got:\n{content}"
     );
 }
 
@@ -748,4 +936,49 @@ async fn single_download_allow_overwrite_replaces_existing_file_without_tail_byt
         String::from_utf8_lossy(&output.stderr)
     );
     assert_eq!(fs::read(&out).expect("read overwritten file"), b"new!");
+}
+
+#[tokio::test]
+async fn single_download_continue_resumes_from_existing_file_length() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("HEAD"))
+        .and(path("/continue.bin"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-length", "8")
+                .insert_header("accept-ranges", "bytes"),
+        )
+        .mount(&server)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path("/continue.bin"))
+        .and(header("range", "bytes=4-"))
+        .respond_with(ResponseTemplate::new(206).set_body_bytes(b"5678"))
+        .mount(&server)
+        .await;
+
+    let tmp = tempdir().expect("tempdir");
+    let out = tmp.path().join("continue.bin");
+    fs::write(&out, b"1234").expect("write partial file");
+
+    let output = Command::new(cargo_bin("raria"))
+        .arg("download")
+        .arg(server.uri().to_string() + "/continue.bin")
+        .arg("-d")
+        .arg(tmp.path())
+        .arg("-x")
+        .arg("1")
+        .arg("--continue")
+        .output()
+        .expect("run raria");
+
+    assert!(
+        output.status.success(),
+        "stdout:\n{}\n\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(fs::read(&out).expect("read resumed file"), b"12345678");
 }

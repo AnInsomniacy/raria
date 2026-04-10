@@ -18,6 +18,7 @@ anyhow = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 url = { workspace = true }
+tokio-socks = { workspace = true }
 bytes = { workspace = true }
 home = "0.5"
 

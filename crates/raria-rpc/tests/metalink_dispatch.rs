@@ -94,6 +94,11 @@ mod tests {
             job.uris.iter().any(|u| u.contains("mirror1.com")),
             "job should have mirror1 URL"
         );
+        assert_eq!(
+            job.uris.first().map(String::as_str),
+            Some("https://mirror2.com/test.zip"),
+            "normalized URLs should be sorted by Metalink priority/preference"
+        );
 
         cancel.cancel();
     }
@@ -184,6 +189,46 @@ mod tests {
             resp.get("error").is_some(),
             "invalid XML should error: {resp}"
         );
+
+        cancel.cancel();
+    }
+
+    #[tokio::test]
+    async fn add_metalink_sets_job_checksum_from_best_hash() {
+        let (engine, url, cancel) = spawn_server().await;
+
+        let metalink_xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<metalink version="3.0" xmlns="http://www.metalinker.org/">
+  <files>
+    <file name="test.zip">
+      <verification>
+        <hash type="md5">D41D8CD98F00B204E9800998ECF8427E</hash>
+        <hash type="sha-256">ABCDEF123456</hash>
+      </verification>
+      <resources>
+        <url type="http">https://mirror1.com/test.zip</url>
+      </resources>
+    </file>
+  </files>
+</metalink>"#;
+
+        use base64::Engine as Base64Engine;
+        let encoded = base64::engine::general_purpose::STANDARD.encode(metalink_xml);
+
+        let resp = rpc_call(
+            &url,
+            "aria2.addMetalink",
+            serde_json::json!([encoded]),
+        )
+        .await;
+
+        assert!(resp.get("error").is_none(), "addMetalink should succeed: {resp}");
+        let gid_str = resp["result"].as_array().unwrap()[0].as_str().unwrap();
+        let gid = raria_core::job::Gid::from_raw(
+            u64::from_str_radix(gid_str, 16).unwrap(),
+        );
+        let job = engine.registry.get(gid).unwrap();
+        assert_eq!(job.options.checksum.as_deref(), Some("sha-256=abcdef123456"));
 
         cancel.cancel();
     }

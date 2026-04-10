@@ -37,7 +37,7 @@
 | `aria2.tellStatus` | ✅ | ✅ | `client_verified` | RPC smoke and parity tests |
 | `aria2.getUris` | ✅ | ✅ | `tested` | RPC tests |
 | `aria2.getFiles` | ✅ | ✅ | `tested` | RPC tests |
-| `aria2.getPeers` | ✅ | ✅ | `wired` | Returns empty for non-BT; BT detail parity incomplete |
+| `aria2.getPeers` | ✅ | ✅ | `tested` | HTTP path returns empty and BT cached peer detail is covered by RPC tests |
 | `aria2.getServers` | ✅ | ✅ | `tested` | RPC tests |
 | `aria2.tellActive` | ✅ | ✅ | `tested` | RPC tests |
 | `aria2.tellWaiting` | ✅ | ✅ | `tested` | RPC tests |
@@ -50,9 +50,9 @@
 
 | Method | aria2 | raria | Status | Notes |
 |--------|-------|-------|--------|-------|
-| `aria2.changeOption` | ✅ | ✅ | `wired` | Some runtime mutation exists, broader parity still incomplete |
+| `aria2.changeOption` | ✅ | ✅ | `tested` | Options parity tests cover BT trackers and seeding controls in addition to core fields |
 | `aria2.getOption` | ✅ | ✅ | `tested` | Options parity tests |
-| `aria2.changeGlobalOption` | ✅ | ✅ | `wired` | Scheduler mutation works; dynamic limiter update incomplete |
+| `aria2.changeGlobalOption` | ✅ | ✅ | `client_verified` | Daemon RPC smoke verifies live download-limit mutation on active jobs |
 | `aria2.getGlobalOption` | ✅ | ✅ | `tested` | Options parity tests |
 | `aria2.changePosition` | ✅ | ✅ | `tested` | RPC tests |
 
@@ -62,7 +62,7 @@
 |--------|-------|-------|--------|-------|
 | `aria2.purgeDownloadResult` | ✅ | ✅ | `tested` | RPC tests |
 | `aria2.removeDownloadResult` | ✅ | ✅ | `tested` | RPC tests |
-| `aria2.saveSession` | ✅ | ✅ | `wired` | Actual persistence exists; parity still evolving |
+| `aria2.saveSession` | ✅ | ✅ | `tested` | Dedicated daemon smoke verifies direct RPC-triggered session persistence |
 | `aria2.shutdown` | ✅ | ✅ | `client_verified` | Daemon smoke verifies graceful shutdown |
 | `aria2.forceShutdown` | ✅ | ✅ | `tested` | RPC tests |
 

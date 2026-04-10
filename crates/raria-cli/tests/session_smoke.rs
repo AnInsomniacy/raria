@@ -379,6 +379,119 @@ async fn daemon_resume_after_restart_issues_range_request() {
 }
 
 #[tokio::test]
+async fn daemon_resume_after_restart_sends_if_range_when_etag_is_known() {
+    let server = MockServer::start().await;
+    let etag = "\"resume-etag-123\"";
+
+    Mock::given(method("HEAD"))
+        .and(path("/resume-if-range.bin"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-length", "262144")
+                .insert_header("accept-ranges", "bytes")
+                .insert_header("etag", etag),
+        )
+        .mount(&server)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path("/resume-if-range.bin"))
+        .and(wiremock::matchers::header_exists("range"))
+        .and(wiremock::matchers::header("if-range", etag))
+        .respond_with(
+            ResponseTemplate::new(206)
+                .set_body_bytes(vec![b'i'; 256 * 1024]),
+        )
+        .mount(&server)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path("/resume-if-range.bin"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_delay(Duration::from_secs(2))
+                .set_body_bytes(vec![b'i'; 256 * 1024]),
+        )
+        .mount(&server)
+        .await;
+
+    let temp = tempdir().expect("tempdir");
+    let session_file = temp.path().join("resume-if-range.session.redb");
+    let (mut first, first_port) = spawn_ready_daemon_with_args(
+        temp.path(),
+        &session_file,
+        None,
+        &["--max-download-limit", "16384"],
+    )
+    .await;
+
+    let add_resp = rpc_call(
+        first_port,
+        "aria2.addUri",
+        serde_json::json!([
+            [format!("{}/resume-if-range.bin", server.uri())],
+            {
+                "split": "1",
+                "max-connection-per-server": "1"
+            }
+        ]),
+    )
+    .await;
+    let gid = add_resp["result"].as_str().expect("gid").to_string();
+
+    let progress_deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        let status_resp = rpc_call(first_port, "aria2.tellStatus", serde_json::json!([gid.clone()])).await;
+        let completed = status_resp["result"]["completedLength"]
+            .as_str()
+            .expect("completedLength string")
+            .parse::<u64>()
+            .expect("completedLength parse");
+        let status = status_resp["result"]["status"].as_str().expect("status");
+        if status == "active" && completed > 0 {
+            break;
+        }
+        assert!(
+            Instant::now() < progress_deadline,
+            "download never accumulated partial progress before shutdown: {status_resp}"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+
+    graceful_shutdown(first_port, &mut first).await;
+
+    let (mut second, second_port) = spawn_ready_daemon(temp.path(), &session_file, None).await;
+
+    let completion_deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        let status_resp = rpc_call(second_port, "aria2.tellStatus", serde_json::json!([gid.clone()])).await;
+        let status = status_resp["result"]["status"].as_str().expect("status");
+        if status == "complete" {
+            break;
+        }
+
+        assert!(
+            Instant::now() < completion_deadline,
+            "resumed job never completed after restart: {status_resp}"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+
+    let requests = server.received_requests().await.expect("received requests");
+    let saw_if_range = requests.iter().any(|req| {
+        req.method.as_str() == "GET"
+            && req.url.path() == "/resume-if-range.bin"
+            && req.headers
+                .get("if-range")
+                .and_then(|v| v.to_str().ok())
+                == Some(etag)
+    });
+    assert!(saw_if_range, "resumed daemon should send If-Range with the persisted ETag");
+
+    graceful_shutdown(second_port, &mut second).await;
+}
+
+#[tokio::test]
 async fn daemon_resume_after_restart_surfaces_non_zero_completed_length_before_completion() {
     let server = MockServer::start().await;
 
@@ -597,6 +710,222 @@ async fn daemon_loads_jobs_from_input_file_on_startup() {
 }
 
 #[tokio::test]
+async fn daemon_periodically_saves_session_when_interval_is_enabled() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("HEAD"))
+        .and(path("/periodic.bin"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-length", "262144")
+                .insert_header("accept-ranges", "bytes"),
+        )
+        .mount(&server)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path("/periodic.bin"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_delay(Duration::from_secs(3))
+                .set_body_bytes(vec![b'p'; 256 * 1024]),
+        )
+        .mount(&server)
+        .await;
+
+    let temp = tempdir().expect("tempdir");
+    let session_file = temp.path().join("periodic.session.redb");
+    let (mut child, rpc_port) = spawn_ready_daemon_with_args(
+        temp.path(),
+        &session_file,
+        None,
+        &["--save-session-interval", "1"],
+    )
+    .await;
+
+    let add_resp = rpc_call(
+        rpc_port,
+        "aria2.addUri",
+        serde_json::json!([[format!("{}/periodic.bin", server.uri())]]),
+    )
+    .await;
+    let gid = add_resp["result"].as_str().expect("gid").to_string();
+
+    let active_deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        let status_resp = rpc_call(rpc_port, "aria2.tellStatus", serde_json::json!([gid.clone()])).await;
+        let status = status_resp["result"]["status"].as_str().expect("status");
+        if matches!(status, "waiting" | "active" | "complete") {
+            break;
+        }
+
+        assert!(
+            Instant::now() < active_deadline,
+            "job never reached a savable state: {status_resp}"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+
+    let save_deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        if session_file.is_file() && std::fs::metadata(&session_file).map(|m| m.len()).unwrap_or(0) > 0 {
+            break;
+        }
+
+        assert!(
+            Instant::now() < save_deadline,
+            "daemon did not persist session file while running"
+        );
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+
+    graceful_shutdown(rpc_port, &mut child).await;
+}
+
+#[tokio::test]
+async fn daemon_saves_session_when_save_session_rpc_is_called() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("HEAD"))
+        .and(path("/rpc-save.bin"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-length", "262144")
+                .insert_header("accept-ranges", "bytes"),
+        )
+        .mount(&server)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path("/rpc-save.bin"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_delay(Duration::from_secs(3))
+                .set_body_bytes(vec![b'r'; 256 * 1024]),
+        )
+        .mount(&server)
+        .await;
+
+    let temp = tempdir().expect("tempdir");
+    let session_file = temp.path().join("rpc-save.session.redb");
+    let (mut child, rpc_port) = spawn_ready_daemon(temp.path(), &session_file, None).await;
+
+    let add_resp = rpc_call(
+        rpc_port,
+        "aria2.addUri",
+        serde_json::json!([[format!("{}/rpc-save.bin", server.uri())]]),
+    )
+    .await;
+    let gid = add_resp["result"].as_str().expect("gid").to_string();
+
+    let active_deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        let status_resp = rpc_call(rpc_port, "aria2.tellStatus", serde_json::json!([gid.clone()])).await;
+        let status = status_resp["result"]["status"].as_str().expect("status");
+        if matches!(status, "waiting" | "active" | "complete") {
+            break;
+        }
+        assert!(
+            Instant::now() < active_deadline,
+            "job never reached a savable state before aria2.saveSession: {status_resp}"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+
+    let save_resp = rpc_call(rpc_port, "aria2.saveSession", serde_json::json!([])).await;
+    assert_eq!(save_resp["result"], "OK");
+
+    let save_deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        if session_file.is_file() && std::fs::metadata(&session_file).map(|m| m.len()).unwrap_or(0) > 0 {
+            break;
+        }
+        assert!(
+            Instant::now() < save_deadline,
+            "daemon did not persist session file after aria2.saveSession"
+        );
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+
+    graceful_shutdown(rpc_port, &mut child).await;
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn daemon_saves_session_when_sigusr1_is_received() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("HEAD"))
+        .and(path("/sigusr1.bin"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-length", "262144")
+                .insert_header("accept-ranges", "bytes"),
+        )
+        .mount(&server)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path("/sigusr1.bin"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_delay(Duration::from_secs(3))
+                .set_body_bytes(vec![b's'; 256 * 1024]),
+        )
+        .mount(&server)
+        .await;
+
+    let temp = tempdir().expect("tempdir");
+    let session_file = temp.path().join("sigusr1.session.redb");
+    let (mut child, rpc_port) = spawn_ready_daemon(temp.path(), &session_file, None).await;
+
+    let add_resp = rpc_call(
+        rpc_port,
+        "aria2.addUri",
+        serde_json::json!([[format!("{}/sigusr1.bin", server.uri())]]),
+    )
+    .await;
+    let gid = add_resp["result"].as_str().expect("gid").to_string();
+
+    let active_deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        let status_resp = rpc_call(rpc_port, "aria2.tellStatus", serde_json::json!([gid.clone()])).await;
+        let status = status_resp["result"]["status"].as_str().expect("status");
+        if matches!(status, "waiting" | "active" | "complete") {
+            break;
+        }
+
+        assert!(
+            Instant::now() < active_deadline,
+            "job never reached a savable state before SIGUSR1: {status_resp}"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+
+    let daemon_pid = child.child.id() as i32;
+    nix::sys::signal::kill(
+        nix::unistd::Pid::from_raw(daemon_pid),
+        nix::sys::signal::Signal::SIGUSR1,
+    )
+    .expect("send SIGUSR1");
+
+    let save_deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        if session_file.is_file() && std::fs::metadata(&session_file).map(|m| m.len()).unwrap_or(0) > 0 {
+            break;
+        }
+
+        assert!(
+            Instant::now() < save_deadline,
+            "daemon did not persist session file after SIGUSR1"
+        );
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+
+    graceful_shutdown(rpc_port, &mut child).await;
+}
+
+#[tokio::test]
 async fn daemon_cli_headers_apply_to_input_file_downloads() {
     let server = MockServer::start().await;
 
@@ -727,5 +1056,308 @@ async fn daemon_cli_basic_auth_applies_to_input_file_downloads() {
         b"auth"
     );
 
+    graceful_shutdown(rpc_port, &mut child).await;
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn daemon_runs_on_download_start_hook() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("HEAD"))
+        .and(path("/hook-start.bin"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-length", "262144")
+                .insert_header("accept-ranges", "bytes"),
+        )
+        .mount(&server)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path("/hook-start.bin"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_delay(Duration::from_secs(3))
+                .set_body_bytes(vec![b's'; 256 * 1024]),
+        )
+        .mount(&server)
+        .await;
+
+    let temp = tempdir().expect("tempdir");
+    let session_file = temp.path().join("hook-start.session.redb");
+    let hook_out = temp.path().join("start.hook.out");
+    let script = temp.path().join("start-hook.sh");
+    std::fs::write(
+        &script,
+        format!("#!/bin/sh\nprintf \"%s|%s|%s\" \"$1\" \"$2\" \"$3\" > \"{}\"\n", hook_out.display()),
+    )
+    .expect("write hook script");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = std::fs::metadata(&script).unwrap().permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&script, perms).unwrap();
+    }
+
+    let (mut child, rpc_port) = spawn_ready_daemon_with_args(
+        temp.path(),
+        &session_file,
+        None,
+        &["--on-download-start", script.to_string_lossy().as_ref()],
+    )
+    .await;
+
+    let add_resp = rpc_call(
+        rpc_port,
+        "aria2.addUri",
+        serde_json::json!([[format!("{}/hook-start.bin", server.uri())]]),
+    )
+    .await;
+    let gid = add_resp["result"].as_str().expect("gid").to_string();
+
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        if hook_out.is_file() {
+            break;
+        }
+        assert!(Instant::now() < deadline, "start hook did not run in time");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+
+    let hook_data = std::fs::read_to_string(&hook_out).expect("read hook output");
+    assert!(hook_data.contains(&gid));
+    assert!(hook_data.contains("|1|"));
+    assert!(hook_data.contains("hook-start.bin"));
+
+    graceful_shutdown(rpc_port, &mut child).await;
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn daemon_runs_on_download_complete_hook() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("HEAD"))
+        .and(path("/hook-complete.bin"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-length", "4")
+                .insert_header("accept-ranges", "bytes"),
+        )
+        .mount(&server)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path("/hook-complete.bin"))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(b"done"))
+        .mount(&server)
+        .await;
+
+    let temp = tempdir().expect("tempdir");
+    let session_file = temp.path().join("hook-complete.session.redb");
+    let hook_out = temp.path().join("complete.hook.out");
+    let script = temp.path().join("complete-hook.sh");
+    std::fs::write(
+        &script,
+        format!("#!/bin/sh\nprintf \"%s|%s|%s\" \"$1\" \"$2\" \"$3\" > \"{}\"\n", hook_out.display()),
+    )
+    .expect("write hook script");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = std::fs::metadata(&script).unwrap().permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&script, perms).unwrap();
+    }
+
+    let (mut child, rpc_port) = spawn_ready_daemon_with_args(
+        temp.path(),
+        &session_file,
+        None,
+        &["--on-download-complete", script.to_string_lossy().as_ref()],
+    )
+    .await;
+
+    let add_resp = rpc_call(
+        rpc_port,
+        "aria2.addUri",
+        serde_json::json!([[format!("{}/hook-complete.bin", server.uri())]]),
+    )
+    .await;
+    let gid = add_resp["result"].as_str().expect("gid").to_string();
+
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        let status_resp = rpc_call(rpc_port, "aria2.tellStatus", serde_json::json!([gid.clone()])).await;
+        let status = status_resp["result"]["status"].as_str().expect("status");
+        if status == "complete" && hook_out.is_file() {
+            break;
+        }
+
+        assert!(
+            Instant::now() < deadline,
+            "complete hook did not run in time: {status_resp}"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+
+    let hook_data = std::fs::read_to_string(&hook_out).expect("read hook output");
+    assert!(hook_data.contains(&gid));
+    assert!(hook_data.contains("|1|"));
+    assert!(hook_data.contains("hook-complete.bin"));
+
+    graceful_shutdown(rpc_port, &mut child).await;
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn daemon_runs_on_download_error_hook() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("HEAD"))
+        .and(path("/hook-error.bin"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-length", "1024")
+                .insert_header("accept-ranges", "bytes"),
+        )
+        .mount(&server)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path("/hook-error.bin"))
+        .respond_with(ResponseTemplate::new(404))
+        .mount(&server)
+        .await;
+
+    let temp = tempdir().expect("tempdir");
+    let session_file = temp.path().join("hook-error.session.redb");
+    let hook_out = temp.path().join("error.hook.out");
+    let script = temp.path().join("error-hook.sh");
+    std::fs::write(
+        &script,
+        format!("#!/bin/sh\nprintf \"%s|%s|%s\" \"$1\" \"$2\" \"$3\" > \"{}\"\n", hook_out.display()),
+    )
+    .expect("write hook script");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = std::fs::metadata(&script).unwrap().permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&script, perms).unwrap();
+    }
+
+    let (mut child, rpc_port) = spawn_ready_daemon_with_args(
+        temp.path(),
+        &session_file,
+        None,
+        &[
+            "--on-download-error",
+            script.to_string_lossy().as_ref(),
+            "--max-file-not-found",
+            "1",
+            "--max-tries",
+            "10",
+        ],
+    )
+    .await;
+
+    let add_resp = rpc_call(
+        rpc_port,
+        "aria2.addUri",
+        serde_json::json!([[format!("{}/hook-error.bin", server.uri())]]),
+    )
+    .await;
+    let gid = add_resp["result"].as_str().expect("gid").to_string();
+
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        let status_resp = rpc_call(rpc_port, "aria2.tellStatus", serde_json::json!([gid.clone()])).await;
+        let status = status_resp["result"]["status"].as_str().expect("status");
+        if status == "error" && hook_out.is_file() {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "error hook did not run in time: {status_resp}"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+
+    let hook_data = std::fs::read_to_string(&hook_out).expect("read hook output");
+    assert!(hook_data.contains(&gid));
+    assert!(hook_data.contains("|1|"));
+    assert!(hook_data.contains("hook-error.bin"));
+
+    graceful_shutdown(rpc_port, &mut child).await;
+}
+
+#[tokio::test]
+async fn daemon_fails_over_to_next_mirror_when_first_mirror_fails() {
+    let primary = MockServer::start().await;
+    let fallback = MockServer::start().await;
+
+    Mock::given(method("HEAD"))
+        .and(path("/mirror.bin"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-length", "4")
+                .insert_header("accept-ranges", "bytes"),
+        )
+        .mount(&primary)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/mirror.bin"))
+        .respond_with(ResponseTemplate::new(503))
+        .mount(&primary)
+        .await;
+
+    Mock::given(method("HEAD"))
+        .and(path("/mirror.bin"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-length", "4")
+                .insert_header("accept-ranges", "bytes"),
+        )
+        .mount(&fallback)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/mirror.bin"))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(b"pass"))
+        .mount(&fallback)
+        .await;
+
+    let temp = tempdir().expect("tempdir");
+    let session_file = temp.path().join("mirror.session.redb");
+    let (mut child, rpc_port) = spawn_ready_daemon(temp.path(), &session_file, None).await;
+
+    let add_resp = rpc_call(
+        rpc_port,
+        "aria2.addUri",
+        serde_json::json!([[
+            format!("{}/mirror.bin", primary.uri()),
+            format!("{}/mirror.bin", fallback.uri())
+        ]]),
+    )
+    .await;
+    let gid = add_resp["result"].as_str().expect("gid").to_string();
+
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        let status_resp = rpc_call(rpc_port, "aria2.tellStatus", serde_json::json!([gid.clone()])).await;
+        let status = status_resp["result"]["status"].as_str().expect("status");
+        if status == "complete" {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "daemon never completed mirror failover job: {status_resp}"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+
+    assert_eq!(std::fs::read(temp.path().join("mirror.bin")).unwrap(), b"pass");
     graceful_shutdown(rpc_port, &mut child).await;
 }

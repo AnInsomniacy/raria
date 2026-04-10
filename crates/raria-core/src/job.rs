@@ -107,6 +107,17 @@ pub struct BtFile {
     pub selected: bool,
 }
 
+/// BT peer entry cached on the job for RPC peer-list views when available.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BtPeer {
+    pub addr: String,
+    pub ip: String,
+    pub port: u16,
+    pub download_speed: u64,
+    pub upload_speed: u64,
+    pub seeder: bool,
+}
+
 /// A download job with all metadata needed for scheduling and persistence.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Job {
@@ -141,6 +152,9 @@ pub struct Job {
     /// BT file metadata cached for RPC file-list views when available.
     #[serde(default)]
     pub bt_files: Option<Vec<BtFile>>,
+    /// BT peer metadata cached for RPC peer-list views when available.
+    #[serde(default)]
+    pub bt_peers: Option<Vec<BtPeer>>,
 }
 
 impl Job {
@@ -166,6 +180,7 @@ impl Job {
             error_msg: None,
             options,
             bt_files: None,
+            bt_peers: None,
         }
     }
 
@@ -191,6 +206,7 @@ impl Job {
             error_msg: None,
             options,
             bt_files: None,
+            bt_peers: None,
         }
     }
 

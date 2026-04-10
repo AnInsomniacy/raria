@@ -7,11 +7,12 @@
 
 use anyhow::{Context, Result};
 use async_trait::async_trait;
+use digest_auth::{AuthContext, HttpMethod as DigestHttpMethod};
 use futures::TryStreamExt;
 use netrc::Netrc;
 use reqwest::StatusCode;
 use raria_range::backend::{
-    ByteSourceBackend, ByteStream, FileProbe, OpenContext, ProbeContext,
+    ByteSourceBackend, ByteStream, Credentials, FileProbe, OpenContext, ProbeContext,
 };
 use reqwest::header::{
     HeaderMap, HeaderName, HeaderValue, CONTENT_LENGTH, CONTENT_TYPE, ETAG, LAST_MODIFIED, RANGE,
@@ -43,10 +44,16 @@ pub struct HttpBackendConfig {
     pub check_certificate: bool,
     /// Path to custom CA certificate file.
     pub ca_certificate: Option<std::path::PathBuf>,
+    /// Path to client certificate chain for mTLS.
+    pub client_certificate: Option<std::path::PathBuf>,
+    /// Path to client private key for mTLS.
+    pub client_private_key: Option<std::path::PathBuf>,
     /// Custom user-agent string.
     pub user_agent: Option<String>,
     /// Path to Netscape-format cookie file (aria2: --load-cookies).
     pub cookie_file: Option<std::path::PathBuf>,
+    /// Path to Netscape-format cookie file for persistence (aria2: --save-cookies).
+    pub save_cookie_file: Option<std::path::PathBuf>,
     /// Maximum number of redirects to follow. `Some(0)` disables redirects.
     pub max_redirects: Option<usize>,
     /// Connection establishment timeout in seconds.
@@ -62,6 +69,8 @@ pub struct HttpBackendConfig {
 pub struct HttpBackend {
     client: Client,
     netrc_auth: Option<NetrcAuthMap>,
+    cookie_store: Option<Arc<reqwest_cookie_store::CookieStoreMutex>>,
+    save_cookie_file: Option<std::path::PathBuf>,
 }
 
 impl HttpBackend {
@@ -75,12 +84,16 @@ impl HttpBackend {
 
     /// Create a new HTTP backend with the given configuration.
     pub fn with_config(config: &HttpBackendConfig) -> Result<Self> {
+        let _ = rustls::crypto::aws_lc_rs::default_provider()
+            .install_default();
+
         let ua = config
             .user_agent
             .as_deref()
             .unwrap_or(concat!("raria/", env!("CARGO_PKG_VERSION")));
 
         let mut builder = Client::builder()
+            .use_rustls_tls()
             .user_agent(ua)
             .danger_accept_invalid_certs(!config.check_certificate);
 
@@ -132,11 +145,38 @@ impl HttpBackend {
             builder = builder.add_root_certificate(cert);
         }
 
-        // Load cookies from Netscape cookie file.
-        if let Some(ref cookie_path) = config.cookie_file {
-            let jar = crate::cookies::load_cookie_file(cookie_path)
-                .with_context(|| format!("failed to load cookies: {}", cookie_path.display()))?;
-            builder = builder.cookie_provider(jar);
+        // Configure client identity for mTLS.
+        match (&config.client_certificate, &config.client_private_key) {
+            (Some(cert_path), Some(key_path)) => {
+                let cert = std::fs::read(cert_path)
+                    .with_context(|| format!("failed to read client certificate: {}", cert_path.display()))?;
+                let key = std::fs::read(key_path)
+                    .with_context(|| format!("failed to read client private key: {}", key_path.display()))?;
+                let identity = reqwest::Identity::from_pem(&[cert, key].concat())
+                    .context("failed to parse client identity")?;
+                builder = builder.identity(identity);
+            }
+            (Some(_), None) | (None, Some(_)) => {
+                anyhow::bail!("both certificate and private-key must be set for client TLS identity");
+            }
+            (None, None) => {}
+        }
+
+        // Load cookies from Netscape cookie file; keep store for persistence.
+        let cookie_store = if config.cookie_file.is_some() || config.save_cookie_file.is_some() {
+            let store = if let Some(ref cookie_path) = config.cookie_file {
+                crate::cookies::load_cookie_store(cookie_path)
+                    .with_context(|| format!("failed to load cookies: {}", cookie_path.display()))?
+            } else {
+                reqwest_cookie_store::CookieStore::default()
+            };
+            let store = reqwest_cookie_store::CookieStoreMutex::new(store);
+            Some(Arc::new(store))
+        } else {
+            None
+        };
+        if let Some(ref store) = cookie_store {
+            builder = builder.cookie_provider(Arc::clone(store));
         }
 
         let client = builder.build().context("failed to build reqwest client")?;
@@ -146,7 +186,12 @@ impl HttpBackend {
             load_netrc_auth(config.netrc_path.as_deref())?
         };
 
-        Ok(Self { client, netrc_auth })
+        Ok(Self {
+            client,
+            netrc_auth,
+            cookie_store,
+            save_cookie_file: config.save_cookie_file.clone(),
+        })
     }
 
     /// Create a new HTTP backend with a custom client.
@@ -154,6 +199,8 @@ impl HttpBackend {
         Self {
             client,
             netrc_auth: None,
+            cookie_store: None,
+            save_cookie_file: None,
         }
     }
 
@@ -177,6 +224,61 @@ impl HttpBackend {
             .and_then(|entries| entries.get(host))
             .cloned()
     }
+
+    async fn send_with_optional_digest<F>(
+        &self,
+        uri: &Url,
+        creds: Option<&Credentials>,
+        method: DigestHttpMethod<'static>,
+        build: F,
+    ) -> Result<reqwest::Response>
+    where
+        F: Fn(Option<&str>) -> reqwest::RequestBuilder,
+    {
+        let response = build(None).send().await?;
+        if response.status() != StatusCode::UNAUTHORIZED {
+            return Ok(response);
+        }
+
+        let Some(creds) = creds else {
+            return Ok(response);
+        };
+
+        let challenge = response
+            .headers()
+            .get(reqwest::header::WWW_AUTHENTICATE)
+            .and_then(|v| v.to_str().ok())
+            .filter(|header| header.to_ascii_lowercase().starts_with("digest"))
+            .map(str::to_owned);
+
+        let Some(challenge) = challenge else {
+            return Ok(response);
+        };
+
+        let mut prompt = digest_auth::parse(&challenge)
+            .context("failed to parse digest auth challenge")?;
+        let mut uri_value = uri.path().to_string();
+        if let Some(query) = uri.query() {
+            uri_value.push('?');
+            uri_value.push_str(query);
+        }
+        let context = AuthContext::new_with_method(
+            &creds.username,
+            &creds.password,
+            uri_value,
+            Option::<&[u8]>::None,
+            method,
+        );
+        let header_value = prompt
+            .respond(&context)
+            .context("failed to compute digest authorization")?
+            .to_string();
+
+        build(Some(&header_value))
+            .send()
+            .await
+            .context("HTTP request with digest auth failed")
+    }
 }
 
 impl Default for HttpBackend {
@@ -190,18 +292,30 @@ impl ByteSourceBackend for HttpBackend {
     async fn probe(&self, uri: &Url, ctx: &ProbeContext) -> Result<FileProbe> {
         debug!(uri = %uri, "probing HTTP resource");
 
-        let mut request = self.client.head(uri.as_str()).timeout(ctx.timeout);
+        let headers = Self::build_headers(ctx);
+        let creds = ctx.auth.as_ref().cloned().or_else(|| {
+            self.netrc_credentials_for(uri).map(|(username, password)| Credentials {
+                username,
+                password,
+            })
+        });
 
-        if let Some(ref creds) = ctx.auth {
-            request = request.basic_auth(&creds.username, Some(&creds.password));
-        } else if let Some((username, password)) = self.netrc_credentials_for(uri) {
-            request = request.basic_auth(username, Some(password));
-        }
-
-        request = request.headers(Self::build_headers(ctx));
-
-        let resp = request
-            .send()
+        let resp = self
+            .send_with_optional_digest(
+                uri,
+                creds.as_ref(),
+                DigestHttpMethod::HEAD,
+                |digest_header| {
+                    let mut request = self.client.head(uri.as_str()).timeout(ctx.timeout);
+                    request = request.headers(headers.clone());
+                    if let Some(header) = digest_header {
+                        request = request.header(reqwest::header::AUTHORIZATION, header);
+                    } else if let Some(ref creds) = creds {
+                        request = request.basic_auth(&creds.username, Some(&creds.password));
+                    }
+                    request
+                },
+            )
             .await
             .context("HTTP HEAD request failed")?;
 
@@ -267,31 +381,47 @@ impl ByteSourceBackend for HttpBackend {
     async fn open_from(&self, uri: &Url, offset: u64, ctx: &OpenContext) -> Result<ByteStream> {
         debug!(uri = %uri, offset, "opening HTTP stream");
 
-        let mut request = self.client.get(uri.as_str()).timeout(ctx.timeout);
+        let creds = ctx.auth.as_ref().cloned().or_else(|| {
+            self.netrc_credentials_for(uri).map(|(username, password)| Credentials {
+                username,
+                password,
+            })
+        });
 
-        if let Some(ref creds) = ctx.auth {
-            request = request.basic_auth(&creds.username, Some(&creds.password));
-        } else if let Some((username, password)) = self.netrc_credentials_for(uri) {
-            request = request.basic_auth(username, Some(password));
-        }
+        let resp = self
+            .send_with_optional_digest(
+                uri,
+                creds.as_ref(),
+                DigestHttpMethod::GET,
+                |digest_header| {
+                    let mut request = self.client.get(uri.as_str()).timeout(ctx.timeout);
 
-        for (name, value) in &ctx.headers {
-            request = request.header(name, value);
-        }
+                    for (name, value) in &ctx.headers {
+                        request = request.header(name, value);
+                    }
 
-        if offset > 0 {
-            request = request.header(RANGE, format!("bytes={offset}-"));
-            // Send If-Range with ETag for safe resume — if the resource changed,
-            // the server will send the full resource instead of a 206 partial.
-            if let Some(ref etag) = ctx.etag {
-                request = request.header("If-Range", etag.as_str());
-            }
-        }
+                    if offset > 0 {
+                        request = request.header(RANGE, format!("bytes={offset}-"));
+                        if let Some(ref etag) = ctx.etag {
+                            request = request.header("If-Range", etag.as_str());
+                        }
+                    }
 
-        let resp = request
-            .send()
+                    if let Some(header) = digest_header {
+                        request = request.header(reqwest::header::AUTHORIZATION, header);
+                    } else if let Some(ref creds) = creds {
+                        request = request.basic_auth(&creds.username, Some(&creds.password));
+                    }
+
+                    request
+                },
+            )
             .await
-            .context("HTTP GET request failed")?
+            .context("HTTP GET request failed")?;
+        if resp.status() == StatusCode::NOT_FOUND {
+            return Err(anyhow::anyhow!("http status 404 not found"));
+        }
+        let resp = resp
             .error_for_status()
             .context("HTTP GET returned error status")?;
 
@@ -318,6 +448,20 @@ impl ByteSourceBackend for HttpBackend {
 
     fn name(&self) -> &'static str {
         "http"
+    }
+}
+
+impl Drop for HttpBackend {
+    fn drop(&mut self) {
+        let Some(ref path) = self.save_cookie_file else {
+            return;
+        };
+        let Some(ref store) = self.cookie_store else {
+            return;
+        };
+        if let Err(error) = crate::cookies::save_cookie_store(path, store) {
+            tracing::warn!(error = %error, path = %path.display(), "failed to save cookies");
+        }
     }
 }
 

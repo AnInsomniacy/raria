@@ -6,12 +6,13 @@ use std::sync::Arc;
 
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn create_backend(uri: &str) -> Result<Arc<dyn ByteSourceBackend>> {
-    create_backend_with_config(uri, None, None)
+    create_backend_with_config(uri, None, None, None)
 }
 
 pub(crate) fn create_backend_with_config(
     uri: &str,
     http_config: Option<&raria_http::backend::HttpBackendConfig>,
+    ftp_config: Option<&raria_ftp::backend::FtpBackendConfig>,
     sftp_config: Option<&raria_sftp::backend::SftpBackendConfig>,
 ) -> Result<Arc<dyn ByteSourceBackend>> {
     use raria_ftp::backend::FtpBackend;
@@ -28,7 +29,13 @@ pub(crate) fn create_backend_with_config(
                 Ok(Arc::new(HttpBackend::new()?))
             }
         }
-        JobSource::Ftp | JobSource::Ftps => Ok(Arc::new(FtpBackend::new())),
+        JobSource::Ftp | JobSource::Ftps => {
+            if let Some(config) = ftp_config {
+                Ok(Arc::new(FtpBackend::with_config(config.clone())))
+            } else {
+                Ok(Arc::new(FtpBackend::new()))
+            }
+        }
         JobSource::Sftp => {
             if let Some(config) = sftp_config {
                 Ok(Arc::new(SftpBackend::with_config(config.clone())))

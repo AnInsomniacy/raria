@@ -51,6 +51,12 @@ pub struct RpcOptions {
     pub http_passwd: Option<String>,
     #[serde(default, rename = "select-file")]
     pub select_file: Option<String>,
+    #[serde(default, rename = "bt-tracker")]
+    pub bt_tracker: Option<String>,
+    #[serde(default, rename = "seed-ratio")]
+    pub seed_ratio: Option<String>,
+    #[serde(default, rename = "seed-time")]
+    pub seed_time: Option<String>,
 }
 
 /// JSON-RPC interface definition — full aria2 parity.
@@ -264,6 +270,21 @@ impl Aria2RpcServer for RpcHandler {
                     job.options.bt_selected_files = Some(files);
                 }
             }
+            if let Some(ref trackers) = opts.bt_tracker {
+                if let Ok(trackers) = parse_bt_tracker_spec(trackers) {
+                    job.options.bt_trackers = Some(trackers);
+                }
+            }
+            if let Some(ref ratio) = opts.seed_ratio {
+                if let Ok(ratio) = ratio.parse::<f64>() {
+                    job.options.seed_ratio = Some(ratio);
+                }
+            }
+            if let Some(ref minutes) = opts.seed_time {
+                if let Ok(minutes) = minutes.parse::<u64>() {
+                    job.options.seed_time = Some(minutes);
+                }
+            }
         });
 
         debug!(gid = %handle.gid, "RPC addUri succeeded");
@@ -296,12 +317,36 @@ impl Aria2RpcServer for RpcHandler {
         let out_path = self.engine.config.dir.join("bt_download");
         let mut job = Job::new_bt(vec![torrent_uri], out_path);
         if let Some(select_file) = options
-            .and_then(|opts| opts.select_file)
-            .map(|spec| parse_select_file_spec(&spec))
+            .as_ref()
+            .and_then(|opts| opts.select_file.as_deref())
+            .map(parse_select_file_spec)
             .transpose()
             .map_err(|e| rpc_err(1, &e.to_string()))?
         {
             job.options.bt_selected_files = Some(select_file);
+        }
+        if let Some(trackers) = options
+            .as_ref()
+            .and_then(|opts| opts.bt_tracker.as_deref())
+            .map(parse_bt_tracker_spec)
+            .transpose()
+            .map_err(|e| rpc_err(1, &e.to_string()))?
+        {
+            job.options.bt_trackers = Some(trackers);
+        }
+        if let Some(seed_ratio) = options
+            .as_ref()
+            .and_then(|opts| opts.seed_ratio.as_deref())
+            .and_then(|v| v.parse::<f64>().ok())
+        {
+            job.options.seed_ratio = Some(seed_ratio);
+        }
+        if let Some(seed_time) = options
+            .as_ref()
+            .and_then(|opts| opts.seed_time.as_deref())
+            .and_then(|v| v.parse::<u64>().ok())
+        {
+            job.options.seed_time = Some(seed_time);
         }
         let actual_gid = job.gid;
 
@@ -325,6 +370,7 @@ impl Aria2RpcServer for RpcHandler {
     ) -> RpcResult<Vec<String>> {
         use base64::Engine as Base64Engine;
         use raria_core::engine::AddUriSpec;
+        use raria_metalink::normalizer::{NormalizeOptions, normalize};
         use raria_metalink::parser::parse_metalink;
 
         // Decode base64 → XML bytes.
@@ -343,29 +389,36 @@ impl Aria2RpcServer for RpcHandler {
             return Err(rpc_err(1, "metalink contains no files"));
         }
 
+        let seeds = normalize(&metalink, &NormalizeOptions::default());
+
         // Create a job for each file in the metalink.
         let mut gids = Vec::new();
-        for file in &metalink.files {
-            let uris: Vec<String> = file.urls.iter().map(|u| u.url.clone()).collect();
-            if uris.is_empty() {
+        for seed in seeds {
+            if seed.uris.is_empty() {
                 continue;
             }
 
             let spec = AddUriSpec {
-                uris: uris.clone(),
-                filename: Some(file.name.clone()),
+                uris: seed.uris.clone(),
+                filename: Some(seed.filename.clone()),
                 dir: self.engine.config.dir.clone(),
                 connections: 16,
             };
 
             match self.engine.add_uri(&spec) {
                 Ok(handle) => {
+                    if let Some(checksum) = seed.checksum.as_ref() {
+                        let checksum_spec = format!("{}={}", checksum.algo, checksum.value);
+                        self.engine.registry.update(handle.gid, |job| {
+                            job.options.checksum = Some(checksum_spec.clone());
+                        });
+                    }
                     let gid_str = format!("{:016x}", handle.gid.as_raw());
-                    debug!(gid = %gid_str, name = %file.name, "metalink: added job");
+                    debug!(gid = %gid_str, name = %seed.filename, "metalink: added job");
                     gids.push(gid_str);
                 }
                 Err(e) => {
-                    warn!(name = %file.name, error = %e, "metalink: failed to add job");
+                    warn!(name = %seed.filename, error = %e, "metalink: failed to add job");
                 }
             }
         }
@@ -461,9 +514,34 @@ impl Aria2RpcServer for RpcHandler {
         Ok(files)
     }
 
-    async fn get_peers(&self, _gid: String) -> RpcResult<Vec<serde_json::Value>> {
-        // BT peers — not applicable for HTTP/FTP/SFTP downloads.
-        Ok(vec![])
+    async fn get_peers(&self, gid: String) -> RpcResult<Vec<serde_json::Value>> {
+        let parsed_gid = parse_gid(&gid)?;
+        let job = self.engine.registry.get(parsed_gid).ok_or_else(|| gid_not_found(&gid))?;
+        if job.kind != raria_core::job::JobKind::Bt {
+            return Ok(vec![]);
+        }
+
+        let peers = job
+            .bt_peers
+            .as_ref()
+            .map(|peers| {
+                peers
+                    .iter()
+                    .map(|peer| serde_json::json!({
+                        "peerId": "",
+                        "ip": peer.ip,
+                        "port": peer.port.to_string(),
+                        "bitfield": "",
+                        "amChoking": "false",
+                        "peerChoking": "false",
+                        "downloadSpeed": peer.download_speed.to_string(),
+                        "uploadSpeed": peer.upload_speed.to_string(),
+                        "seeder": if peer.seeder { "true" } else { "false" },
+                    }))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        Ok(peers)
     }
 
     async fn get_servers(&self, gid: String) -> RpcResult<Vec<serde_json::Value>> {
@@ -542,6 +620,26 @@ impl Aria2RpcServer for RpcHandler {
     ) -> RpcResult<String> {
         let parsed_gid = parse_gid(&gid)?;
         let _job = self.engine.registry.get(parsed_gid).ok_or_else(|| gid_not_found(&gid))?;
+        let select_file = options
+            .get("select-file")
+            .and_then(|v| v.as_str())
+            .map(parse_select_file_spec)
+            .transpose()
+            .map_err(|e| rpc_err(1, &e.to_string()))?;
+        let headers = options
+            .get("header")
+            .and_then(|v| v.as_array())
+            .map(|headers| {
+                headers
+                    .iter()
+                    .filter_map(|value| value.as_str())
+                    .filter_map(|header| {
+                        header
+                            .split_once(':')
+                            .map(|(key, value)| (key.trim().to_string(), value.trim().to_string()))
+                    })
+                    .collect::<Vec<_>>()
+            });
 
         // Apply supported per-job options.
         self.engine.registry.update(parsed_gid, |job| {
@@ -569,6 +667,32 @@ impl Aria2RpcServer for RpcHandler {
                     debug!(%gid, n, "changed split");
                 }
             }
+            if let Some(trackers) = options.get("bt-tracker").and_then(|v| v.as_str()) {
+                if let Ok(parsed) = parse_bt_tracker_spec(trackers) {
+                    job.options.bt_trackers = Some(parsed);
+                    debug!(%gid, "changed bt-tracker");
+                }
+            }
+            if let Some(headers) = headers.clone() {
+                job.options.headers = headers;
+                debug!(%gid, "changed header");
+            }
+            if let Some(files) = select_file.clone() {
+                job.options.bt_selected_files = Some(files);
+                debug!(%gid, "changed select-file");
+            }
+            if let Some(ratio) = options.get("seed-ratio").and_then(|v| v.as_str()) {
+                if let Ok(parsed) = ratio.parse::<f64>() {
+                    job.options.seed_ratio = Some(parsed);
+                    debug!(%gid, ratio = parsed, "changed seed-ratio");
+                }
+            }
+            if let Some(minutes) = options.get("seed-time").and_then(|v| v.as_str()) {
+                if let Ok(parsed) = minutes.parse::<u64>() {
+                    job.options.seed_time = Some(parsed);
+                    debug!(%gid, minutes = parsed, "changed seed-time");
+                }
+            }
         });
         Ok("OK".into())
     }
@@ -593,6 +717,15 @@ impl Aria2RpcServer for RpcHandler {
             "http-passwd": job.options.http_passwd.as_deref().unwrap_or(""),
             "select-file": job.options.bt_selected_files.as_ref()
                 .map(|files| files.iter().map(|idx| (idx + 1).to_string()).collect::<Vec<_>>().join(","))
+                .unwrap_or_default(),
+            "bt-tracker": job.options.bt_trackers.as_ref()
+                .map(|trackers| trackers.join(","))
+                .unwrap_or_default(),
+            "seed-ratio": job.options.seed_ratio
+                .map(|ratio| ratio.to_string())
+                .unwrap_or_default(),
+            "seed-time": job.options.seed_time
+                .map(|minutes| minutes.to_string())
                 .unwrap_or_default(),
         }))
     }
@@ -721,6 +854,17 @@ fn parse_select_file_spec(spec: &str) -> anyhow::Result<Vec<usize>> {
     Ok(result)
 }
 
+fn parse_bt_tracker_spec(spec: &str) -> anyhow::Result<Vec<String>> {
+    let result = spec
+        .split(',')
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+        .map(ToOwned::to_owned)
+        .collect::<Vec<_>>();
+    anyhow::ensure!(!result.is_empty(), "bt-tracker must contain at least one tracker");
+    Ok(result)
+}
+
 fn jobs_to_json(jobs: &[raria_core::job::Job]) -> RpcResult<Vec<serde_json::Value>> {
     jobs.iter()
         .map(|j| {
@@ -748,7 +892,7 @@ fn apply_offset_limit(jobs: &mut Vec<raria_core::job::Job>, offset: i64, num: u3
 mod tests {
     use super::*;
     use raria_core::config::GlobalConfig;
-    use raria_core::job::{BtFile, Job};
+    use raria_core::job::{BtFile, BtPeer, Job};
     use std::path::PathBuf;
 
     fn test_engine() -> Arc<Engine> {
@@ -1062,6 +1206,37 @@ mod tests {
 
         let peers = handler.get_peers(gid_str).await.unwrap();
         assert!(peers.is_empty());
+    }
+
+    #[tokio::test]
+    async fn get_peers_returns_bt_peer_entries_when_cached() {
+        let engine = test_engine();
+        let handler = RpcHandler::new(Arc::clone(&engine));
+
+        let gid_str = handler
+            .add_uri(vec!["magnet:?xt=urn:btih:abc123".into()], None)
+            .await
+            .unwrap();
+
+        let gid = parse_gid(&gid_str).unwrap();
+        engine.registry.update(gid, |job| {
+            job.bt_peers = Some(vec![BtPeer {
+                addr: "127.0.0.1:6881".into(),
+                ip: "127.0.0.1".into(),
+                port: 6881,
+                download_speed: 512,
+                upload_speed: 128,
+                seeder: true,
+            }]);
+        });
+
+        let peers = handler.get_peers(gid_str).await.unwrap();
+        assert_eq!(peers.len(), 1);
+        assert_eq!(peers[0]["ip"], "127.0.0.1");
+        assert_eq!(peers[0]["port"], "6881");
+        assert_eq!(peers[0]["downloadSpeed"], "512");
+        assert_eq!(peers[0]["uploadSpeed"], "128");
+        assert_eq!(peers[0]["seeder"], "true");
     }
 
     #[tokio::test]

@@ -2,10 +2,11 @@ use anyhow::{Context, Result};
 use base64::Engine as Base64Engine;
 use raria_bt::service::{BtService, BtSource};
 use raria_core::engine::Engine;
-use raria_core::job::BtFile;
+use raria_core::job::{BtFile, BtPeer};
 use raria_core::job::Gid;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
@@ -18,6 +19,20 @@ fn map_bt_files(files: Vec<raria_bt::service::BtFileInfo>) -> Vec<BtFile> {
             length: file.size,
             completed_length: file.completed_length,
             selected: file.selected,
+        })
+        .collect()
+}
+
+fn map_bt_peers(peers: Vec<raria_bt::service::BtPeerInfo>) -> Vec<BtPeer> {
+    peers
+        .into_iter()
+        .map(|peer| BtPeer {
+            addr: peer.addr,
+            ip: peer.ip,
+            port: peer.port,
+            download_speed: peer.download_speed,
+            upload_speed: peer.upload_speed,
+            seeder: peer.seeder,
         })
         .collect()
 }
@@ -49,11 +64,17 @@ pub(crate) async fn run_bt_download(
 
     let bt_service = BtService::new(download_dir).context("failed to create BtService")?;
     let handle = bt_service
-        .add(source, gid, job.options.bt_selected_files.clone())
+        .add(
+            source,
+            gid,
+            job.options.bt_selected_files.clone(),
+            job.options.bt_trackers.clone(),
+        )
         .await
         .context("failed to add torrent to BtService")?;
 
     info!(%gid, torrent_id = handle.torrent_id, "BT download started");
+    let mut seeding_started_at: Option<Instant> = None;
 
     loop {
         tokio::select! {
@@ -67,6 +88,7 @@ pub(crate) async fn run_bt_download(
                 match bt_service.status(&handle).await {
                     Ok(status) => {
                         let bt_files = bt_service.file_list(&handle).await.ok().map(map_bt_files);
+                        let bt_peers = bt_service.peer_list(&handle).await.ok().map(map_bt_peers);
                         engine.registry.update(gid, |job| {
                             job.downloaded = status.downloaded;
                             job.download_speed = status.download_speed;
@@ -77,12 +99,33 @@ pub(crate) async fn run_bt_download(
                             if bt_files.is_some() {
                                 job.bt_files = bt_files.clone();
                             }
+                            if bt_peers.is_some() {
+                                job.bt_peers = bt_peers.clone();
+                            }
                         });
 
                         if status.is_complete {
-                            info!(%gid, "BT download complete");
-                            let _ = engine.complete_job(gid);
-                            return Ok(());
+                            let seed_ratio = job.options.seed_ratio;
+                            let seed_time = job.options.seed_time;
+                            if seed_ratio.is_none() && seed_time.is_none() {
+                                info!(%gid, "BT download complete");
+                                let _ = engine.complete_job(gid);
+                                return Ok(());
+                            }
+
+                            let started = seeding_started_at.get_or_insert_with(Instant::now);
+                            if should_stop_seeding(
+                                status.downloaded,
+                                status.uploaded,
+                                seed_ratio,
+                                seed_time,
+                                *started,
+                                Instant::now(),
+                            ) {
+                                info!(%gid, "BT seeding thresholds reached");
+                                let _ = engine.complete_job(gid);
+                                return Ok(());
+                            }
                         }
                     }
                     Err(e) => {
@@ -96,11 +139,33 @@ pub(crate) async fn run_bt_download(
     }
 }
 
+fn should_stop_seeding(
+    downloaded_bytes: u64,
+    uploaded_bytes: u64,
+    seed_ratio: Option<f64>,
+    seed_time_minutes: Option<u64>,
+    seeding_started_at: Instant,
+    now: Instant,
+) -> bool {
+    if let Some(ratio) = seed_ratio {
+        if downloaded_bytes > 0 && (uploaded_bytes as f64 / downloaded_bytes as f64) >= ratio {
+            return true;
+        }
+    }
+    if let Some(minutes) = seed_time_minutes {
+        if now.duration_since(seeding_started_at) >= Duration::from_secs(minutes.saturating_mul(60)) {
+            return true;
+        }
+    }
+    false
+}
+
 #[cfg(test)]
 mod tests {
-    use super::map_bt_files;
-    use raria_bt::service::BtFileInfo;
+    use super::{map_bt_files, map_bt_peers, should_stop_seeding};
+    use raria_bt::service::{BtFileInfo, BtPeerInfo};
     use std::path::PathBuf;
+    use std::time::{Duration, Instant};
 
     #[test]
     fn bt_file_info_maps_to_core_bt_file() {
@@ -119,5 +184,64 @@ mod tests {
         assert_eq!(mapped[0].length, 1234);
         assert_eq!(mapped[0].completed_length, 321);
         assert!(mapped[0].selected);
+    }
+
+    #[test]
+    fn bt_peer_info_maps_to_core_bt_peer() {
+        let peers = vec![BtPeerInfo {
+            addr: "127.0.0.1:6881".into(),
+            ip: "127.0.0.1".into(),
+            port: 6881,
+            download_speed: 123,
+            upload_speed: 0,
+            seeder: true,
+        }];
+
+        let mapped = map_bt_peers(peers);
+        assert_eq!(mapped.len(), 1);
+        assert_eq!(mapped[0].addr, "127.0.0.1:6881");
+        assert_eq!(mapped[0].ip, "127.0.0.1");
+        assert_eq!(mapped[0].port, 6881);
+        assert_eq!(mapped[0].download_speed, 123);
+        assert!(mapped[0].seeder);
+    }
+
+    #[test]
+    fn seeding_stops_when_ratio_reached() {
+        let started = Instant::now();
+        assert!(should_stop_seeding(
+            100,
+            150,
+            Some(1.5),
+            None,
+            started,
+            started + Duration::from_secs(1),
+        ));
+    }
+
+    #[test]
+    fn seeding_stops_when_time_reached() {
+        let started = Instant::now();
+        assert!(should_stop_seeding(
+            100,
+            10,
+            None,
+            Some(1),
+            started,
+            started + Duration::from_secs(60),
+        ));
+    }
+
+    #[test]
+    fn seeding_continues_below_thresholds() {
+        let started = Instant::now();
+        assert!(!should_stop_seeding(
+            100,
+            20,
+            Some(1.0),
+            Some(10),
+            started,
+            started + Duration::from_secs(30),
+        ));
     }
 }
