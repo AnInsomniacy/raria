@@ -113,14 +113,14 @@ struct BtSeedFixture {
     tracker_url: String,
     torrent_b64: String,
     tracker: MockServer,
+    seed_port: u16,
     _seed_root: tempfile::TempDir,
     _seed_session: std::sync::Arc<RqbitSession>,
 }
 
-async fn spawn_bt_seed_fixture() -> BtSeedFixture {
+async fn spawn_bt_seed_fixture_with_payload(payload: Vec<u8>) -> BtSeedFixture {
     let seed_root = tempdir().expect("seed tempdir");
     let seed_file = seed_root.path().join("seed.bin");
-    let payload = b"raria-bt-seed-payload".to_vec();
     std::fs::write(&seed_file, &payload).expect("write seed payload");
 
     let torrent = create_torrent(
@@ -184,9 +184,14 @@ async fn spawn_bt_seed_fixture() -> BtSeedFixture {
             torrent.as_bytes().expect("torrent bytes"),
         ),
         tracker,
+        seed_port: peer_port,
         _seed_root: seed_root,
         _seed_session: session,
     }
+}
+
+async fn spawn_bt_seed_fixture() -> BtSeedFixture {
+    spawn_bt_seed_fixture_with_payload(b"raria-bt-seed-payload".to_vec()).await
 }
 
 #[tokio::test]
@@ -216,6 +221,7 @@ async fn daemon_bt_tracker_option_announces_to_tracker_on_real_daemon_path() {
         .await
         .expect("parse addTorrent response");
     let gid = add_resp["result"].as_str().expect("gid").to_string();
+    let expected_port = fixture.seed_port.to_string();
 
     let deadline = Instant::now() + Duration::from_secs(30);
     loop {
@@ -252,6 +258,115 @@ async fn daemon_bt_tracker_option_announces_to_tracker_on_real_daemon_path() {
             );
         }
         tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+
+    let shutdown_resp: serde_json::Value = client
+        .post(format!("http://127.0.0.1:{rpc_port}"))
+        .json(&serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 4,
+            "method": "aria2.shutdown",
+            "params": [],
+        }))
+        .send()
+        .await
+        .expect("send shutdown")
+        .json()
+        .await
+        .expect("parse shutdown response");
+    assert_eq!(shutdown_resp["result"], "OK");
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        match child.child.try_wait() {
+            Ok(Some(status)) => {
+                assert!(status.success(), "daemon exited unsuccessfully: {status}");
+                break;
+            }
+            Ok(None) => {
+                assert!(Instant::now() < deadline, "daemon did not exit after shutdown RPC");
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            Err(error) => panic!("failed waiting for daemon exit: {error}"),
+        }
+    }
+}
+
+#[tokio::test]
+async fn daemon_get_peers_exposes_live_bt_peer_details_over_rpc() {
+    let fixture = spawn_bt_seed_fixture_with_payload((0..(8 * 1024 * 1024)).map(|idx| (idx % 251) as u8).collect()).await;
+    let temp = tempdir().expect("tempdir");
+    let session_file = temp.path().join("bt-get-peers.session.redb");
+    let (mut child, rpc_port) = spawn_ready_daemon(temp.path(), &session_file).await;
+    let client = reqwest::Client::new();
+
+    let add_resp: serde_json::Value = client
+        .post(format!("http://127.0.0.1:{rpc_port}"))
+        .json(&serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "aria2.addTorrent",
+            "params": [
+                fixture.torrent_b64,
+                [],
+                { "bt-tracker": fixture.tracker_url }
+            ],
+        }))
+        .send()
+        .await
+        .expect("send addTorrent")
+        .json()
+        .await
+        .expect("parse addTorrent response");
+    let gid = add_resp["result"].as_str().expect("gid").to_string();
+
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        let peers_resp: serde_json::Value = client
+            .post(format!("http://127.0.0.1:{rpc_port}"))
+            .json(&serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "aria2.getPeers",
+                "params": [gid.clone()],
+            }))
+            .send()
+            .await
+            .expect("send getPeers")
+            .json()
+            .await
+            .expect("parse getPeers response");
+
+        let status_resp: serde_json::Value = client
+            .post(format!("http://127.0.0.1:{rpc_port}"))
+            .json(&serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 3,
+                "method": "aria2.tellStatus",
+                "params": [gid.clone()],
+            }))
+            .send()
+            .await
+            .expect("send tellStatus")
+            .json()
+            .await
+            .expect("parse tellStatus response");
+
+        if let Some(first_peer) = peers_resp["result"].as_array().and_then(|peers| peers.first()) {
+            assert_eq!(first_peer["ip"].as_str(), Some("127.0.0.1"));
+            assert_eq!(first_peer["port"].as_str(), Some(expected_port.as_str()));
+            assert!(first_peer["downloadSpeed"].as_str().is_some(), "downloadSpeed should be a string: {peers_resp}");
+            assert!(first_peer["uploadSpeed"].as_str().is_some(), "uploadSpeed should be a string: {peers_resp}");
+            assert!(first_peer["seeder"].as_str().is_some(), "seeder should be a string: {peers_resp}");
+            break;
+        }
+
+        assert!(
+            Instant::now() < deadline,
+            "BT daemon never surfaced peer details over aria2.getPeers before timeout\nstatus: {status_resp}\npeers: {peers_resp}"
+        );
+
+        tokio::time::sleep(Duration::from_millis(100)).await;
     }
 
     let shutdown_resp: serde_json::Value = client
