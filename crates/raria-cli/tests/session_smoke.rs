@@ -871,32 +871,84 @@ async fn daemon_rejects_checksum_mismatch_before_marking_job_complete() {
     .await;
     let gid = add_resp["result"].as_str().expect("gid").to_string();
 
-    let deadline = Instant::now() + Duration::from_secs(60);
-    loop {
-        let status = rpc_call(rpc_port, "aria2.tellStatus", serde_json::json!([gid])).await;
-        let state = status["result"]["status"].as_str().expect("status");
-        if state == "complete" {
-            break;
-        }
-
-        assert!(
-            Instant::now() < deadline,
-            "daemon never completed conditional-get skip path: {status}"
-        );
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
-
-    assert_eq!(
-        std::fs::read(&cached).expect("read cached file"),
-        b"existing"
+    let status_resp = wait_for_terminal_status(rpc_port, &gid).await;
+    assert_eq!(status_resp["result"]["status"], "error");
+    let error_message = status_resp["result"]["errorMessage"]
+        .as_str()
+        .expect("error message");
+    assert!(
+        error_message.contains("checksum"),
+        "checksum mismatch should surface in daemon status: {status_resp}"
     );
 
-    let requests = server.received_requests().await.expect("received requests");
-    let get_count = requests
-        .iter()
-        .filter(|req| req.method.as_str() == "GET" && req.url.path() == "/cached.bin")
-        .count();
-    assert_eq!(get_count, 0, "daemon should skip GET after 304 probe");
+    let output_path = temp.path().join("checksum.bin");
+    assert_eq!(
+        std::fs::read(&output_path).expect("read checksum output file"),
+        b"good"
+    );
+
+    graceful_shutdown(rpc_port, &mut child).await;
+}
+
+#[tokio::test]
+async fn daemon_rejects_metalink_piece_checksum_mismatch_before_marking_job_complete() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("HEAD"))
+        .and(path("/piece.bin"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-length", "8")
+                .insert_header("accept-ranges", "bytes"),
+        )
+        .mount(&server)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path("/piece.bin"))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(b"abcdefgh"))
+        .mount(&server)
+        .await;
+
+    let temp = tempdir().expect("tempdir");
+    let session_file = temp.path().join("piece-checksum.session.redb");
+    let (mut child, rpc_port) = spawn_ready_daemon(temp.path(), &session_file, None).await;
+
+    let metalink_xml = format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<metalink xmlns="urn:ietf:params:xml:ns:metalink">
+  <file name="piece.bin">
+    <size>8</size>
+    <pieces type="sha-256" length="4">
+      <hash>{}</hash>
+      <hash>{}</hash>
+    </pieces>
+    <url priority="1">{}/piece.bin</url>
+  </file>
+</metalink>"#,
+        "00".repeat(32),
+        "e5e088a0b66163a0a26a5e053d2a4496dc16ab6e0e3dd1adf2d16aa84a078c9d",
+        server.uri()
+    );
+
+    use base64::Engine as Base64Engine;
+    let encoded = base64::engine::general_purpose::STANDARD.encode(metalink_xml);
+
+    let add_resp = rpc_call(rpc_port, "aria2.addMetalink", serde_json::json!([encoded])).await;
+    let gid = add_resp["result"].as_array().unwrap()[0]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let status_resp = wait_for_terminal_status(rpc_port, &gid).await;
+    assert_eq!(status_resp["result"]["status"], "error");
+    let error_message = status_resp["result"]["errorMessage"]
+        .as_str()
+        .expect("error message");
+    assert!(
+        error_message.contains("piece checksum"),
+        "piece checksum mismatch should surface in daemon status: {status_resp}"
+    );
 
     graceful_shutdown(rpc_port, &mut child).await;
 }
@@ -1211,6 +1263,74 @@ async fn daemon_cli_headers_apply_to_input_file_downloads() {
     assert_eq!(
         std::fs::read(temp.path().join("daemon-header.bin")).expect("read downloaded file"),
         b"done"
+    );
+
+    graceful_shutdown(rpc_port, &mut child).await;
+}
+
+#[tokio::test]
+async fn daemon_input_file_per_uri_headers_apply_to_downloads() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("HEAD"))
+        .and(path("/input-header.bin"))
+        .and(wiremock::matchers::header("x-input-header", "from-input"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-length", "5")
+                .insert_header("accept-ranges", "bytes"),
+        )
+        .mount(&server)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path("/input-header.bin"))
+        .and(wiremock::matchers::header("x-input-header", "from-input"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_delay(Duration::from_millis(200))
+                .set_body_bytes(b"input"),
+        )
+        .mount(&server)
+        .await;
+
+    let temp = tempdir().expect("tempdir");
+    let session_file = temp.path().join("input-header.session.redb");
+    let input_file = temp.path().join("uris.txt");
+    std::fs::write(
+        &input_file,
+        format!(
+            "{}/input-header.bin\n  header=X-Input-Header: from-input\n",
+            server.uri()
+        ),
+    )
+    .unwrap();
+
+    let (mut child, rpc_port) =
+        spawn_ready_daemon(temp.path(), &session_file, Some(&input_file)).await;
+
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        let stopped = rpc_call(rpc_port, "aria2.tellStopped", serde_json::json!([0, 10])).await;
+        if stopped["result"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|job| job["status"] == "complete")
+        {
+            break;
+        }
+
+        assert!(
+            Instant::now() < deadline,
+            "daemon input-file per-uri header job did not complete in time"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+
+    assert_eq!(
+        std::fs::read(temp.path().join("input-header.bin")).expect("read downloaded file"),
+        b"input"
     );
 
     graceful_shutdown(rpc_port, &mut child).await;

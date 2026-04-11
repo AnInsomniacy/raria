@@ -212,4 +212,41 @@ mod tests {
 
         cancel.cancel();
     }
+
+    #[tokio::test]
+    async fn add_metalink_preserves_expected_size_and_piece_checksums() {
+        let (engine, url, cancel) = spawn_server().await;
+
+        let metalink_xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<metalink xmlns="urn:ietf:params:xml:ns:metalink">
+  <file name="piece.bin">
+    <size>2048</size>
+    <pieces type="sha-256" length="1024">
+      <hash>AA</hash>
+      <hash>BB</hash>
+    </pieces>
+    <url priority="1">https://mirror1.com/piece.bin</url>
+  </file>
+</metalink>"#;
+
+        use base64::Engine as Base64Engine;
+        let encoded = base64::engine::general_purpose::STANDARD.encode(metalink_xml);
+
+        let resp = rpc_call(&url, "aria2.addMetalink", serde_json::json!([encoded])).await;
+        assert!(
+            resp.get("error").is_none(),
+            "addMetalink should succeed: {resp}"
+        );
+
+        let gid_str = resp["result"].as_array().unwrap()[0].as_str().unwrap();
+        let gid = raria_core::job::Gid::from_raw(u64::from_str_radix(gid_str, 16).unwrap());
+        let job = engine.registry.get(gid).unwrap();
+        assert_eq!(job.total_size, Some(2048));
+        let piece_checksum = job.piece_checksum.as_ref().expect("piece checksum");
+        assert_eq!(piece_checksum.algo, "sha-256");
+        assert_eq!(piece_checksum.length, 1024);
+        assert_eq!(piece_checksum.hashes, vec!["aa", "bb"]);
+
+        cancel.cancel();
+    }
 }

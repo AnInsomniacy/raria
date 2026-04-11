@@ -171,6 +171,17 @@ pub struct BtSnapshot {
     pub download_complete_emitted: bool,
 }
 
+/// Chunk-level checksum metadata cached on a range job.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PieceChecksum {
+    /// Hash algorithm name.
+    pub algo: String,
+    /// Chunk length in bytes.
+    pub length: u64,
+    /// Per-piece hashes in file order.
+    pub hashes: Vec<String>,
+}
+
 /// A download job with all metadata needed for scheduling and persistence.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Job {
@@ -211,6 +222,9 @@ pub struct Job {
     /// BT metadata snapshot cached for RPC projection when available.
     #[serde(default)]
     pub bt: Option<BtSnapshot>,
+    /// Chunk-level checksum metadata carried from Metalink when available.
+    #[serde(default)]
+    pub piece_checksum: Option<PieceChecksum>,
 }
 
 impl Job {
@@ -242,6 +256,7 @@ impl Job {
             bt_files: None,
             bt_peers: None,
             bt: None,
+            piece_checksum: None,
         }
     }
 
@@ -269,6 +284,7 @@ impl Job {
             bt_files: None,
             bt_peers: None,
             bt: None,
+            piece_checksum: None,
         }
     }
 
@@ -552,6 +568,30 @@ mod tests {
         let bt = recovered.bt.expect("bt snapshot should roundtrip");
         assert_eq!(bt.info_hash.as_deref(), Some("abcdef1234567890"));
         assert_eq!(bt.uploaded, Some(2048));
+    }
+
+    #[test]
+    fn job_serde_roundtrips_piece_checksum() {
+        let mut job = Job::new_range(
+            vec!["https://example.com/piece.bin".into()],
+            PathBuf::from("/tmp/downloads/piece.bin"),
+        );
+        job.piece_checksum = Some(PieceChecksum {
+            algo: "sha-256".into(),
+            length: 1024,
+            hashes: vec!["aa".into(), "bb".into()],
+        });
+
+        let json = serde_json::to_string(&job).unwrap();
+        let recovered: Job = serde_json::from_str(&json).unwrap();
+        assert_eq!(
+            recovered.piece_checksum,
+            Some(PieceChecksum {
+                algo: "sha-256".into(),
+                length: 1024,
+                hashes: vec!["aa".into(), "bb".into()],
+            })
+        );
     }
 
     #[test]

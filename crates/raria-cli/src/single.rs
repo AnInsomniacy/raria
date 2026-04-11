@@ -1,5 +1,4 @@
 use crate::backend_factory::create_backend_with_config;
-use crate::conditional_get::build_conditional_get_probe_headers;
 use crate::executor_config::apply_global_retry_policy;
 use crate::util::{build_conditional_get_probe_headers, format_bytes, parse_header_args};
 use anyhow::{Context, Result};

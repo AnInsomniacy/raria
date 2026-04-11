@@ -389,8 +389,8 @@ impl BtService {
             info_hash,
             torrent_name,
             announce_list,
-            piece_length: Some(piece_length),
-            num_pieces: Some(num_pieces),
+            piece_length,
+            num_pieces,
         })
     }
 

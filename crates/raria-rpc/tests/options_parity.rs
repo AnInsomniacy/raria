@@ -447,6 +447,46 @@ mod tests {
         cancel.cancel();
     }
 
+    #[tokio::test]
+    async fn change_option_updates_checksum_and_http_auth_fields() {
+        let (engine, url, cancel) = spawn_server().await;
+        let add_resp = rpc_call(
+            &url,
+            "aria2.addUri",
+            serde_json::json!([["https://example.com/f.zip"]]),
+        )
+        .await;
+        let gid_str = add_resp["result"].as_str().unwrap().to_string();
+
+        let change_resp = rpc_call(
+            &url,
+            "aria2.changeOption",
+            serde_json::json!([
+                gid_str.clone(),
+                {
+                    "checksum": "sha-256=abc123",
+                    "http-user": "rpc-user",
+                    "http-passwd": "rpc-pass"
+                }
+            ]),
+        )
+        .await;
+        assert_eq!(change_resp["result"], "OK");
+
+        let gid = raria_core::job::Gid::from_raw(u64::from_str_radix(&gid_str, 16).unwrap());
+        let job = engine.registry.get(gid).unwrap();
+        assert_eq!(job.options.checksum.as_deref(), Some("sha-256=abc123"));
+        assert_eq!(job.options.http_user.as_deref(), Some("rpc-user"));
+        assert_eq!(job.options.http_passwd.as_deref(), Some("rpc-pass"));
+
+        let option = rpc_call(&url, "aria2.getOption", serde_json::json!([gid_str])).await;
+        assert_eq!(option["result"]["checksum"], "sha-256=abc123");
+        assert_eq!(option["result"]["http-user"], "rpc-user");
+        assert_eq!(option["result"]["http-passwd"], "rpc-pass");
+
+        cancel.cancel();
+    }
+
     // ── getGlobalOption includes proxy/TLS fields ────────────────────
 
     #[tokio::test]
@@ -507,6 +547,23 @@ mod tests {
         .await;
         assert_eq!(resp["result"], "OK");
         assert_eq!(engine.global_rate_limiter.limit_bps(), 0);
+
+        cancel.cancel();
+    }
+
+    #[tokio::test]
+    async fn change_global_option_accepts_max_download_limit_alias() {
+        let (engine, url, cancel) = spawn_server().await;
+        assert_eq!(engine.global_rate_limiter.limit_bps(), 0);
+
+        let resp = rpc_call(
+            &url,
+            "aria2.changeGlobalOption",
+            serde_json::json!([{"max-download-limit": "3072"}]),
+        )
+        .await;
+        assert_eq!(resp["result"], "OK");
+        assert_eq!(engine.global_rate_limiter.limit_bps(), 3072);
 
         cancel.cancel();
     }

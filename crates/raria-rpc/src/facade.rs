@@ -23,6 +23,8 @@ pub struct Aria2Status {
     pub download_speed: String,
     /// Current upload speed in bytes/sec (string, always "0" for non-BT).
     pub upload_speed: String,
+    /// Total uploaded bytes in bytes (string).
+    pub upload_length: String,
     /// Number of active connections (string).
     pub connections: String,
     /// Download directory path.
@@ -35,6 +37,21 @@ pub struct Aria2Status {
     /// Human-readable error description (present only on error).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error_message: Option<String>,
+    /// BT info hash (hex) when known.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub info_hash: Option<String>,
+    /// BT seeder count when known.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub num_seeders: Option<String>,
+    /// Whether this BT job is currently seeding.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub seeder: Option<String>,
+    /// BT piece count when known.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub num_pieces: Option<String>,
+    /// BT piece length when known.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub piece_length: Option<String>,
     /// BitTorrent-specific metadata (present only for BT downloads).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub bittorrent: Option<serde_json::Value>,
@@ -155,6 +172,33 @@ pub fn job_to_aria2_status(job: &Job) -> Aria2Status {
         }]
     };
 
+    let bt = job.bt.as_ref();
+    let announce_list = bt.and_then(|bt| bt.announce_list.clone()).unwrap_or_default();
+    let bittorrent = if job.kind == JobKind::Bt {
+        let mode = if job.bt_files.as_ref().map(|files| files.len() > 1).unwrap_or(false) {
+            "multi"
+        } else {
+            "single"
+        };
+        let mut obj = serde_json::Map::new();
+        obj.insert("mode".into(), serde_json::Value::String(mode.into()));
+        obj.insert(
+            "announceList".into(),
+            serde_json::Value::Array(
+                announce_list
+                    .into_iter()
+                    .map(serde_json::Value::String)
+                    .collect(),
+            ),
+        );
+        if let Some(name) = bt.and_then(|bt| bt.torrent_name.clone()) {
+            obj.insert("info".into(), serde_json::json!({ "name": name }));
+        }
+        Some(serde_json::Value::Object(obj))
+    } else {
+        None
+    };
+
     Aria2Status {
         gid: format!("{}", job.gid),
         status: status_str.into(),
@@ -162,6 +206,10 @@ pub fn job_to_aria2_status(job: &Job) -> Aria2Status {
         completed_length: job.downloaded.to_string(),
         download_speed: job.download_speed.to_string(),
         upload_speed: job.upload_speed.to_string(),
+        upload_length: bt
+            .and_then(|bt| bt.uploaded)
+            .unwrap_or(0)
+            .to_string(),
         connections: job.connections.to_string(),
         dir: job
             .out_path
@@ -171,11 +219,18 @@ pub fn job_to_aria2_status(job: &Job) -> Aria2Status {
         files,
         error_code,
         error_message,
-        bittorrent: if job.kind == JobKind::Bt {
-            Some(serde_json::json!({}))
-        } else {
-            None
-        },
+        info_hash: bt.and_then(|bt| bt.info_hash.clone()),
+        num_seeders: bt.and_then(|bt| bt.num_seeders.map(|value| value.to_string())),
+        seeder: (job.kind == JobKind::Bt).then(|| {
+            if job.status == Status::Seeding {
+                "true".to_string()
+            } else {
+                "false".to_string()
+            }
+        }),
+        num_pieces: bt.and_then(|bt| bt.num_pieces.map(|value| value.to_string())),
+        piece_length: bt.and_then(|bt| bt.piece_length.map(|value| value.to_string())),
+        bittorrent,
     }
 }
 
@@ -259,6 +314,46 @@ mod tests {
         );
         let status = job_to_aria2_status(&job);
         assert!(status.bittorrent.is_some());
+    }
+
+    #[test]
+    fn job_to_aria2_status_bt_projects_real_metadata_fields() {
+        let mut job = Job::new_bt(
+            vec!["magnet:?xt=urn:btih:abc".into()],
+            PathBuf::from("/tmp/downloads/fixture.iso"),
+        );
+        job.status = Status::Seeding;
+        job.total_size = Some(4096);
+        job.downloaded = 2048;
+        job.upload_speed = 64;
+        job.bt = Some(raria_core::job::BtSnapshot {
+            info_hash: Some("0123456789abcdef0123456789abcdef01234567".into()),
+            torrent_name: Some("fixture.iso".into()),
+            announce_list: Some(vec!["http://tracker.example/announce".into()]),
+            uploaded: Some(512),
+            num_seeders: Some(7),
+            piece_length: Some(1024),
+            num_pieces: Some(4),
+            ..Default::default()
+        });
+
+        let status = job_to_aria2_status(&job);
+        assert_eq!(status.upload_length, "512");
+        assert_eq!(
+            status.info_hash.as_deref(),
+            Some("0123456789abcdef0123456789abcdef01234567")
+        );
+        assert_eq!(status.num_seeders.as_deref(), Some("7"));
+        assert_eq!(status.num_pieces.as_deref(), Some("4"));
+        assert_eq!(status.piece_length.as_deref(), Some("1024"));
+        assert_eq!(status.seeder.as_deref(), Some("true"));
+
+        let bittorrent = status.bittorrent.expect("bt metadata");
+        assert_eq!(bittorrent["info"]["name"], "fixture.iso");
+        assert_eq!(
+            bittorrent["announceList"],
+            serde_json::json!(["http://tracker.example/announce"])
+        );
     }
 
     #[test]

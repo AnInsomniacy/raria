@@ -35,6 +35,8 @@ pub struct MetalinkFile {
     pub size: Option<u64>,
     /// Hash values for integrity verification.
     pub hashes: Vec<MetalinkHash>,
+    /// Piece-hash containers for chunk-level verification.
+    pub pieces: Vec<MetalinkPieces>,
     /// Download URLs with priority.
     pub urls: Vec<MetalinkUrl>,
 }
@@ -46,6 +48,17 @@ pub struct MetalinkHash {
     pub algo: String,
     /// Hex-encoded hash value.
     pub value: String,
+}
+
+/// A chunk-level hash container from a `<pieces>` element.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MetalinkPieces {
+    /// Hash algorithm for all entries in this container.
+    pub algo: String,
+    /// Piece length in bytes.
+    pub length: u64,
+    /// Piece hashes in file order.
+    pub hashes: Vec<String>,
 }
 
 /// A download URL with priority and location metadata.
@@ -74,6 +87,7 @@ pub fn parse_metalink(xml: &str) -> Result<RawMetalink> {
     let mut current_url_location: Option<String> = None;
     let mut in_hash = false;
     let mut current_hash_algo = String::new();
+    let mut current_pieces: Option<MetalinkPieces> = None;
     let mut in_size = false;
     let mut in_name = false;
     let mut buf = Vec::new();
@@ -108,7 +122,26 @@ pub fn parse_metalink(xml: &str) -> Result<RawMetalink> {
                             name,
                             size: None,
                             hashes: Vec::new(),
+                            pieces: Vec::new(),
                             urls: Vec::new(),
+                        });
+                    }
+                    "pieces" => {
+                        let mut algo = String::new();
+                        let mut length = 0u64;
+                        for attr in e.attributes().flatten() {
+                            let key = String::from_utf8_lossy(attr.key.as_ref()).to_string();
+                            let val = String::from_utf8_lossy(&attr.value).to_string();
+                            match key.as_str() {
+                                "type" => algo = val,
+                                "length" => length = val.parse().unwrap_or(0),
+                                _ => {}
+                            }
+                        }
+                        current_pieces = Some(MetalinkPieces {
+                            algo,
+                            length,
+                            hashes: Vec::new(),
                         });
                     }
                     "url" | "metaurl" => {
@@ -185,16 +218,25 @@ pub fn parse_metalink(xml: &str) -> Result<RawMetalink> {
                     }
                     "hash" => {
                         if in_hash {
-                            if let Some(ref mut file) = current_file {
-                                let hash_val = text_buf.trim().to_string();
-                                if !hash_val.is_empty() {
+                            let hash_val = text_buf.trim().to_string();
+                            if !hash_val.is_empty() {
+                                if let Some(ref mut pieces) = current_pieces {
+                                    pieces.hashes.push(hash_val);
+                                } else if let Some(ref mut file) = current_file {
                                     file.hashes.push(MetalinkHash {
                                         algo: current_hash_algo.clone(),
-                                        value: hash_val,
+                                        value: hash_val.clone(),
                                     });
                                 }
                             }
                             in_hash = false;
+                        }
+                    }
+                    "pieces" => {
+                        if let Some(pieces) = current_pieces.take() {
+                            if let Some(ref mut file) = current_file {
+                                file.pieces.push(pieces);
+                            }
                         }
                     }
                     "size" => {
@@ -238,6 +280,12 @@ mod tests {
   <file name="example.zip">
     <size>1048576</size>
     <hash type="sha-256">abc123def456</hash>
+    <pieces type="sha-256" length="262144">
+      <hash>piece0</hash>
+      <hash>piece1</hash>
+      <hash>piece2</hash>
+      <hash>piece3</hash>
+    </pieces>
     <url priority="1" location="us">https://mirror1.example.com/example.zip</url>
     <url priority="2" location="de">https://mirror2.example.com/example.zip</url>
     <url priority="3">ftp://ftp.example.com/example.zip</url>
@@ -267,8 +315,12 @@ mod tests {
         assert_eq!(file.name, "example.zip");
         assert_eq!(file.size, Some(1048576));
         assert_eq!(file.hashes.len(), 1);
+        assert_eq!(file.pieces.len(), 1);
         assert_eq!(file.hashes[0].algo, "sha-256");
         assert_eq!(file.hashes[0].value, "abc123def456");
+        assert_eq!(file.pieces[0].algo, "sha-256");
+        assert_eq!(file.pieces[0].length, 262144);
+        assert_eq!(file.pieces[0].hashes, vec!["piece0", "piece1", "piece2", "piece3"]);
         assert_eq!(file.urls.len(), 3);
 
         assert_eq!(file.urls[0].priority, 1);
@@ -324,5 +376,13 @@ mod tests {
         let file = &ml.files[0];
         let priorities: Vec<u32> = file.urls.iter().map(|u| u.priority).collect();
         assert_eq!(priorities, vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn piece_hashes_preserve_container_order() {
+        let ml = parse_metalink(METALINK_V4_SAMPLE).unwrap();
+        let pieces = &ml.files[0].pieces[0];
+        assert_eq!(pieces.hashes.first().map(String::as_str), Some("piece0"));
+        assert_eq!(pieces.hashes.last().map(String::as_str), Some("piece3"));
     }
 }

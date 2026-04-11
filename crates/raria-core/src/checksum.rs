@@ -7,6 +7,7 @@ use anyhow::{Context, Result};
 use md5::Md5;
 use sha1::Sha1;
 use sha2::{Digest, Sha256};
+use crate::job::PieceChecksum;
 use std::path::Path;
 use tokio::fs::File;
 use tokio::io::AsyncReadExt;
@@ -116,6 +117,86 @@ pub async fn verify_checksum(path: &Path, spec: &str) -> Result<()> {
             actual
         )
     }
+}
+
+/// Verify a file against chunk-level piece hashes.
+pub async fn verify_piece_checksums(path: &Path, piece_checksum: &PieceChecksum) -> Result<()> {
+    anyhow::ensure!(piece_checksum.length > 0, "piece checksum length must be > 0");
+    anyhow::ensure!(
+        !piece_checksum.hashes.is_empty(),
+        "piece checksum list must not be empty"
+    );
+
+    let algo = ChecksumAlgo::from_str_lenient(&piece_checksum.algo)
+        .with_context(|| format!("unsupported piece checksum algorithm: {}", piece_checksum.algo))?;
+
+    let chunk_len: usize = piece_checksum
+        .length
+        .try_into()
+        .context("piece checksum length does not fit into usize")?;
+    let mut file = File::open(path)
+        .await
+        .with_context(|| format!("failed to open file for piece checksum: {}", path.display()))?;
+
+    let mut buffer = vec![0u8; chunk_len];
+
+    for (index, expected_hash) in piece_checksum.hashes.iter().enumerate() {
+        let mut read_total = 0usize;
+        while read_total < chunk_len {
+            let n = file.read(&mut buffer[read_total..chunk_len]).await?;
+            if n == 0 {
+                break;
+            }
+            read_total += n;
+        }
+
+        anyhow::ensure!(
+            read_total > 0,
+            "piece checksum mismatch for {}: missing piece {}",
+            path.display(),
+            index
+        );
+
+        let actual = match algo {
+            ChecksumAlgo::Sha256 => {
+                let mut hasher = Sha256::new();
+                hasher.update(&buffer[..read_total]);
+                hex::encode(hasher.finalize())
+            }
+            ChecksumAlgo::Sha1 => {
+                let mut hasher = Sha1::new();
+                hasher.update(&buffer[..read_total]);
+                hex::encode(hasher.finalize())
+            }
+            ChecksumAlgo::Md5 => {
+                let mut hasher = Md5::new();
+                hasher.update(&buffer[..read_total]);
+                hex::encode(hasher.finalize())
+            }
+        };
+
+        let expected = expected_hash.to_lowercase();
+        if actual != expected {
+            anyhow::bail!(
+                "piece checksum mismatch for {}: piece {} expected {} {}, got {}",
+                path.display(),
+                index,
+                algo.name(),
+                expected,
+                actual
+            );
+        }
+    }
+
+    let mut trailing = [0u8; 1];
+    let trailing_n = file.read(&mut trailing).await?;
+    anyhow::ensure!(
+        trailing_n == 0,
+        "piece checksum mismatch for {}: file contains more data than described pieces",
+        path.display()
+    );
+
+    Ok(())
 }
 
 #[cfg(test)]
@@ -235,6 +316,61 @@ mod tests {
     async fn verify_checksum_file_not_found() {
         let result = verify_checksum(Path::new("/nonexistent/path/file.bin"), "sha-256=abc").await;
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn verify_piece_checksums_match() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("pieces.bin");
+        std::fs::write(&path, b"abcdefgh").unwrap();
+
+        let piece_checksum = PieceChecksum {
+            algo: "sha-256".into(),
+            length: 4,
+            hashes: vec![
+                hex::encode(Sha256::digest(b"abcd")),
+                hex::encode(Sha256::digest(b"efgh")),
+            ],
+        };
+
+        let result = verify_piece_checksums(&path, &piece_checksum).await;
+        assert!(result.is_ok(), "piece checksums should match: {result:?}");
+    }
+
+    #[tokio::test]
+    async fn verify_piece_checksums_mismatch() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("pieces.bin");
+        std::fs::write(&path, b"abcdefgh").unwrap();
+
+        let piece_checksum = PieceChecksum {
+            algo: "sha-256".into(),
+            length: 4,
+            hashes: vec!["00".repeat(32), hex::encode(Sha256::digest(b"efgh"))],
+        };
+
+        let result = verify_piece_checksums(&path, &piece_checksum).await;
+        assert!(result.is_err());
+        let error = result.unwrap_err().to_string();
+        assert!(error.contains("piece checksum mismatch"), "error was: {error}");
+    }
+
+    #[tokio::test]
+    async fn verify_piece_checksums_rejects_extra_file_data() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("pieces.bin");
+        std::fs::write(&path, b"abcdefgh").unwrap();
+
+        let piece_checksum = PieceChecksum {
+            algo: "sha-256".into(),
+            length: 4,
+            hashes: vec![hex::encode(Sha256::digest(b"abcd"))],
+        };
+
+        let result = verify_piece_checksums(&path, &piece_checksum).await;
+        assert!(result.is_err());
+        let error = result.unwrap_err().to_string();
+        assert!(error.contains("more data"), "error was: {error}");
     }
 
     #[test]

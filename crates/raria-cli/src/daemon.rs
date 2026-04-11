@@ -1,6 +1,5 @@
 use crate::backend_factory::create_backend_with_config;
 use crate::bt_runtime::run_bt_download;
-use crate::conditional_get::build_conditional_get_probe_headers;
 use crate::executor_config::apply_global_retry_policy;
 use crate::hooks::{HookConfig, spawn_hook_runner};
 use crate::util::{build_conditional_get_probe_headers, parse_header_args};
@@ -12,7 +11,6 @@ use raria_core::input_file::InputFileEntry;
 use raria_core::job::Gid;
 use raria_core::persist::Store;
 use raria_core::segment::{SegmentStatus, init_segment_states, plan_segments};
-use raria_core::service::{DownloadErrorClass, classify_download_error};
 use raria_range::backend::{ByteSourceBackend, Credentials, ProbeContext};
 use raria_range::executor::{ExecutorConfig, SegmentExecutor, apply_results};
 use raria_rpc::server::{RpcServerConfig, start_rpc_server};
@@ -345,61 +343,6 @@ fn classified_error_message(message: &str) -> String {
     format!("{class} error: {message}")
 }
 
-fn input_file_option<'a>(entry: &'a InputFileEntry, key: &str) -> Option<&'a str> {
-    entry
-        .options
-        .iter()
-        .rev()
-        .find(|(candidate, _)| candidate.eq_ignore_ascii_case(key))
-        .map(|(_, value)| value.as_str())
-}
-
-fn build_input_file_spec(entry: &InputFileEntry, download_dir: &std::path::Path) -> AddUriSpec {
-    let connections = input_file_option(entry, "max-connection-per-server")
-        .or_else(|| input_file_option(entry, "split"))
-        .and_then(|value| value.parse::<u32>().ok())
-        .unwrap_or(1);
-
-    AddUriSpec {
-        uris: entry.uris.clone(),
-        filename: input_file_option(entry, "out").map(ToOwned::to_owned),
-        dir: input_file_option(entry, "dir")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| download_dir.to_path_buf()),
-        connections,
-    }
-}
-
-fn apply_input_file_job_options(engine: &Engine, gid: Gid, entry: &InputFileEntry) {
-    engine.registry.update(gid, |job| {
-        if let Some(checksum) = input_file_option(entry, "checksum") {
-            job.options.checksum = Some(checksum.to_string());
-        }
-        if let Some(connections) = input_file_option(entry, "max-connection-per-server")
-            .or_else(|| input_file_option(entry, "split"))
-            .and_then(|value| value.parse::<u32>().ok())
-        {
-            job.options.max_connections = connections;
-        }
-        if let Some(user) = input_file_option(entry, "http-user") {
-            job.options.http_user = Some(user.to_string());
-        }
-        if let Some(passwd) = input_file_option(entry, "http-passwd") {
-            job.options.http_passwd = Some(passwd.to_string());
-        }
-        job.options
-            .headers
-            .extend(entry.options.iter().filter_map(|(key, value)| {
-                if !key.eq_ignore_ascii_case("header") {
-                    return None;
-                }
-                value.split_once(':').map(|(name, header_value)| {
-                    (name.trim().to_string(), header_value.trim().to_string())
-                })
-            }));
-    });
-}
-
 fn cleanup_segment_checkpoints(engine: &Engine, gid: Gid) {
     if let Some(store) = engine.store() {
         if let Err(e) = store.remove_segments(gid) {
@@ -594,41 +537,30 @@ fn plan_download_segments(
     (resolved_connections, resolved_segments, on_checkpoint)
 }
 
-/// Finalize a completed download: update registry, clean up checkpoints, log.
+/// Finalize a completed download: verify integrity, update registry, clean up checkpoints, log.
 async fn finalize_complete(
     engine: &Engine,
     gid: Gid,
     out_path: &std::path::Path,
     downloaded: u64,
+    piece_checksum: Option<&raria_core::job::PieceChecksum>,
     checksum_spec: Option<&str>,
 ) -> Result<()> {
     engine.registry.update(gid, |job| {
         job.downloaded = downloaded;
         job.connections = 0;
     });
-    if let Some(spec) = checksum_spec {
-        info!(%gid, "verifying checksum...");
-        if let Err(error) = checksum::verify_checksum(out_path, spec).await {
-            let message = format!("checksum verification failed: {error}");
-            let classified = format_classified_error(&message);
-            if let Some(store) = engine.store() {
-                if let Err(remove_error) = store.remove_segments(gid) {
-                    tracing::warn!(%gid, error = %remove_error, "failed to clean up segment checkpoints");
-                }
-            }
-            engine.fail_job(gid, &classified)?;
+    if let Some(piece_checksum) = piece_checksum {
+        info!(%gid, "verifying piece checksums...");
+        if let Err(error) = checksum::verify_piece_checksums(out_path, piece_checksum).await {
+            cleanup_segment_checkpoints(engine, gid);
+            let message =
+                classified_error_message(&format!("piece checksum verification failed: {error}"));
+            engine.fail_job(gid, &message)?;
             return Ok(());
         }
-        info!(%gid, "checksum verified successfully");
+        info!(%gid, "piece checksums verified successfully");
     }
-
-    engine.complete_job(gid)?;
-    if let Some(store) = engine.store() {
-        if let Err(e) = store.remove_segments(gid) {
-            tracing::warn!(%gid, error = %e, "failed to clean up segment checkpoints");
-        }
-    });
-
     if let Some(spec) = checksum_spec {
         info!(%gid, "verifying checksum...");
         if let Err(error) = checksum::verify_checksum(out_path, spec).await {
@@ -645,14 +577,6 @@ async fn finalize_complete(
     cleanup_segment_checkpoints(engine, gid);
     info!(%gid, bytes = downloaded, "daemon: download complete");
     Ok(())
-}
-
-fn format_classified_error(message: &str) -> String {
-    let label = match classify_download_error(message) {
-        DownloadErrorClass::Transient => "transient",
-        DownloadErrorClass::Permanent => "permanent",
-    };
-    format!("[{label}] {message}")
 }
 
 /// Persist interrupted segment state for future resumption.
@@ -714,7 +638,7 @@ async fn run_job_download(
             Ok(backend) => backend,
             Err(error) => {
                 warn!(%gid, uri = %parsed_url, error = %error, "failed to create backend for mirror");
-                last_error = Some(format_classified_error(&error.to_string()));
+                last_error = Some(classified_error_message(&error.to_string()));
                 continue;
             }
         };
@@ -740,7 +664,7 @@ async fn run_job_download(
             Ok(probe) => probe,
             Err(error) => {
                 warn!(%gid, uri = %parsed_url, error = %error, "failed to probe mirror");
-                last_error = Some(format_classified_error(&error.to_string()));
+                last_error = Some(classified_error_message(&error.to_string()));
                 continue;
             }
         };
@@ -759,6 +683,7 @@ async fn run_job_download(
                 gid,
                 out_path_ref,
                 existing_len,
+                job.piece_checksum.as_ref(),
                 job.options.checksum.as_deref(),
             )
             .await;
@@ -815,6 +740,7 @@ async fn run_job_download(
                 gid,
                 out_path.as_ref().expect("out_path initialized"),
                 downloaded_total,
+                job.piece_checksum.as_ref(),
                 job.options.checksum.as_deref(),
             )
             .await;
@@ -832,7 +758,7 @@ async fn run_job_download(
                 })
                 .collect::<Vec<_>>()
                 .join("; ");
-            last_error = Some(format_classified_error(&err_msg));
+            last_error = Some(classified_error_message(&raw_err_msg));
             if uri_index + 1 < job.uris.len() {
                 warn!(%gid, uri = %parsed_url, "mirror failed, trying next mirror");
                 continue;
@@ -845,7 +771,7 @@ async fn run_job_download(
                 gid,
                 last_error
                     .as_deref()
-                    .unwrap_or("[transient] mirror failed"),
+                    .unwrap_or("transient error: mirror failed"),
             )?;
             return Ok(());
         }
@@ -861,7 +787,7 @@ async fn run_job_download(
         gid,
         last_error
             .as_deref()
-            .unwrap_or("[transient] all mirrors failed"),
+            .unwrap_or("transient error: all mirrors failed"),
     )?;
     Ok(())
 }

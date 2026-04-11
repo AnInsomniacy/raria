@@ -4,7 +4,7 @@
 // suitable for creating RangeJob instances, including URL prioritization,
 // checksum extraction, and CLI option merging.
 
-use crate::parser::{MetalinkFile, MetalinkHash, RawMetalink};
+use crate::parser::{MetalinkFile, MetalinkHash, MetalinkPieces, RawMetalink};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -19,6 +19,8 @@ pub struct RangeJobSeed {
     pub expected_size: Option<u64>,
     /// Preferred hash for verification.
     pub checksum: Option<NormalizedChecksum>,
+    /// Preferred piece-hash container for chunk verification.
+    pub piece_checksum: Option<NormalizedPieceChecksum>,
 }
 
 /// A normalized checksum for file verification.
@@ -28,6 +30,17 @@ pub struct NormalizedChecksum {
     pub algo: String,
     /// Hex-encoded hash value (lowercase).
     pub value: String,
+}
+
+/// A normalized piece-hash container for chunk verification.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NormalizedPieceChecksum {
+    /// Algorithm name (lowercase).
+    pub algo: String,
+    /// Piece size in bytes.
+    pub length: u64,
+    /// Piece hashes in file order.
+    pub hashes: Vec<String>,
 }
 
 /// Options controlling normalization behavior.
@@ -74,12 +87,14 @@ fn normalize_file(file: &MetalinkFile, opts: &NormalizeOptions) -> RangeJobSeed 
 
     // Select the best hash.
     let checksum = select_best_hash(&file.hashes, &opts.preferred_hash_algos);
+    let piece_checksum = select_best_piece_hashes(&file.pieces, &opts.preferred_hash_algos);
 
     RangeJobSeed {
         uris,
         filename: file.name.clone(),
         expected_size: file.size,
         checksum,
+        piece_checksum,
     }
 }
 
@@ -99,10 +114,42 @@ fn select_best_hash(hashes: &[MetalinkHash], preferred: &[String]) -> Option<Nor
     })
 }
 
+fn select_best_piece_hashes(
+    pieces: &[MetalinkPieces],
+    preferred: &[String],
+) -> Option<NormalizedPieceChecksum> {
+    for algo in preferred {
+        if let Some(piece_set) = pieces.iter().find(|pieces| pieces.algo.eq_ignore_ascii_case(algo))
+        {
+            return Some(NormalizedPieceChecksum {
+                algo: piece_set.algo.to_lowercase(),
+                length: piece_set.length,
+                hashes: piece_set
+                    .hashes
+                    .iter()
+                    .map(|hash| hash.to_lowercase())
+                    .collect(),
+            });
+        }
+    }
+
+    pieces.first().map(|piece_set| NormalizedPieceChecksum {
+        algo: piece_set.algo.to_lowercase(),
+        length: piece_set.length,
+        hashes: piece_set
+            .hashes
+            .iter()
+            .map(|hash| hash.to_lowercase())
+            .collect(),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::parser::{MetalinkFile, MetalinkHash, MetalinkUrl, MetalinkVersion, RawMetalink};
+    use crate::parser::{
+        MetalinkFile, MetalinkHash, MetalinkPieces, MetalinkUrl, MetalinkVersion, RawMetalink,
+    };
 
     fn sample_metalink() -> RawMetalink {
         RawMetalink {
@@ -121,6 +168,7 @@ mod tests {
                             .into(),
                     },
                 ],
+                pieces: vec![],
                 urls: vec![
                     MetalinkUrl {
                         url: "https://slow.example.com/test.zip".into(),
@@ -185,6 +233,7 @@ mod tests {
                     algo: "whirlpool".into(),
                     value: "AABBCC".into(),
                 }],
+                pieces: vec![],
                 urls: vec![MetalinkUrl {
                     url: "https://a.com/f".into(),
                     priority: 1,
@@ -207,6 +256,7 @@ mod tests {
                 name: "f.bin".into(),
                 size: None,
                 hashes: vec![],
+                pieces: vec![],
                 urls: vec![MetalinkUrl {
                     url: "https://a.com/f".into(),
                     priority: 1,
@@ -228,6 +278,7 @@ mod tests {
                     name: "a.bin".into(),
                     size: Some(100),
                     hashes: vec![],
+                    pieces: vec![],
                     urls: vec![MetalinkUrl {
                         url: "https://a.com/a".into(),
                         priority: 1,
@@ -238,6 +289,7 @@ mod tests {
                     name: "b.bin".into(),
                     size: Some(200),
                     hashes: vec![],
+                    pieces: vec![],
                     urls: vec![MetalinkUrl {
                         url: "https://a.com/b".into(),
                         priority: 1,
@@ -262,5 +314,36 @@ mod tests {
         let recovered: RangeJobSeed = serde_json::from_str(&json).unwrap();
         assert_eq!(recovered.filename, "test.zip");
         assert_eq!(recovered.uris.len(), 3);
+    }
+
+    #[test]
+    fn normalize_keeps_piece_checksum_when_available() {
+        let ml = RawMetalink {
+            version: MetalinkVersion::V4,
+            files: vec![MetalinkFile {
+                name: "piece.bin".into(),
+                size: Some(2048),
+                hashes: vec![],
+                pieces: vec![MetalinkPieces {
+                    algo: "sha-256".into(),
+                    length: 1024,
+                    hashes: vec!["AA".into(), "BB".into()],
+                }],
+                urls: vec![MetalinkUrl {
+                    url: "https://a.com/piece.bin".into(),
+                    priority: 1,
+                    location: None,
+                }],
+            }],
+        };
+
+        let seeds = normalize(&ml, &NormalizeOptions::default());
+        let piece_checksum = seeds[0]
+            .piece_checksum
+            .as_ref()
+            .expect("piece checksum");
+        assert_eq!(piece_checksum.algo, "sha-256");
+        assert_eq!(piece_checksum.length, 1024);
+        assert_eq!(piece_checksum.hashes, vec!["aa", "bb"]);
     }
 }

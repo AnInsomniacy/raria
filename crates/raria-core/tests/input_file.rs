@@ -7,15 +7,10 @@
 mod tests {
     use raria_core::config::GlobalConfig;
     use raria_core::engine::Engine;
-    use raria_core::input_file::InputFileEntry;
 
     /// Parse an input file and return URIs.
     fn parse_input_file(content: &str) -> Vec<String> {
         raria_core::input_file::parse_input_file(content)
-    }
-
-    fn parse_input_file_entries(content: &str) -> Vec<InputFileEntry> {
-        raria_core::input_file::parse_input_file_entries(content)
     }
 
     #[test]

@@ -439,6 +439,17 @@ impl Aria2RpcServer for RpcHandler {
                             job.options.checksum = Some(checksum_spec.clone());
                         });
                     }
+                    self.engine.registry.update(handle.gid, |job| {
+                        job.total_size = seed.expected_size;
+                        job.piece_checksum =
+                            seed.piece_checksum.as_ref().map(|piece_checksum| {
+                                raria_core::job::PieceChecksum {
+                                    algo: piece_checksum.algo.clone(),
+                                    length: piece_checksum.length,
+                                    hashes: piece_checksum.hashes.clone(),
+                                }
+                            });
+                    });
                     let gid_str = format!("{:016x}", handle.gid.as_raw());
                     debug!(gid = %gid_str, name = %seed.filename, "metalink: added job");
                     gids.push(gid_str);
@@ -739,6 +750,18 @@ impl Aria2RpcServer for RpcHandler {
                 job.options.headers = headers;
                 debug!(%gid, "changed header");
             }
+            if let Some(checksum) = options.get("checksum").and_then(|v| v.as_str()) {
+                job.options.checksum = Some(checksum.to_string());
+                debug!(%gid, "changed checksum");
+            }
+            if let Some(user) = options.get("http-user").and_then(|v| v.as_str()) {
+                job.options.http_user = Some(user.to_string());
+                debug!(%gid, "changed http-user");
+            }
+            if let Some(passwd) = options.get("http-passwd").and_then(|v| v.as_str()) {
+                job.options.http_passwd = Some(passwd.to_string());
+                debug!(%gid, "changed http-passwd");
+            }
             if let Some(files) = select_file.clone() {
                 job.options.bt_selected_files = Some(files);
                 debug!(%gid, "changed select-file");
@@ -799,6 +822,7 @@ impl Aria2RpcServer for RpcHandler {
     async fn change_global_option(&self, options: serde_json::Value) -> RpcResult<String> {
         if let Some(limit) = options
             .get("max-overall-download-limit")
+            .or_else(|| options.get("max-download-limit"))
             .and_then(|v| v.as_str())
         {
             if let Ok(bytes) = limit.parse::<u64>() {
