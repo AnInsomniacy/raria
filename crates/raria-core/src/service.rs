@@ -29,6 +29,15 @@ pub enum JobSource {
     Magnet,
 }
 
+/// Heuristic classification for terminal download errors.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DownloadErrorClass {
+    /// The error may succeed on a later retry or different network path.
+    Transient,
+    /// The error is unlikely to succeed without changing the request/input.
+    Permanent,
+}
+
 /// Detect the source type from a URI string.
 ///
 /// Returns `None` if the URI scheme is unrecognized or the string is not a valid URL.
@@ -46,6 +55,53 @@ pub fn detect_scheme(uri: &str) -> Option<JobSource> {
         "sftp" => Some(JobSource::Sftp),
         _ => None,
     }
+}
+
+/// Heuristically classify a download error string as transient or permanent.
+pub fn classify_download_error(message: &str) -> DownloadErrorClass {
+    let normalized = message.to_ascii_lowercase();
+
+    let permanent_markers = [
+        "404",
+        "not found",
+        "checksum mismatch",
+        "permission denied",
+        "403",
+        "401",
+        "unsupported",
+        "invalid uri",
+        "invalid url",
+        "bad request",
+        "400",
+        "failed to parse",
+        "malformed",
+    ];
+    if permanent_markers.iter().any(|marker| normalized.contains(marker)) {
+        return DownloadErrorClass::Permanent;
+    }
+
+    let transient_markers = [
+        "timeout",
+        "timed out",
+        "connection reset",
+        "connection refused",
+        "connection aborted",
+        "temporarily unavailable",
+        "too many requests",
+        "429",
+        "502",
+        "503",
+        "504",
+        "broken pipe",
+    ];
+    if transient_markers
+        .iter()
+        .any(|marker| normalized.contains(marker))
+    {
+        return DownloadErrorClass::Transient;
+    }
+
+    DownloadErrorClass::Transient
 }
 
 /// The download service orchestrates job execution.

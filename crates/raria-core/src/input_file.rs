@@ -12,7 +12,36 @@
 //     out=custom_name.zip
 //   https://example.com/other.zip
 
-use std::path::Path;
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
+
+/// Parsed per-entry options from an aria2-style input file.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct InputFileOptions {
+    /// Optional output directory override.
+    pub dir: Option<PathBuf>,
+    /// Optional output filename override.
+    pub out: Option<String>,
+    /// Optional expected checksum in `algo=hex` format.
+    pub checksum: Option<String>,
+    /// Additional request headers in `Name: Value` form.
+    pub headers: Vec<String>,
+    /// Optional HTTP basic-auth username.
+    pub http_user: Option<String>,
+    /// Optional HTTP basic-auth password.
+    pub http_passwd: Option<String>,
+    /// Supported-but-not-yet-modeled options captured verbatim.
+    pub extra: BTreeMap<String, String>,
+}
+
+/// One URI entry from an aria2-style input file.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct InputFileEntry {
+    /// One or more URIs for this entry.
+    pub uris: Vec<String>,
+    /// Per-entry option overrides.
+    pub options: InputFileOptions,
+}
 
 /// Structured entry parsed from an aria2-style input file.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -97,6 +126,72 @@ pub fn parse_input_file(content: &str) -> Vec<String> {
         .collect()
 }
 
+/// Parse the content of an input file into richer entry records.
+///
+/// This preserves tab-separated multi-source lines as a single entry with
+/// multiple `uris`, and captures supported per-entry options from indented
+/// `key=value` lines.
+pub fn parse_input_file_entries(content: &str) -> anyhow::Result<Vec<InputFileEntry>> {
+    let mut entries: Vec<InputFileEntry> = Vec::new();
+
+    for line in content.lines() {
+        let trimmed = line.trim();
+
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+
+        if line.starts_with(' ') || line.starts_with('\t') {
+            let entry = entries.last_mut().ok_or_else(|| {
+                anyhow::anyhow!("input-file option line appeared before any URI entry")
+            })?;
+            let (raw_key, raw_value) = trimmed.split_once('=').ok_or_else(|| {
+                anyhow::anyhow!("invalid input-file option '{trimmed}': expected key=value")
+            })?;
+            let key = raw_key.trim();
+            let value = raw_value.trim();
+            anyhow::ensure!(
+                !key.is_empty(),
+                "invalid input-file option '{trimmed}': empty key"
+            );
+
+            match key {
+                "dir" => entry.options.dir = Some(PathBuf::from(value)),
+                "out" => entry.options.out = Some(value.to_string()),
+                "checksum" => entry.options.checksum = Some(value.to_string()),
+                "header" => entry.options.headers.push(value.to_string()),
+                "http-user" => entry.options.http_user = Some(value.to_string()),
+                "http-passwd" => entry.options.http_passwd = Some(value.to_string()),
+                _ => {
+                    entry
+                        .options
+                        .extra
+                        .insert(key.to_string(), value.to_string());
+                }
+            }
+
+            continue;
+        }
+
+        let uris = trimmed
+            .split('\t')
+            .map(str::trim)
+            .filter(|uri| !uri.is_empty())
+            .map(ToOwned::to_owned)
+            .collect::<Vec<_>>();
+        anyhow::ensure!(
+            !uris.is_empty(),
+            "input-file entry must contain at least one URI"
+        );
+        entries.push(InputFileEntry {
+            uris,
+            options: InputFileOptions::default(),
+        });
+    }
+
+    Ok(entries)
+}
+
 /// Load URIs from an input file on disk.
 ///
 /// Returns an error if the file cannot be read.
@@ -105,8 +200,9 @@ pub fn load_input_file(path: &Path) -> anyhow::Result<Vec<String>> {
     Ok(parse_input_file(&content))
 }
 
-/// Load structured input-file entries from disk.
+/// Load richer URI entries from an input file on disk.
 pub fn load_input_file_entries(path: &Path) -> anyhow::Result<Vec<InputFileEntry>> {
-    let content = read_input_file(path)?;
-    Ok(parse_input_file_entries(&content))
+    let content = std::fs::read_to_string(path)
+        .map_err(|e| anyhow::anyhow!("failed to read input file '{}': {e}", path.display()))?;
+    parse_input_file_entries(&content)
 }

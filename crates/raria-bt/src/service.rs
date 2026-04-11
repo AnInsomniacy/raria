@@ -342,13 +342,16 @@ impl BtService {
         } else {
             (0, 0)
         };
-        let (num_peers, num_seeders) = self.live_peer_counts(handle).await.unwrap_or_else(|_| {
-            stats
-                .live
-                .as_ref()
-                .map(|live| (live.snapshot.peer_stats.live as u32, 0))
-                .unwrap_or((0, 0))
-        });
+        let (num_peers, num_seeders) = self
+            .live_peer_counts(handle)
+            .await
+            .unwrap_or_else(|_| {
+                stats.live
+                    .as_ref()
+                    .map(|live| (live.snapshot.peer_stats.live as u32, 0))
+                    .unwrap_or((0, 0))
+            });
+
         // Id20 is [u8; 20] — format as hex.
         let info_hash_bytes = managed.info_hash();
         let info_hash = hex::encode(info_hash_bytes.0);
@@ -368,11 +371,11 @@ impl BtService {
             .as_ref()
             .map(|metadata| {
                 (
-                    metadata.info.piece_length as u64,
-                    metadata.lengths.total_pieces() as u64,
+                    Some(metadata.info.piece_length as u64),
+                    Some(metadata.lengths.total_pieces() as u64),
                 )
             })
-            .unwrap_or((0, 0));
+            .unwrap_or((None, None));
 
         Ok(BtStatus {
             total_size: stats.total_bytes,

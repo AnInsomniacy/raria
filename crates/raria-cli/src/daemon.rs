@@ -3,7 +3,7 @@ use crate::bt_runtime::run_bt_download;
 use crate::conditional_get::build_conditional_get_probe_headers;
 use crate::executor_config::apply_global_retry_policy;
 use crate::hooks::{HookConfig, spawn_hook_runner};
-use crate::util::parse_header_args;
+use crate::util::{build_conditional_get_probe_headers, parse_header_args};
 use anyhow::{Context, Result};
 use raria_core::checksum;
 use raria_core::config::GlobalConfig;
@@ -12,6 +12,7 @@ use raria_core::input_file::InputFileEntry;
 use raria_core::job::Gid;
 use raria_core::persist::Store;
 use raria_core::segment::{SegmentStatus, init_segment_states, plan_segments};
+use raria_core::service::{DownloadErrorClass, classify_download_error};
 use raria_range::backend::{ByteSourceBackend, Credentials, ProbeContext};
 use raria_range::executor::{ExecutorConfig, SegmentExecutor, apply_results};
 use raria_rpc::server::{RpcServerConfig, start_rpc_server};
@@ -44,10 +45,61 @@ pub(crate) async fn run_daemon_with_config(
     }
 
     for entry in &input_entries {
-        let spec = build_input_file_spec(entry, &download_dir);
+        let spec = AddUriSpec {
+            uris: entry.uris.clone(),
+            filename: entry.options.out.clone(),
+            dir: entry
+                .options
+                .dir
+                .clone()
+                .unwrap_or_else(|| download_dir.clone()),
+            connections: entry
+                .options
+                .extra
+                .get("split")
+                .and_then(|value| value.parse::<u32>().ok())
+                .unwrap_or(1),
+        };
         match engine.add_uri(&spec) {
             Ok(handle) => {
-                apply_input_file_job_options(&engine, handle.gid, entry);
+                let parse_headers = parse_header_args(&entry.options.headers);
+                engine.registry.update(handle.gid, |job| {
+                    if let Some(checksum) = entry.options.checksum.clone() {
+                        job.options.checksum = Some(checksum);
+                    }
+                    if let Some(user) = entry.options.http_user.clone() {
+                        job.options.http_user = Some(user);
+                    }
+                    if let Some(passwd) = entry.options.http_passwd.clone() {
+                        job.options.http_passwd = Some(passwd);
+                    }
+                    if let Ok(headers) = &parse_headers {
+                        job.options.headers.extend(headers.clone());
+                    }
+                    if let Some(limit) = entry
+                        .options
+                        .extra
+                        .get("max-download-limit")
+                        .and_then(|value| value.parse::<u64>().ok())
+                    {
+                        job.options.max_download_limit = limit;
+                    }
+                    if let Some(split) = entry
+                        .options
+                        .extra
+                        .get("split")
+                        .and_then(|value| value.parse::<u32>().ok())
+                    {
+                        job.options.max_connections = split;
+                    }
+                });
+                if let Err(error) = parse_headers {
+                    warn!(
+                        gid = %handle.gid,
+                        error = %error,
+                        "failed to parse input-file headers, continuing without them"
+                    );
+                }
                 info!(gid = %handle.gid, "added job from input file");
             }
             Err(e) => warn!(uris = ?entry.uris, error = %e, "failed to add URI from input file"),
@@ -553,8 +605,27 @@ async fn finalize_complete(
     engine.registry.update(gid, |job| {
         job.downloaded = downloaded;
         job.connections = 0;
-        if job.total_size.is_none() {
-            job.total_size = Some(downloaded);
+    });
+    if let Some(spec) = checksum_spec {
+        info!(%gid, "verifying checksum...");
+        if let Err(error) = checksum::verify_checksum(out_path, spec).await {
+            let message = format!("checksum verification failed: {error}");
+            let classified = format_classified_error(&message);
+            if let Some(store) = engine.store() {
+                if let Err(remove_error) = store.remove_segments(gid) {
+                    tracing::warn!(%gid, error = %remove_error, "failed to clean up segment checkpoints");
+                }
+            }
+            engine.fail_job(gid, &classified)?;
+            return Ok(());
+        }
+        info!(%gid, "checksum verified successfully");
+    }
+
+    engine.complete_job(gid)?;
+    if let Some(store) = engine.store() {
+        if let Err(e) = store.remove_segments(gid) {
+            tracing::warn!(%gid, error = %e, "failed to clean up segment checkpoints");
         }
     });
 
@@ -574,6 +645,14 @@ async fn finalize_complete(
     cleanup_segment_checkpoints(engine, gid);
     info!(%gid, bytes = downloaded, "daemon: download complete");
     Ok(())
+}
+
+fn format_classified_error(message: &str) -> String {
+    let label = match classify_download_error(message) {
+        DownloadErrorClass::Transient => "transient",
+        DownloadErrorClass::Permanent => "permanent",
+    };
+    format!("[{label}] {message}")
 }
 
 /// Persist interrupted segment state for future resumption.
@@ -635,48 +714,33 @@ async fn run_job_download(
             Ok(backend) => backend,
             Err(error) => {
                 warn!(%gid, uri = %parsed_url, error = %error, "failed to create backend for mirror");
-                last_error = Some(classified_error_message(&error.to_string()));
+                last_error = Some(format_classified_error(&error.to_string()));
                 continue;
             }
         };
 
-        let candidate_out_path = out_path.clone().unwrap_or_else(|| job.out_path.clone());
+        let candidate_path = out_path
+            .clone()
+            .unwrap_or_else(|| job.out_path.clone());
         let control_file_path =
-            std::path::PathBuf::from(format!("{}.aria2", candidate_out_path.display()));
-        let probe_headers = match build_conditional_get_probe_headers(
-            &ctx.probe_ctx.headers,
+            std::path::PathBuf::from(format!("{}.aria2", candidate_path.display()));
+        let probe_headers = build_conditional_get_probe_headers(
             &engine.config,
             &parsed_url,
-            &candidate_out_path,
+            &candidate_path,
             &control_file_path,
-        ) {
-            Ok(probe) => probe,
-            Err(error) => {
-                warn!(
-                    %gid,
-                    uri = %parsed_url,
-                    error = %error,
-                    "failed to prepare conditional-get probe"
-                );
-                last_error = Some(classified_error_message(&error.to_string()));
-                continue;
-            }
+            &ctx.request_headers,
+        )?;
+        let probe_ctx = ProbeContext {
+            headers: probe_headers,
+            auth: ctx.probe_ctx.auth.clone(),
+            timeout: ctx.probe_ctx.timeout,
         };
-        let probe = match backend
-            .probe(
-                &parsed_url,
-                &ProbeContext {
-                    headers: probe_headers,
-                    auth: ctx.probe_ctx.auth.clone(),
-                    timeout: ctx.probe_ctx.timeout,
-                },
-            )
-            .await
-        {
+        let probe = match backend.probe(&parsed_url, &probe_ctx).await {
             Ok(probe) => probe,
             Err(error) => {
                 warn!(%gid, uri = %parsed_url, error = %error, "failed to probe mirror");
-                last_error = Some(classified_error_message(&error.to_string()));
+                last_error = Some(format_classified_error(&error.to_string()));
                 continue;
             }
         };
@@ -685,14 +749,15 @@ async fn run_job_download(
             out_path = Some(resolve_output_path(&engine, gid, &job, &probe));
         }
 
+        let out_path_ref = out_path.as_ref().expect("out_path initialized");
         if probe.not_modified {
-            let existing_len = std::fs::metadata(out_path.as_ref().expect("out_path initialized"))
+            let existing_len = std::fs::metadata(out_path_ref)
                 .map(|meta| meta.len())
                 .unwrap_or(0);
             return finalize_complete(
                 &engine,
                 gid,
-                out_path.as_ref().expect("out_path initialized"),
+                out_path_ref,
                 existing_len,
                 job.options.checksum.as_deref(),
             )
@@ -767,8 +832,7 @@ async fn run_job_download(
                 })
                 .collect::<Vec<_>>()
                 .join("; ");
-            let err_msg = classified_error_message(&raw_err_msg);
-            last_error = Some(err_msg.clone());
+            last_error = Some(format_classified_error(&err_msg));
             if uri_index + 1 < job.uris.len() {
                 warn!(%gid, uri = %parsed_url, "mirror failed, trying next mirror");
                 continue;
@@ -781,7 +845,7 @@ async fn run_job_download(
                 gid,
                 last_error
                     .as_deref()
-                    .unwrap_or("transient error: mirror failed"),
+                    .unwrap_or("[transient] mirror failed"),
             )?;
             return Ok(());
         }
@@ -793,8 +857,12 @@ async fn run_job_download(
     engine.registry.update(gid, |job| {
         job.connections = 0;
     });
-    let final_error = last_error.unwrap_or_else(|| classified_error_message("all mirrors failed"));
-    engine.fail_job(gid, &final_error)?;
+    engine.fail_job(
+        gid,
+        last_error
+            .as_deref()
+            .unwrap_or("[transient] all mirrors failed"),
+    )?;
     Ok(())
 }
 
