@@ -386,11 +386,16 @@ mod tests {
     }
 
     #[test]
-    fn status_serde_roundtrips() {
-        let json = serde_json::to_string(&Status::Active).unwrap();
-        assert_eq!(json, "\"active\"");
-        let recovered: Status = serde_json::from_str(&json).unwrap();
-        assert_eq!(recovered, Status::Active);
+    fn status_serde_roundtrips_active_and_seeding() {
+        let active_json = serde_json::to_string(&Status::Active).unwrap();
+        assert_eq!(active_json, "\"active\"");
+        let recovered_active: Status = serde_json::from_str(&active_json).unwrap();
+        assert_eq!(recovered_active, Status::Active);
+
+        let seeding_json = serde_json::to_string(&Status::Seeding).unwrap();
+        assert_eq!(seeding_json, "\"seeding\"");
+        let recovered_seeding: Status = serde_json::from_str(&seeding_json).unwrap();
+        assert_eq!(recovered_seeding, Status::Seeding);
     }
 
     #[test]
