@@ -71,6 +71,7 @@ mod tests {
     fn tell_status_status_field_exact_values() {
         let cases = vec![
             (Status::Active, "active"),
+            (Status::Seeding, "active"),
             (Status::Waiting, "waiting"),
             (Status::Paused, "paused"),
             (Status::Complete, "complete"),
@@ -253,6 +254,25 @@ mod tests {
         assert_eq!(stat.num_waiting, "0");
         assert_eq!(stat.num_stopped, "0");
         assert_eq!(stat.num_stopped_total, "0");
+    }
+
+    /// Seeding is an internal BT state but must still project as active in aria2-style stats.
+    #[test]
+    fn global_stat_counts_seeding_as_active() {
+        let jobs = vec![{
+            let mut j = Job::new_bt(vec![], PathBuf::from("/seed"));
+            j.status = Status::Seeding;
+            j.download_speed = 12;
+            j.upload_speed = 34;
+            j
+        }];
+
+        let stat = compute_global_stat(&jobs);
+        assert_eq!(stat.num_active, "1");
+        assert_eq!(stat.num_waiting, "0");
+        assert_eq!(stat.num_stopped, "0");
+        assert_eq!(stat.download_speed, "12");
+        assert_eq!(stat.upload_speed, "34");
     }
 
     // ═══════════════════════════════════════════════════════════════════

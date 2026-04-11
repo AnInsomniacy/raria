@@ -203,4 +203,38 @@ mod tests {
             _ => panic!("wrong variant"),
         }
     }
+
+    #[test]
+    fn bt_download_complete_event_serde_roundtrips() {
+        let event = DownloadEvent::BtDownloadComplete {
+            gid: Gid::from_raw(7),
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        let recovered: DownloadEvent = serde_json::from_str(&json).unwrap();
+        match recovered {
+            DownloadEvent::BtDownloadComplete { gid } => {
+                assert_eq!(gid, Gid::from_raw(7));
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn source_failed_event_serde_roundtrips() {
+        let event = DownloadEvent::SourceFailed {
+            gid: Gid::from_raw(8),
+            uri: "https://mirror.example/file.iso".into(),
+            message: "checksum mismatch".into(),
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        let recovered: DownloadEvent = serde_json::from_str(&json).unwrap();
+        match recovered {
+            DownloadEvent::SourceFailed { gid, uri, message } => {
+                assert_eq!(gid, Gid::from_raw(8));
+                assert_eq!(uri, "https://mirror.example/file.iso");
+                assert_eq!(message, "checksum mismatch");
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
 }
