@@ -849,6 +849,211 @@ async fn daemon_input_file_out_option_overrides_output_name() {
 }
 
 #[tokio::test]
+async fn daemon_verifies_checksum_before_marking_job_complete() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("HEAD"))
+        .and(path("/checksum-ok.bin"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-length", "4")
+                .insert_header("accept-ranges", "bytes"),
+        )
+        .mount(&server)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path("/checksum-ok.bin"))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(b"data"))
+        .mount(&server)
+        .await;
+
+    let temp = tempdir().expect("tempdir");
+    let session_file = temp.path().join("checksum-ok.session.redb");
+    let (mut child, rpc_port) = spawn_ready_daemon(temp.path(), &session_file, None).await;
+
+    let add_resp = rpc_call(
+        rpc_port,
+        "aria2.addUri",
+        serde_json::json!([
+            [format!("{}/checksum-ok.bin", server.uri())],
+            {
+                "out": "checksum-ok.bin",
+                "checksum": "sha-256=3a6eb0790f39ac87c94f3856b2dd2c5d110e6811602261a9a923d3bb23adc8b7"
+            }
+        ]),
+    )
+    .await;
+    let gid = add_resp["result"].as_str().expect("gid").to_string();
+
+    let deadline = Instant::now() + Duration::from_secs(60);
+    loop {
+        let status = rpc_call(rpc_port, "aria2.tellStatus", serde_json::json!([gid])).await;
+        let state = status["result"]["status"].as_str().expect("status");
+        if state == "complete" {
+            break;
+        }
+
+        assert!(
+            Instant::now() < deadline,
+            "daemon never completed checksum-verified job: {status}"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+
+    assert_eq!(
+        std::fs::read(temp.path().join("checksum-ok.bin")).expect("read downloaded file"),
+        b"data"
+    );
+
+    graceful_shutdown(rpc_port, &mut child).await;
+}
+
+#[tokio::test]
+async fn daemon_checksum_mismatch_marks_job_error() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("HEAD"))
+        .and(path("/checksum-bad.bin"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-length", "4")
+                .insert_header("accept-ranges", "bytes"),
+        )
+        .mount(&server)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path("/checksum-bad.bin"))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(b"data"))
+        .mount(&server)
+        .await;
+
+    let temp = tempdir().expect("tempdir");
+    let session_file = temp.path().join("checksum-bad.session.redb");
+    let (mut child, rpc_port) = spawn_ready_daemon(temp.path(), &session_file, None).await;
+
+    let add_resp = rpc_call(
+        rpc_port,
+        "aria2.addUri",
+        serde_json::json!([
+            [format!("{}/checksum-bad.bin", server.uri())],
+            {
+                "out": "checksum-bad.bin",
+                "checksum": "sha-256=0000000000000000000000000000000000000000000000000000000000000000"
+            }
+        ]),
+    )
+    .await;
+    let gid = add_resp["result"].as_str().expect("gid").to_string();
+
+    let deadline = Instant::now() + Duration::from_secs(60);
+    let status = loop {
+        let status = rpc_call(rpc_port, "aria2.tellStatus", serde_json::json!([gid])).await;
+        let state = status["result"]["status"].as_str().expect("status");
+        if state == "error" {
+            break status;
+        }
+        if state == "complete" {
+            panic!("daemon completed a job with mismatched checksum: {status}");
+        }
+
+        assert!(
+            Instant::now() < deadline,
+            "daemon never surfaced checksum mismatch as error: {status}"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    };
+
+    let message = status["result"]["errorMessage"]
+        .as_str()
+        .expect("error message");
+    assert!(
+        message.contains("checksum"),
+        "error message should mention checksum mismatch: {message}"
+    );
+
+    graceful_shutdown(rpc_port, &mut child).await;
+}
+
+#[tokio::test]
+async fn daemon_conditional_get_skips_not_modified_downloads() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("HEAD"))
+        .and(path("/cached.bin"))
+        .and(wiremock::matchers::header_exists("if-modified-since"))
+        .respond_with(ResponseTemplate::new(304))
+        .mount(&server)
+        .await;
+
+    Mock::given(method("HEAD"))
+        .and(path("/cached.bin"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-length", "8")
+                .insert_header("accept-ranges", "bytes"),
+        )
+        .mount(&server)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path("/cached.bin"))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(b"download"))
+        .mount(&server)
+        .await;
+
+    let temp = tempdir().expect("tempdir");
+    let cached = temp.path().join("cached.bin");
+    std::fs::write(&cached, b"existing").expect("write cached file");
+    let session_file = temp.path().join("conditional-get.session.redb");
+    let (mut child, rpc_port) = spawn_ready_daemon_with_args(
+        temp.path(),
+        &session_file,
+        None,
+        &["--conditional-get", "--allow-overwrite"],
+    )
+    .await;
+
+    let add_resp = rpc_call(
+        rpc_port,
+        "aria2.addUri",
+        serde_json::json!([
+            [format!("{}/cached.bin", server.uri())],
+            { "out": "cached.bin" }
+        ]),
+    )
+    .await;
+    let gid = add_resp["result"].as_str().expect("gid").to_string();
+
+    let deadline = Instant::now() + Duration::from_secs(60);
+    loop {
+        let status = rpc_call(rpc_port, "aria2.tellStatus", serde_json::json!([gid])).await;
+        let state = status["result"]["status"].as_str().expect("status");
+        if state == "complete" {
+            break;
+        }
+
+        assert!(
+            Instant::now() < deadline,
+            "daemon never completed conditional-get skip path: {status}"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+
+    assert_eq!(std::fs::read(&cached).expect("read cached file"), b"existing");
+
+    let requests = server.received_requests().await.expect("received requests");
+    let get_count = requests
+        .iter()
+        .filter(|req| req.method.as_str() == "GET" && req.url.path() == "/cached.bin")
+        .count();
+    assert_eq!(get_count, 0, "daemon should skip GET after 304 probe");
+
+    graceful_shutdown(rpc_port, &mut child).await;
+}
+
+#[tokio::test]
 async fn daemon_periodically_saves_session_when_interval_is_enabled() {
     let server = MockServer::start().await;
 
