@@ -185,16 +185,27 @@ fn should_stop_seeding(
 #[cfg(test)]
 mod tests {
     use super::{
-        bt_service_config, handle_bt_cancellation, map_bt_files, map_bt_peers,
-        reconcile_bt_completion, sync_bt_status_into_job, should_stop_seeding,
+        bt_service_config, handle_bt_cancellation, map_bt_files, map_bt_peers, should_stop_seeding,
+        sync_bt_job_from_status, BtCompletionAction,
     };
     use raria_bt::service::{BtFileInfo, BtPeerInfo};
-    use raria_core::config::GlobalConfig;
+    use raria_core::config::{GlobalConfig, JobOptions};
     use raria_core::engine::{AddUriSpec, Engine};
-    use raria_core::progress::DownloadEvent;
-    use raria_core::job::Status;
+    use raria_core::job::{Job, Status};
     use std::path::PathBuf;
     use std::time::{Duration, Instant};
+
+    fn insert_active_bt_job(engine: &Engine, options: JobOptions) -> raria_core::job::Gid {
+        let mut job = Job::new_bt_with_options(
+            vec!["magnet:?xt=urn:btih:feedface".into()],
+            PathBuf::from("/tmp/bt-fixture"),
+            options,
+        );
+        let gid = job.gid;
+        job.status = Status::Active;
+        engine.registry.insert(job).expect("insert bt job");
+        gid
+    }
 
     #[test]
     fn bt_file_info_maps_to_core_bt_file() {
@@ -266,6 +277,132 @@ mod tests {
             bt_config.dht_config_filename,
             Some(PathBuf::from("/tmp/raria-dht.json"))
         );
+    }
+
+    #[test]
+    fn sync_bt_job_from_status_populates_bt_snapshot_fields() {
+        let engine = Engine::new(GlobalConfig::default());
+        let gid = insert_active_bt_job(&engine, JobOptions::default());
+
+        let outcome = sync_bt_job_from_status(
+            &engine,
+            gid,
+            &raria_bt::service::BtStatus {
+                total_size: 1_048_576,
+                downloaded: 524_288,
+                uploaded: 12_345,
+                download_speed: 4_096,
+                upload_speed: 512,
+                num_peers: 3,
+                num_seeders: 7,
+                is_complete: false,
+                info_hash: "abcdef1234567890".into(),
+                torrent_name: Some("fixture.bin".into()),
+                announce_list: Some(vec!["udp://tracker.example:80/announce".into()]),
+                piece_length: 16_384,
+                num_pieces: 64,
+            },
+            None,
+            None,
+        )
+        .expect("sync bt status");
+
+        assert_eq!(outcome.completion_action, BtCompletionAction::None);
+
+        let job = engine.registry.get(gid).expect("job in registry");
+        let bt = job.bt.expect("bt snapshot should exist");
+        assert_eq!(job.total_size, Some(1_048_576));
+        assert_eq!(job.downloaded, 524_288);
+        assert_eq!(job.upload_speed, 512);
+        assert_eq!(bt.info_hash.as_deref(), Some("abcdef1234567890"));
+        assert_eq!(bt.torrent_name.as_deref(), Some("fixture.bin"));
+        assert_eq!(
+            bt.announce_list.as_deref(),
+            Some(&["udp://tracker.example:80/announce".to_string()][..])
+        );
+        assert_eq!(bt.uploaded, Some(12_345));
+        assert_eq!(bt.num_seeders, Some(7));
+        assert_eq!(bt.piece_length, Some(16_384));
+        assert_eq!(bt.num_pieces, Some(64));
+    }
+
+    #[test]
+    fn sync_bt_job_from_status_enters_seeding_once_when_seed_controls_exist() {
+        let engine = Engine::new(GlobalConfig::default());
+        let gid = insert_active_bt_job(
+            &engine,
+            JobOptions {
+                seed_ratio: Some(1.5),
+                ..Default::default()
+            },
+        );
+
+        let status = raria_bt::service::BtStatus {
+            total_size: 1_024,
+            downloaded: 1_024,
+            uploaded: 0,
+            download_speed: 0,
+            upload_speed: 0,
+            num_peers: 1,
+            num_seeders: 1,
+            is_complete: true,
+            info_hash: "abcdef1234567890".into(),
+            torrent_name: Some("fixture.bin".into()),
+            announce_list: None,
+            piece_length: 1_024,
+            num_pieces: 1,
+        };
+
+        let first = sync_bt_job_from_status(&engine, gid, &status, None, None)
+            .expect("first bt sync should succeed");
+        assert_eq!(first.completion_action, BtCompletionAction::EnterSeeding);
+
+        let first_job = engine.registry.get(gid).expect("job in registry");
+        assert_eq!(first_job.status, Status::Seeding);
+        assert!(first_job.bt_download_complete_emitted());
+
+        let second = sync_bt_job_from_status(&engine, gid, &status, None, None)
+            .expect("second bt sync should succeed");
+        assert_eq!(second.completion_action, BtCompletionAction::None);
+
+        let second_job = engine.registry.get(gid).expect("job in registry");
+        assert_eq!(second_job.status, Status::Seeding);
+        assert!(second_job.bt_download_complete_emitted());
+    }
+
+    #[test]
+    fn sync_bt_job_from_status_requests_direct_completion_without_seed_controls() {
+        let engine = Engine::new(GlobalConfig::default());
+        let gid = insert_active_bt_job(&engine, JobOptions::default());
+
+        let outcome = sync_bt_job_from_status(
+            &engine,
+            gid,
+            &raria_bt::service::BtStatus {
+                total_size: 2_048,
+                downloaded: 2_048,
+                uploaded: 0,
+                download_speed: 0,
+                upload_speed: 0,
+                num_peers: 0,
+                num_seeders: 0,
+                is_complete: true,
+                info_hash: "feedfacefeedface".into(),
+                torrent_name: Some("fixture.bin".into()),
+                announce_list: None,
+                piece_length: 2_048,
+                num_pieces: 1,
+            },
+            None,
+            None,
+        )
+        .expect("sync bt status");
+
+        assert_eq!(outcome.completion_action, BtCompletionAction::Complete);
+
+        let job = engine.registry.get(gid).expect("job in registry");
+        assert_eq!(job.status, Status::Active);
+        assert!(!job.bt_download_complete_emitted());
     }
 
     #[test]
