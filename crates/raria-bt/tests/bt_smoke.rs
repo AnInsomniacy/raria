@@ -317,6 +317,7 @@ async fn bt_service_completes_peer_download_through_socks5_proxy() {
             disable_dht_persistence: true,
             dht_config_filename: None,
             initial_peers: Some(vec![seed.seed_addr]),
+            ..Default::default()
         },
     )
     .expect("create bt service");

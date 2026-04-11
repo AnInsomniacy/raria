@@ -70,8 +70,8 @@
 |-----------|-------|-------|--------|-------|
 | Basic torrent download | ✅ | ✅ | `tested` | Dedicated `raria-bt` product-path smoke now downloads a real torrent from a live seed peer and verifies file completion alongside existing daemon/RPC wiring coverage |
 | Magnet URI | ✅ | ✅ | `client_verified` | BT dispatch tests cover creation semantics, and daemon RPC smoke now proves `aria2.addUri(magnet)` on the real daemon path |
-| DHT | ✅ | ✅ | `wired` | librqbit support; no explicit parity verification |
-| PEX | ✅ | ✅ | `wired` | librqbit support |
+| DHT | ✅ | ✅ | `wired` | librqbit support plus a local bootstrap/listen seam in `BtService`, but no passing deterministic parity proof yet |
+| PEX | ✅ | ✅ | `wired` | librqbit source/runtime support exists, but deterministic local parity proof still has not closed |
 | uTP | ✅ | ❌ | `gap` | Current upstream/runtime path is TCP-only in the exercised stack; no real uTP transport surface is available to verify |
 | File selection | ✅ | ✅ | `tested` | BT selection is wired and covered by unit + RPC tests |
 | Pause / Resume | ✅ | ✅ | `client_verified` | BT dispatch tests verify control flow, and daemon RPC smoke now proves pause/unpause status transitions on a real BT daemon path |

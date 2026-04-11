@@ -6,11 +6,12 @@
 
 ## Conclusion
 
-Closing the remaining BT transport tail with a single deterministic proof is not feasible in the
-current `raria + librqbit` stack.
+Closing the remaining BT transport tail with a single deterministic proof is still not feasible in
+the current `raria + librqbit` stack, even after adding a local DHT bootstrap/listen seam.
 
-- `DHT`: raria now exposes a minimal persistence-file seam, but it still does not expose the
-  bootstrap injection needed to force a local deterministic DHT topology.
+- `DHT`: raria now exposes both a persistence-file seam and an explicit local
+  bootstrap/listen-address seam, but the deterministic local proof still timed out before peer
+  discovery on the product path.
 - `PEX`: present in upstream source, but it does not independently close the lane while DHT and
   uTP remain unproven.
 - `uTP`: absent from the current dependency/runtime path, so there is no transport surface to
@@ -18,7 +19,7 @@ current `raria + librqbit` stack.
 
 ## Evidence
 
-### 1. raria now forwards only the DHT on/off booleans plus a persistence-file seam
+### 1. raria now forwards DHT on/off, a persistence-file seam, and a local bootstrap/listen seam
 
 In [service.rs](/Users/sekiro/Projects/VSCode/raria/crates/raria-bt/src/service.rs), `BtService`
 builds `SessionOptions` with:
@@ -26,15 +27,15 @@ builds `SessionOptions` with:
 - `disable_dht`
 - `disable_dht_persistence`
 - optional persistent DHT config filename
+- optional DHT bootstrap address list
+- optional DHT listen address
 - SOCKS proxy and fastresume persistence
 
-It still does not expose any local bootstrap override.
+### 2. locked `librqbit 8.1.1` still needs a local patch to surface deterministic bootstrap control
 
-### 2. librqbit does not expose deterministic bootstrap control through `SessionOptions`
-
-In upstream `librqbit`, `SessionOptions` includes `dht_config: Option<PersistentDhtConfig>`, but
-that type is only a persistence wrapper (`dump_interval`, `config_filename`) rather than a true
-bootstrap seam.
+In the crates.io `librqbit 8.1.1` that raria locks today, upstream `SessionOptions` includes
+`dht_config: Option<PersistentDhtConfig>`, but that type is only a persistence wrapper
+(`dump_interval`, `config_filename`) rather than a true bootstrap seam.
 
 The deterministic controls that actually matter live in upstream `DhtConfig`:
 
@@ -42,34 +43,39 @@ The deterministic controls that actually matter live in upstream `DhtConfig`:
 - `listen_addr`
 - `routing_table`
 
-When `bootstrap_addrs` is not provided, librqbit falls back to public DHT bootstrap nodes.
-Current raria code now forwards `disable_dht` / `disable_dht_persistence`, BT persistence and
-fastresume, plus an optional persistent DHT config filename. It still cannot inject
-`bootstrap_addrs` or a local-only DHT topology.
+Raria now vendors a minimal local patch so `SessionOptions` can additionally carry:
+
+- `dht_bootstrap_addrs`
+- `dht_listen_addr`
+
+When those overrides are set, the session bypasses persistent DHT restore and instantiates
+`DhtBuilder::with_config(DhtConfig { bootstrap_addrs, listen_addr, ... })` directly.
 
 There is an internal recovery path where `PersistentDht` reloads `listen_addr`, `routing_table`,
 and `peer_store` from its JSON persistence file, but that format is not exposed as a stable public
 test seam from raria. In practice, that still leaves us without a straightforward deterministic
 local DHT harness on the current product path.
 
-I also attempted a stronger local proof by adding a product-path seam for the persistent DHT
-config filename and seeding a handcrafted persistence file containing:
+I attempted two stronger local proofs:
+
+1. a product-path persistence-file seam with a handcrafted DHT state file containing:
 
 - a local listen address
 - a routing table with a self-referential node entry
 - a peer store entry for the torrent's info-hash
 
-Even with that seam, the BT client still timed out before peer visibility on the product path.
-That makes the blocker stricter than "missing config plumb-through": the current stack still lacks
-a reliable deterministic local DHT proof recipe.
+2. a product-path bootstrap/listen seam using a locally bound DHT node as the only bootstrap peer
 
-### 3. That makes a real local DHT proof non-deterministic from raria
+Even with the stronger bootstrap/listen seam, the BT client still timed out before peer visibility
+on the product path. That makes the blocker stricter than "missing config plumb-through": the
+current stack still lacks a reliable deterministic local DHT proof recipe.
 
-Because `BtServiceConfig` cannot inject `dht_config`, a raria test cannot point the BT session at
-a local-only DHT bootstrap node. The remaining options are:
+### 3. That still leaves a real local DHT proof non-deterministic from raria
+
+Even after adding the seam, the remaining options are:
 
 1. rely on the public internet, which is not deterministic
-2. broaden production code to add a new DHT test seam first
+2. keep broadening product/runtime seams until the exact missing announce/discovery precondition is exposed
 
 For the current scope, that is a blocker, not a proof.
 
@@ -81,9 +87,10 @@ peers back into peer discovery. So PEX exists in source.
 The reason this lane still does not close is not "PEX missing"; it is that DHT and uTP still
 prevent an honest transport-tail proof.
 
-An attempted local deterministic PEX proof using a dual-seed / single-client topology did not
-produce a stable second-peer discovery signal within the test window, so PEX also remains
-unproven in a deterministic local harness today.
+An attempted local deterministic PEX proof using a dual-seed / single-client topology also did not
+produce a stable second-peer discovery signal within the test window, even after ensuring one seed
+had the other as an explicit outgoing initial peer. So PEX also remains unproven in a
+deterministic local harness today.
 
 ### 5. uTP is absent from the current source/runtime path
 
@@ -107,8 +114,8 @@ So there is currently no uTP transport path in the stack that raria could exerci
 
 The remaining BT transport tail cannot be promoted with a deterministic proof today because:
 
-1. `DHT` needs a new raria test seam for local bootstrap/persistence injection before a
-   deterministic local proof is possible.
+1. `DHT` still lacks a reliable deterministic proof recipe on the product path even after adding
+   local bootstrap/listen injection.
 2. `uTP` is absent from the current upstream/runtime path, so there is nothing real to prove.
 
 Until those two blockers change, any claim that the full `DHT / PEX / uTP` tail is proven would

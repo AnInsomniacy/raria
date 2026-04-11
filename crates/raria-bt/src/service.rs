@@ -63,6 +63,8 @@ fn bt_session_options(output_dir: &Path, config: &BtServiceConfig) -> SessionOpt
                 config_filename: Some(path.clone()),
             }
         }),
+        dht_bootstrap_addrs: config.dht_bootstrap_addrs.clone(),
+        dht_listen_addr: config.dht_listen_addr,
         socks_proxy_url: config.socks_proxy_url.clone(),
         fastresume: true,
         persistence: Some(SessionPersistenceConfig::Json {
@@ -156,6 +158,8 @@ pub struct BtServiceConfig {
     pub disable_dht: bool,
     pub disable_dht_persistence: bool,
     pub dht_config_filename: Option<PathBuf>,
+    pub dht_bootstrap_addrs: Option<Vec<String>>,
+    pub dht_listen_addr: Option<SocketAddr>,
     pub initial_peers: Option<Vec<SocketAddr>>,
 }
 
@@ -557,6 +561,8 @@ mod tests {
                 disable_dht: true,
                 disable_dht_persistence: true,
                 dht_config_filename: Some(PathBuf::from("/tmp/raria-bt-dht.json")),
+                dht_bootstrap_addrs: Some(vec!["127.0.0.1:19001".into()]),
+                dht_listen_addr: Some("127.0.0.1:19002".parse().expect("socket addr")),
                 initial_peers: None,
             },
         );
@@ -577,6 +583,14 @@ mod tests {
                 .as_ref()
                 .and_then(|cfg| cfg.config_filename.as_ref()),
             Some(&PathBuf::from("/tmp/raria-bt-dht.json"))
+        );
+        assert_eq!(
+            options.dht_bootstrap_addrs,
+            Some(vec!["127.0.0.1:19001".into()])
+        );
+        assert_eq!(
+            options.dht_listen_addr,
+            Some("127.0.0.1:19002".parse().expect("socket addr"))
         );
         match options.persistence {
             Some(SessionPersistenceConfig::Json { folder }) => {
