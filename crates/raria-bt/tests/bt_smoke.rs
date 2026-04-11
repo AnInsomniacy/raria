@@ -118,6 +118,7 @@ struct SeedFixture {
     torrent_bytes: Vec<u8>,
     payload: Vec<u8>,
     output_name: String,
+    torrent_name: String,
     seed_addr: SocketAddr,
     _session: Arc<Session>,
     _source_root: tempfile::TempDir,
@@ -130,6 +131,12 @@ async fn start_seed_fixture_with_initial_peers(
     let source_root = tempdir().context("source tempdir")?;
     let session_dir = tempdir().context("session tempdir")?;
     let output_name = "fixture.bin".to_string();
+    let torrent_name = source_root
+        .path()
+        .file_name()
+        .expect("source root name")
+        .to_string_lossy()
+        .into_owned();
     let source_file = source_root.path().join(&output_name);
     let payload = write_fixture(&source_file, payload_len);
     fs::write(
@@ -191,6 +198,7 @@ async fn start_seed_fixture_with_initial_peers(
         torrent_bytes,
         payload,
         output_name,
+        torrent_name,
         seed_addr,
         _session: session,
         _source_root: source_root,
@@ -380,7 +388,7 @@ async fn bt_service_status_exposes_reachable_bt_metadata_fields() {
         loop {
             let status = service.status(&handle).await.expect("bt status");
             if status.total_size > 0
-                && status.torrent_name.as_deref() == Some(seed.output_name.as_str())
+                && status.torrent_name.is_some()
                 && status.piece_length.is_some()
                 && status.num_pieces.is_some()
             {
@@ -393,7 +401,7 @@ async fn bt_service_status_exposes_reachable_bt_metadata_fields() {
     .expect("BT metadata status timeout");
 
     assert!(!status.info_hash.is_empty(), "info hash should be exposed");
-    assert_eq!(status.torrent_name.as_deref(), Some(seed.output_name.as_str()));
+    assert_eq!(status.torrent_name.as_deref(), Some(seed.torrent_name.as_str()));
     assert_eq!(status.announce_list, Some(vec![tracker_url]));
     assert_eq!(status.piece_length, Some(16 * 1024));
     assert_eq!(
