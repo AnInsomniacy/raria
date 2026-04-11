@@ -1,0 +1,4 @@
+# Enforce zero-warning policy across the workspace.
+# Any new warning becomes a compile error in local dev and CI.
+[target.'cfg(all())']
+rustflags = ["-D", "warnings"]
