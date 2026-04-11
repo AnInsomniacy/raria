@@ -1,18 +1,18 @@
 use anyhow::{Context, Result};
 use librqbit::{
-    AddTorrent, AddTorrentOptions, CreateTorrentOptions, Session, SessionOptions, create_torrent,
+    create_torrent, AddTorrent, AddTorrentOptions, CreateTorrentOptions, Session, SessionOptions,
 };
 use raria_bt::service::{BtService, BtServiceConfig, BtSource};
 use raria_core::job::Gid;
 use std::fs;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener as StdTcpListener};
 use std::path::Path;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 use tempfile::tempdir;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::time::{Duration, sleep, timeout};
+use tokio::time::{sleep, timeout, Duration};
 
 fn make_payload(size: usize) -> Vec<u8> {
     (0..size).map(|idx| ((idx * 31) % 251) as u8).collect()
@@ -325,7 +325,6 @@ async fn bt_service_completes_peer_download_through_socks5_proxy() {
             disable_dht_persistence: true,
             dht_config_filename: None,
             initial_peers: Some(vec![seed.seed_addr]),
-            ..Default::default()
         },
     )
     .expect("create bt service");
@@ -401,7 +400,10 @@ async fn bt_service_status_exposes_reachable_bt_metadata_fields() {
     .expect("BT metadata status timeout");
 
     assert!(!status.info_hash.is_empty(), "info hash should be exposed");
-    assert_eq!(status.torrent_name.as_deref(), Some(seed.torrent_name.as_str()));
+    assert_eq!(
+        status.torrent_name.as_deref(),
+        Some(seed.torrent_name.as_str())
+    );
     assert_eq!(status.announce_list, Some(vec![tracker_url]));
     assert_eq!(status.piece_length, Some(16 * 1024));
     assert_eq!(

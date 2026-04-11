@@ -15,12 +15,12 @@ use librqbit::{
     AddTorrent, AddTorrentOptions, AddTorrentResponse, ManagedTorrent, Session, SessionOptions,
     SessionPersistenceConfig,
 };
+use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use parking_lot::RwLock;
 use tracing::{debug, info, warn};
 
 fn is_selected_file(selected_files: Option<&[usize]>, file_index: usize) -> bool {
