@@ -3479,6 +3479,7 @@ dependencies = [
  "base64",
  "futures",
  "jsonrpsee",
+ "parking_lot",
  "raria-core",
  "raria-metalink",
  "reqwest",

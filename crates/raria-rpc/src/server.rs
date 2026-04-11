@@ -339,6 +339,26 @@ fn request_value_contains_valid_token(value: &serde_json::Value, secret: &str) -
     }
 }
 
+/// Intern pool for RPC method names so we get `&'static str` without
+/// unbounded `Box::leak`. Method names are a finite, small set (~30 entries)
+/// so this pool never grows beyond startup registration.
+fn intern_method_name(name: &str) -> &'static str {
+    use std::collections::HashSet;
+    use std::sync::OnceLock;
+    use parking_lot::Mutex;
+
+    static POOL: OnceLock<Mutex<HashSet<&'static str>>> = OnceLock::new();
+    let pool = POOL.get_or_init(|| Mutex::new(HashSet::new()));
+    let mut guard = pool.lock();
+    if let Some(&existing) = guard.get(name) {
+        return existing;
+    }
+    // First time seeing this name — allocate once and keep forever.
+    let leaked: &'static str = Box::leak(name.to_string().into_boxed_str());
+    guard.insert(leaked);
+    leaked
+}
+
 /// Wrap an RpcModule with token-based authentication.
 ///
 /// Creates a proxy module that intercepts every method call, validates
@@ -362,7 +382,7 @@ fn wrap_module_with_auth(
         let policy = policy.clone();
         let method_name = name.clone();
         // jsonrpsee requires &'static str for method names.
-        let static_name: &'static str = Box::leak(name.into_boxed_str());
+        let static_name: &'static str = intern_method_name(&name);
 
         outer.register_async_method(static_name, move |params, _ctx, _ext| {
             let inner = Arc::clone(&inner_clone);
@@ -754,5 +774,29 @@ mod tests {
             }),
             None
         );
+    }
+    #[test]
+    fn intern_method_name_returns_static_str() {
+        let name = "aria2.addUri";
+        let interned = intern_method_name(name);
+        assert_eq!(interned, name);
+        // The returned reference must be 'static — this compiles only if it is.
+        let _proof: &'static str = interned;
+    }
+
+    #[test]
+    fn intern_method_name_deduplicates_same_string() {
+        let a = intern_method_name("aria2.tellStatus");
+        let b = intern_method_name("aria2.tellStatus");
+        // Same pointer means no duplicate allocation.
+        assert!(std::ptr::eq(a, b), "interned strings must share the same pointer");
+    }
+
+    #[test]
+    fn intern_method_name_distinguishes_different_strings() {
+        let a = intern_method_name("aria2.pause");
+        let b = intern_method_name("aria2.unpause");
+        assert_ne!(a, b);
+        assert!(!std::ptr::eq(a, b));
     }
 }
