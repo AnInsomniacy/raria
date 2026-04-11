@@ -398,8 +398,22 @@ mod tests {
         assert_eq!(job.download_speed, 128);
         assert_eq!(job.upload_speed, 64);
         assert_eq!(job.total_size, Some(4096));
-        assert_eq!(job.bt_files, bt_files);
-        assert_eq!(job.bt_peers, bt_peers);
+        let synced_files = job.bt_files.expect("bt files");
+        assert_eq!(synced_files.len(), 1);
+        assert_eq!(synced_files[0].index, 0);
+        assert_eq!(synced_files[0].path, PathBuf::from("fixture.bin"));
+        assert_eq!(synced_files[0].length, 4096);
+        assert_eq!(synced_files[0].completed_length, 2048);
+        assert!(synced_files[0].selected);
+
+        let synced_peers = job.bt_peers.expect("bt peers");
+        assert_eq!(synced_peers.len(), 1);
+        assert_eq!(synced_peers[0].addr, "127.0.0.1:6881");
+        assert_eq!(synced_peers[0].ip, "127.0.0.1");
+        assert_eq!(synced_peers[0].port, 6881);
+        assert_eq!(synced_peers[0].download_speed, 128);
+        assert_eq!(synced_peers[0].upload_speed, 64);
+        assert!(synced_peers[0].seeder);
 
         let bt = job.bt.expect("bt snapshot");
         assert_eq!(bt.info_hash.as_deref(), Some("abcdef1234567890"));
