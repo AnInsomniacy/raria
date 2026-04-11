@@ -316,7 +316,12 @@ async fn daemon_bt_tracker_option_announces_to_tracker_on_real_daemon_path() {
 #[tokio::test]
 async fn daemon_get_peers_exposes_live_bt_peer_details_over_rpc() {
     let _guard = lock_bt_daemon_smoke_lane().await;
-    let fixture = spawn_bt_seed_fixture_with_payload((0..(8 * 1024 * 1024)).map(|idx| (idx % 251) as u8).collect()).await;
+    let fixture = spawn_bt_seed_fixture_with_payload(
+        (0..(8 * 1024 * 1024))
+            .map(|idx| (idx % 251) as u8)
+            .collect(),
+    )
+    .await;
     let temp = tempdir().expect("tempdir");
     let session_file = temp.path().join("bt-get-peers.session.redb");
     let (mut child, rpc_port) = spawn_ready_daemon(temp.path(), &session_file).await;
@@ -375,16 +380,36 @@ async fn daemon_get_peers_exposes_live_bt_peer_details_over_rpc() {
             .expect("parse tellStatus response");
 
         let tracker_requests = fixture.tracker.received_requests().await;
-        if let Some(first_peer) = peers_resp["result"].as_array().and_then(|peers| peers.first()) {
+        if let Some(first_peer) = peers_resp["result"]
+            .as_array()
+            .and_then(|peers| peers.first())
+        {
             assert!(
-                tracker_requests.as_ref().is_some_and(|requests| !requests.is_empty()),
+                tracker_requests
+                    .as_ref()
+                    .is_some_and(|requests| !requests.is_empty()),
                 "expected daemon-path tracker announce before accepting peer details: {tracker_requests:#?}"
             );
-            assert!(first_peer["ip"].as_str().is_some(), "ip should be a string: {peers_resp}");
-            assert!(first_peer["port"].as_str().is_some(), "port should be a string: {peers_resp}");
-            assert!(first_peer["downloadSpeed"].as_str().is_some(), "downloadSpeed should be a string: {peers_resp}");
-            assert!(first_peer["uploadSpeed"].as_str().is_some(), "uploadSpeed should be a string: {peers_resp}");
-            assert!(first_peer["seeder"].as_str().is_some(), "seeder should be a string: {peers_resp}");
+            assert!(
+                first_peer["ip"].as_str().is_some(),
+                "ip should be a string: {peers_resp}"
+            );
+            assert!(
+                first_peer["port"].as_str().is_some(),
+                "port should be a string: {peers_resp}"
+            );
+            assert!(
+                first_peer["downloadSpeed"].as_str().is_some(),
+                "downloadSpeed should be a string: {peers_resp}"
+            );
+            assert!(
+                first_peer["uploadSpeed"].as_str().is_some(),
+                "uploadSpeed should be a string: {peers_resp}"
+            );
+            assert!(
+                first_peer["seeder"].as_str().is_some(),
+                "seeder should be a string: {peers_resp}"
+            );
             assert_eq!(first_peer["peerId"].as_str(), Some(""));
             assert_eq!(first_peer["bitfield"].as_str(), Some(""));
             break;
@@ -422,7 +447,10 @@ async fn daemon_get_peers_exposes_live_bt_peer_details_over_rpc() {
                 break;
             }
             Ok(None) => {
-                assert!(Instant::now() < deadline, "daemon did not exit after shutdown RPC");
+                assert!(
+                    Instant::now() < deadline,
+                    "daemon did not exit after shutdown RPC"
+                );
                 tokio::time::sleep(Duration::from_millis(100)).await;
             }
             Err(error) => panic!("failed waiting for daemon exit: {error}"),

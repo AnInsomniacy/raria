@@ -57,13 +57,12 @@ fn bt_session_options(output_dir: &Path, config: &BtServiceConfig) -> SessionOpt
     SessionOptions {
         disable_dht: config.disable_dht,
         disable_dht_persistence: config.disable_dht_persistence,
-        dht_config: config
-            .dht_config_filename
-            .as_ref()
-            .map(|path| librqbit::dht::PersistentDhtConfig {
+        dht_config: config.dht_config_filename.as_ref().map(|path| {
+            librqbit::dht::PersistentDhtConfig {
                 dump_interval: None,
                 config_filename: Some(path.clone()),
-            }),
+            }
+        }),
         socks_proxy_url: config.socks_proxy_url.clone(),
         fastresume: true,
         persistence: Some(SessionPersistenceConfig::Json {
