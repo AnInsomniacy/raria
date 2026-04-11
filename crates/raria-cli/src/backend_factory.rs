@@ -1,5 +1,5 @@
 use anyhow::Result;
-use raria_core::service::{detect_scheme, JobSource};
+use raria_core::service::{JobSource, detect_scheme};
 use raria_http::backend::HttpBackend;
 use raria_range::backend::ByteSourceBackend;
 use std::sync::Arc;

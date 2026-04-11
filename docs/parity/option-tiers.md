@@ -61,10 +61,10 @@
 | `auto-file-renaming` | `--auto-file-renaming` | Core | `client_verified` |
 | `http-user` | `--http-user` | HTTP | `client_verified` |
 | `http-passwd` | `--http-passwd` | HTTP | `client_verified` |
-| `sftp-strict-host-key-check` | `--sftp-strict-host-key-check` | SFTP | `wired` |
-| `sftp-known-hosts` | `--sftp-known-hosts` | SFTP | `wired` |
-| `sftp-private-key` | `--sftp-private-key` | SFTP | `wired` |
-| `sftp-private-key-passphrase` | `--sftp-private-key-passphrase` | SFTP | `wired` |
+| `sftp-strict-host-key-check` | `--sftp-strict-host-key-check` | SFTP | `tested` |
+| `sftp-known-hosts` | `--sftp-known-hosts` | SFTP | `tested` |
+| `sftp-private-key` | `--sftp-private-key` | SFTP | `tested` |
+| `sftp-private-key-passphrase` | `--sftp-private-key-passphrase` | SFTP | `tested` |
 | `certificate` | `--certificate` | TLS | `tested` |
 | `private-key` | `--private-key` | TLS | `tested` |
 | `file-allocation` | `--file-allocation` | I/O | `tested` |
@@ -75,7 +75,7 @@
 | `select-file` | `--select-file` | BT | `tested` |
 | `seed-ratio` | `--seed-ratio` | BT | `tested` |
 | `seed-time` | `--seed-time` | BT | `tested` |
-| `bt-tracker` | `--bt-tracker` | BT | `tested` |
+| `bt-tracker` | `--bt-tracker` | BT | `client_verified` |
 | `quiet` | `--quiet` / `-q` | CLI | `client_verified` |
 | `log` | `--log` / `-l` | CLI | `tested` |
 

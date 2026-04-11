@@ -2,8 +2,8 @@
 //
 // This module defines configuration structures for global and per-job settings.
 
-use serde::{Deserialize, Serialize};
 use crate::file_alloc::FileAllocation;
+use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 /// Global configuration for the raria daemon.
@@ -108,6 +108,8 @@ pub struct GlobalConfig {
     pub sftp_private_key: Option<PathBuf>,
     /// Optional SSH private key passphrase used for SFTP authentication.
     pub sftp_private_key_passphrase: Option<String>,
+    /// Optional BT DHT persistence/config file path used to seed librqbit's persistent DHT state.
+    pub bt_dht_config_file: Option<PathBuf>,
     /// Hook script fired when a download starts.
     pub on_download_start: Option<PathBuf>,
     /// Hook script fired when a download completes.
@@ -165,6 +167,7 @@ impl Default for GlobalConfig {
             sftp_known_hosts: None,
             sftp_private_key: None,
             sftp_private_key_passphrase: None,
+            bt_dht_config_file: None,
             on_download_start: None,
             on_download_complete: None,
             on_download_error: None,
@@ -243,7 +246,10 @@ mod tests {
         let cfg = GlobalConfig::default();
         let json = serde_json::to_string(&cfg).unwrap();
         let recovered: GlobalConfig = serde_json::from_str(&json).unwrap();
-        assert_eq!(recovered.max_concurrent_downloads, cfg.max_concurrent_downloads);
+        assert_eq!(
+            recovered.max_concurrent_downloads,
+            cfg.max_concurrent_downloads
+        );
         assert_eq!(recovered.rpc_listen_port, cfg.rpc_listen_port);
     }
 
@@ -259,7 +265,8 @@ mod tests {
     #[test]
     fn job_options_serde_roundtrips() {
         let mut opts = JobOptions::default();
-        opts.headers.push(("Referer".into(), "https://example.com".into()));
+        opts.headers
+            .push(("Referer".into(), "https://example.com".into()));
         opts.out = Some("custom_name.zip".into());
 
         let json = serde_json::to_string(&opts).unwrap();

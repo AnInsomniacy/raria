@@ -89,8 +89,14 @@ mod tests {
 
     #[test]
     fn detect_scheme_http() {
-        assert_eq!(detect_scheme("http://example.com/file"), Some(JobSource::Http));
-        assert_eq!(detect_scheme("https://example.com/file"), Some(JobSource::Http));
+        assert_eq!(
+            detect_scheme("http://example.com/file"),
+            Some(JobSource::Http)
+        );
+        assert_eq!(
+            detect_scheme("https://example.com/file"),
+            Some(JobSource::Http)
+        );
     }
 
     #[test]

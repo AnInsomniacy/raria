@@ -7,7 +7,7 @@
 mod tests {
     use raria_core::config::GlobalConfig;
     use raria_core::engine::Engine;
-    use raria_rpc::server::{start_rpc_server, RpcServerConfig};
+    use raria_rpc::server::{RpcServerConfig, start_rpc_server};
     use std::net::SocketAddr;
     use std::sync::Arc;
     use tokio_util::sync::CancellationToken;
@@ -69,12 +69,7 @@ mod tests {
         use base64::Engine as Base64Engine;
         let encoded = base64::engine::general_purpose::STANDARD.encode(metalink_xml);
 
-        let resp = rpc_call(
-            &url,
-            "aria2.addMetalink",
-            serde_json::json!([encoded]),
-        )
-        .await;
+        let resp = rpc_call(&url, "aria2.addMetalink", serde_json::json!([encoded])).await;
 
         // Should return an array of GIDs (one per file in the metalink).
         assert!(
@@ -86,9 +81,7 @@ mod tests {
 
         // Verify the job exists in the engine.
         let gid_str = result[0].as_str().unwrap();
-        let gid = raria_core::job::Gid::from_raw(
-            u64::from_str_radix(gid_str, 16).unwrap(),
-        );
+        let gid = raria_core::job::Gid::from_raw(u64::from_str_radix(gid_str, 16).unwrap());
         let job = engine.registry.get(gid).unwrap();
         assert!(
             job.uris.iter().any(|u| u.contains("mirror1.com")),
@@ -127,12 +120,7 @@ mod tests {
         use base64::Engine as Base64Engine;
         let encoded = base64::engine::general_purpose::STANDARD.encode(metalink_xml);
 
-        let resp = rpc_call(
-            &url,
-            "aria2.addMetalink",
-            serde_json::json!([encoded]),
-        )
-        .await;
+        let resp = rpc_call(&url, "aria2.addMetalink", serde_json::json!([encoded])).await;
 
         assert!(resp.get("error").is_none(), "should succeed: {resp}");
         let result = resp["result"].as_array().unwrap();
@@ -141,9 +129,7 @@ mod tests {
         // Verify both jobs exist.
         for gid_str in result {
             let gid_str = gid_str.as_str().unwrap();
-            let gid = raria_core::job::Gid::from_raw(
-                u64::from_str_radix(gid_str, 16).unwrap(),
-            );
+            let gid = raria_core::job::Gid::from_raw(u64::from_str_radix(gid_str, 16).unwrap());
             assert!(engine.registry.get(gid).is_some());
         }
 
@@ -178,12 +164,7 @@ mod tests {
         use base64::Engine as Base64Engine;
         let encoded = base64::engine::general_purpose::STANDARD.encode("<not-metalink/>");
 
-        let resp = rpc_call(
-            &url,
-            "aria2.addMetalink",
-            serde_json::json!([encoded]),
-        )
-        .await;
+        let resp = rpc_call(&url, "aria2.addMetalink", serde_json::json!([encoded])).await;
 
         assert!(
             resp.get("error").is_some(),
@@ -215,20 +196,19 @@ mod tests {
         use base64::Engine as Base64Engine;
         let encoded = base64::engine::general_purpose::STANDARD.encode(metalink_xml);
 
-        let resp = rpc_call(
-            &url,
-            "aria2.addMetalink",
-            serde_json::json!([encoded]),
-        )
-        .await;
+        let resp = rpc_call(&url, "aria2.addMetalink", serde_json::json!([encoded])).await;
 
-        assert!(resp.get("error").is_none(), "addMetalink should succeed: {resp}");
-        let gid_str = resp["result"].as_array().unwrap()[0].as_str().unwrap();
-        let gid = raria_core::job::Gid::from_raw(
-            u64::from_str_radix(gid_str, 16).unwrap(),
+        assert!(
+            resp.get("error").is_none(),
+            "addMetalink should succeed: {resp}"
         );
+        let gid_str = resp["result"].as_array().unwrap()[0].as_str().unwrap();
+        let gid = raria_core::job::Gid::from_raw(u64::from_str_radix(gid_str, 16).unwrap());
         let job = engine.registry.get(gid).unwrap();
-        assert_eq!(job.options.checksum.as_deref(), Some("sha-256=abcdef123456"));
+        assert_eq!(
+            job.options.checksum.as_deref(),
+            Some("sha-256=abcdef123456")
+        );
 
         cancel.cancel();
     }

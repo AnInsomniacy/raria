@@ -46,41 +46,41 @@
 
 | Capability | aria2 | raria | Status | Notes |
 |-----------|-------|-------|--------|-------|
-| Basic download | ✅ | ✅ | `wired` | Backend exists; no binary-path E2E yet |
-| Passive mode | ✅ | ✅ | `wired` | Provided by suppaftp |
-| Range / resume (REST) | ✅ | ✅ | `wired` | Implemented, lifecycle cleanup still needs hardening |
-| Explicit FTPS | ✅ | ✅ | `wired` | `ftps://` now upgrades via AUTH TLS and PROT/PBSZ on the real FTP hot path; dedicated E2E coverage still pending |
+| Basic download | ✅ | ✅ | `client_verified` | Dedicated FTP backend smoke plus `raria download ftp://...` binary-path smoke both pass |
+| Passive mode | ✅ | ✅ | `client_verified` | FTP backend smoke and CLI binary-path smoke both exercise PASV data-channel negotiation |
+| Range / resume (REST) | ✅ | ✅ | `tested` | Dedicated FTP backend smoke verifies REST offset resumes via RETR |
+| Explicit FTPS | ✅ | ✅ | `client_verified` | Dedicated FTPS backend smoke plus `raria download ftps://... --ca-certificate ...` binary-path smoke both verify AUTH TLS + PBSZ/PROT + protected data transfer |
 | Implicit FTPS | ✅ | ❌ | `gap` | Deferred |
-| FTP proxy | ✅ | ✅ | `wired` | FTP hot path now consumes `all_proxy=socks5://...`; dedicated FTP proxy E2E is still pending |
+| FTP proxy | ✅ | ✅ | `client_verified` | FTP backend smoke and CLI binary-path smoke both verify control/data connections traverse a SOCKS5 proxy |
 | Data stream cleanup | ✅ | 🔧 | `tested` | Wrapper exists, but deeper lifecycle hardening still planned |
 
 ## SFTP
 
 | Capability | aria2 | raria | Status | Notes |
 |-----------|-------|-------|--------|-------|
-| Basic download | ✅ | ✅ | `wired` | Backend exists; no end-to-end binary test yet |
-| Password auth | ✅ | ✅ | `wired` | URL credential path implemented |
-| Key auth | ✅ | ✅ | `wired` | Config and backend support added; end-to-end SFTP verification still pending |
-| Host key verification | ✅ | ✅ | `wired` | Strict known_hosts policy implemented and unit-tested |
-| SFTP proxy | ✅ | ✅ | `wired` | SFTP hot path now consumes `all_proxy=socks5://...` via proxied TCP stream; dedicated E2E is still pending |
+| Basic download | ✅ | ✅ | `client_verified` | Dedicated in-process SFTP smoke plus `raria download sftp://...` binary-path smoke both verify real SSH/SFTP download flow |
+| Password auth | ✅ | ✅ | `client_verified` | Dedicated in-process SFTP smoke plus binary-path smoke verify password-authenticated downloads end to end |
+| Key auth | ✅ | ✅ | `client_verified` | Dedicated in-process SFTP smoke plus `raria download sftp://... --sftp-private-key ...` binary-path smoke verify private-key-authenticated downloads end to end |
+| Host key verification | ✅ | ✅ | `client_verified` | Dedicated in-process SFTP smoke plus binary-path smoke verify strict known_hosts acceptance on the real download path |
+| SFTP proxy | ✅ | ✅ | `client_verified` | Dedicated in-process SFTP smoke plus `raria download sftp://... --all-proxy socks5://...` binary-path smoke verify proxied SFTP downloads end to end |
 
 ## BitTorrent
 
 | Capability | aria2 | raria | Status | Notes |
 |-----------|-------|-------|--------|-------|
-| Basic torrent download | ✅ | ✅ | `tested` | `BtService` wired through daemon path and RPC job creation tests |
-| Magnet URI | ✅ | ✅ | `tested` | RPC and CLI dispatch paths covered |
+| Basic torrent download | ✅ | ✅ | `tested` | Dedicated `raria-bt` product-path smoke now downloads a real torrent from a live seed peer and verifies file completion alongside existing daemon/RPC wiring coverage |
+| Magnet URI | ✅ | ✅ | `client_verified` | BT dispatch tests cover creation semantics, and daemon RPC smoke now proves `aria2.addUri(magnet)` on the real daemon path |
 | DHT | ✅ | ✅ | `wired` | librqbit support; no explicit parity verification |
 | PEX | ✅ | ✅ | `wired` | librqbit support |
-| uTP | ✅ | ✅ | `wired` | librqbit support |
+| uTP | ✅ | ❌ | `gap` | Current upstream/runtime path is TCP-only in the exercised stack; no real uTP transport surface is available to verify |
 | File selection | ✅ | ✅ | `tested` | BT selection is wired and covered by unit + RPC tests |
-| Pause / Resume | ✅ | ✅ | `wired` | Service methods exist; no client verification yet |
-| Fastresume | ✅ | ✅ | `wired` | librqbit native behavior |
+| Pause / Resume | ✅ | ✅ | `client_verified` | BT dispatch tests verify control flow, and daemon RPC smoke now proves pause/unpause status transitions on a real BT daemon path |
+| Fastresume | ✅ | ✅ | `tested` | `raria-bt` smoke now verifies fastresume persistence files are written and non-zero download progress is restored after restart |
 | MSE/PSE encryption | ✅ | ❌ | `gap` | BT-GAP-001 |
 | WebSeed (BEP-17/19) | ✅ | ❌ | `gap` | BT-GAP-002 |
 | Rarest-first | ✅ | ❌ | `gap` | BT-GAP-003 |
 | HTTP+BT mixed source | ✅ | ❌ | `gap` | BT-GAP-004 |
-| SOCKS5 proxy | ✅ | ✅ | `wired` | librqbit supports it; not product-verified |
+| SOCKS5 proxy | ✅ | ✅ | `tested` | BT hot path forwards `socks5://` all-proxy into librqbit session options, rejects non-SOCKS proxy schemes in tests, and dedicated `raria-bt` smoke now proves end-to-end torrent completion through the SOCKS5 relay |
 
 ## Metalink
 

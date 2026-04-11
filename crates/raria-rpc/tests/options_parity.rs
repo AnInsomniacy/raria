@@ -8,7 +8,7 @@
 mod tests {
     use raria_core::config::GlobalConfig;
     use raria_core::engine::Engine;
-    use raria_rpc::server::{start_rpc_server, RpcServerConfig};
+    use raria_rpc::server::{RpcServerConfig, start_rpc_server};
     use std::net::SocketAddr;
     use std::sync::Arc;
     use tokio_util::sync::CancellationToken;
@@ -92,7 +92,10 @@ mod tests {
         let gid_str = resp["result"].as_str().unwrap();
         let gid = raria_core::job::Gid::from_raw(u64::from_str_radix(gid_str, 16).unwrap());
         let job = engine.registry.get(gid).unwrap();
-        assert_eq!(job.options.checksum, Some("sha-256=abcdef1234567890".into()));
+        assert_eq!(
+            job.options.checksum,
+            Some("sha-256=abcdef1234567890".into())
+        );
         cancel.cancel();
     }
 
@@ -253,18 +256,17 @@ mod tests {
         let gid_str = add_resp["result"].as_str().unwrap();
 
         // Get option.
-        let opt_resp = rpc_call(
-            &url,
-            "aria2.getOption",
-            serde_json::json!([gid_str]),
-        )
-        .await;
+        let opt_resp = rpc_call(&url, "aria2.getOption", serde_json::json!([gid_str])).await;
         let result = &opt_resp["result"];
         assert_eq!(result["max-download-limit"], "51200");
         assert_eq!(result["checksum"], "sha-256=aabbccdd");
         // header should be an array with our value.
         let headers = result["header"].as_array().unwrap();
-        assert!(headers.iter().any(|h| h.as_str() == Some("Referer: https://test.com")));
+        assert!(
+            headers
+                .iter()
+                .any(|h| h.as_str() == Some("Referer: https://test.com"))
+        );
         cancel.cancel();
     }
 
@@ -297,9 +299,8 @@ mod tests {
         use base64::Engine as Base64Engine;
 
         let (_engine, url, cancel) = spawn_server().await;
-        let encoded = base64::engine::general_purpose::STANDARD.encode(
-            b"d8:announce35:http://tracker.example.com/announcee",
-        );
+        let encoded = base64::engine::general_purpose::STANDARD
+            .encode(b"d8:announce35:http://tracker.example.com/announcee");
 
         let add_resp = rpc_call(
             &url,
@@ -313,7 +314,10 @@ mod tests {
             ]),
         )
         .await;
-        assert!(add_resp.get("error").is_none(), "addTorrent should succeed: {add_resp}");
+        assert!(
+            add_resp.get("error").is_none(),
+            "addTorrent should succeed: {add_resp}"
+        );
         let gid_str = add_resp["result"].as_str().unwrap();
 
         let option = rpc_call(&url, "aria2.getOption", serde_json::json!([gid_str])).await;
@@ -326,9 +330,8 @@ mod tests {
         use base64::Engine as Base64Engine;
 
         let (engine, url, cancel) = spawn_server().await;
-        let encoded = base64::engine::general_purpose::STANDARD.encode(
-            b"d8:announce35:http://tracker.example.com/announcee",
-        );
+        let encoded = base64::engine::general_purpose::STANDARD
+            .encode(b"d8:announce35:http://tracker.example.com/announcee");
 
         let add_resp = rpc_call(
             &url,
@@ -343,7 +346,10 @@ mod tests {
             ]),
         )
         .await;
-        assert!(add_resp.get("error").is_none(), "addTorrent should succeed: {add_resp}");
+        assert!(
+            add_resp.get("error").is_none(),
+            "addTorrent should succeed: {add_resp}"
+        );
         let gid_str = add_resp["result"].as_str().unwrap();
 
         let option = rpc_call(&url, "aria2.getOption", serde_json::json!([gid_str])).await;
@@ -363,12 +369,19 @@ mod tests {
         use base64::Engine as Base64Engine;
 
         let (engine, url, cancel) = spawn_server().await;
-        let encoded = base64::engine::general_purpose::STANDARD.encode(
-            b"d8:announce35:http://tracker.example.com/announcee",
-        );
+        let encoded = base64::engine::general_purpose::STANDARD
+            .encode(b"d8:announce35:http://tracker.example.com/announcee");
 
-        let add_resp = rpc_call(&url, "aria2.addTorrent", serde_json::json!([encoded, [], {}])).await;
-        assert!(add_resp.get("error").is_none(), "addTorrent should succeed: {add_resp}");
+        let add_resp = rpc_call(
+            &url,
+            "aria2.addTorrent",
+            serde_json::json!([encoded, [], {}]),
+        )
+        .await;
+        assert!(
+            add_resp.get("error").is_none(),
+            "addTorrent should succeed: {add_resp}"
+        );
         let gid_str = add_resp["result"].as_str().unwrap().to_string();
 
         let change_resp = rpc_call(
@@ -388,7 +401,10 @@ mod tests {
 
         let gid = raria_core::job::Gid::from_raw(u64::from_str_radix(&gid_str, 16).unwrap());
         let job = engine.registry.get(gid).unwrap();
-        assert_eq!(job.options.bt_trackers, Some(vec!["http://tracker3.example/announce".into()]));
+        assert_eq!(
+            job.options.bt_trackers,
+            Some(vec!["http://tracker3.example/announce".into()])
+        );
         assert_eq!(job.options.seed_ratio, Some(2.0));
         assert_eq!(job.options.seed_time, Some(30));
 
@@ -400,12 +416,14 @@ mod tests {
         use base64::Engine as Base64Engine;
 
         let (engine, url, cancel) = spawn_server().await;
-        let encoded = base64::engine::general_purpose::STANDARD.encode(
-            b"d8:announce35:http://tracker.example.com/announcee",
-        );
+        let encoded = base64::engine::general_purpose::STANDARD
+            .encode(b"d8:announce35:http://tracker.example.com/announcee");
 
         let add_resp = rpc_call(&url, "aria2.addTorrent", serde_json::json!([encoded])).await;
-        assert!(add_resp.get("error").is_none(), "addTorrent should succeed: {add_resp}");
+        assert!(
+            add_resp.get("error").is_none(),
+            "addTorrent should succeed: {add_resp}"
+        );
         let gid_str = add_resp["result"].as_str().unwrap().to_string();
 
         let change_resp = rpc_call(
@@ -434,12 +452,7 @@ mod tests {
     #[tokio::test]
     async fn get_global_option_includes_proxy_fields() {
         let (_engine, url, cancel) = spawn_server().await;
-        let resp = rpc_call(
-            &url,
-            "aria2.getGlobalOption",
-            serde_json::json!([]),
-        )
-        .await;
+        let resp = rpc_call(&url, "aria2.getGlobalOption", serde_json::json!([])).await;
         let result = &resp["result"];
 
         // These fields must exist (even if empty).
@@ -510,12 +523,7 @@ mod tests {
         .await;
         assert_eq!(resp["result"], "OK");
 
-        let global = rpc_call(
-            &url,
-            "aria2.getGlobalOption",
-            serde_json::json!([]),
-        )
-        .await;
+        let global = rpc_call(&url, "aria2.getGlobalOption", serde_json::json!([])).await;
         assert_eq!(global["result"]["max-overall-download-limit"], "4096");
 
         let resp = rpc_call(
@@ -526,12 +534,7 @@ mod tests {
         .await;
         assert_eq!(resp["result"], "OK");
 
-        let global = rpc_call(
-            &url,
-            "aria2.getGlobalOption",
-            serde_json::json!([]),
-        )
-        .await;
+        let global = rpc_call(&url, "aria2.getGlobalOption", serde_json::json!([])).await;
         assert_eq!(global["result"]["max-overall-download-limit"], "0");
 
         cancel.cancel();
@@ -549,12 +552,7 @@ mod tests {
         .await;
         assert_eq!(resp["result"], "OK");
 
-        let global = rpc_call(
-            &url,
-            "aria2.getGlobalOption",
-            serde_json::json!([]),
-        )
-        .await;
+        let global = rpc_call(&url, "aria2.getGlobalOption", serde_json::json!([])).await;
         assert_eq!(global["result"]["max-concurrent-downloads"], "9");
 
         cancel.cancel();
@@ -565,15 +563,14 @@ mod tests {
     #[tokio::test]
     async fn get_session_info_returns_hex_id() {
         let (_engine, url, cancel) = spawn_server().await;
-        let resp = rpc_call(
-            &url,
-            "aria2.getSessionInfo",
-            serde_json::json!([]),
-        )
-        .await;
+        let resp = rpc_call(&url, "aria2.getSessionInfo", serde_json::json!([])).await;
         let session_id = resp["result"]["sessionId"].as_str().unwrap();
         // Must be 16-char hex.
-        assert_eq!(session_id.len(), 16, "session ID must be 16 chars: {session_id}");
+        assert_eq!(
+            session_id.len(),
+            16,
+            "session ID must be 16 chars: {session_id}"
+        );
         assert!(
             session_id.chars().all(|c| c.is_ascii_hexdigit()),
             "session ID must be hex: {session_id}"

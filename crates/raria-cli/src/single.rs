@@ -7,9 +7,9 @@ use raria_core::checksum;
 use raria_core::config::GlobalConfig;
 use raria_core::engine::{AddUriSpec, Engine};
 use raria_core::limiter::SharedRateLimiter;
-use raria_core::segment::{init_segment_states, plan_segments, SegmentStatus};
+use raria_core::segment::{SegmentStatus, init_segment_states, plan_segments};
 use raria_range::backend::{ByteSourceBackend, Credentials, ProbeContext};
-use raria_range::executor::{apply_results, total_downloaded, ExecutorConfig, SegmentExecutor};
+use raria_range::executor::{ExecutorConfig, SegmentExecutor, apply_results, total_downloaded};
 use std::path::PathBuf;
 use std::sync::Arc;
 use tracing::{error, info};
@@ -104,6 +104,8 @@ pub(crate) async fn run_download(options: SingleDownloadOptions) -> Result<()> {
     let ftp_cfg = raria_ftp::backend::FtpBackendConfig {
         all_proxy: config.all_proxy.clone(),
         no_proxy: config.no_proxy.clone(),
+        check_certificate: config.check_certificate,
+        ca_certificate: config.ca_certificate.clone(),
     };
     let sftp_cfg = raria_sftp::backend::SftpBackendConfig {
         strict_host_key_check: config.sftp_strict_host_key_check,
@@ -113,7 +115,12 @@ pub(crate) async fn run_download(options: SingleDownloadOptions) -> Result<()> {
         all_proxy: config.all_proxy.clone(),
         no_proxy: config.no_proxy.clone(),
     };
-    let backend = create_backend_with_config(&options.url, Some(&http_cfg), Some(&ftp_cfg), Some(&sftp_cfg))?;
+    let backend = create_backend_with_config(
+        &options.url,
+        Some(&http_cfg),
+        Some(&ftp_cfg),
+        Some(&sftp_cfg),
+    )?;
     let probe_timeout = std::time::Duration::from_secs(config.timeout.unwrap_or(30));
     let parsed_url: url::Url = options.url.parse().context("invalid URL")?;
     let auth = options.http_user.clone().map(|username| Credentials {
@@ -167,12 +174,16 @@ pub(crate) async fn run_download(options: SingleDownloadOptions) -> Result<()> {
         return Ok(());
     }
 
-    let resolved_filename = options.filename.clone().or_else(|| probe.suggested_filename.clone()).or_else(|| {
-        parsed_url
-            .path_segments()
-            .and_then(|mut segments| segments.next_back().map(str::to_string))
-            .filter(|segment| !segment.is_empty())
-    });
+    let resolved_filename = options
+        .filename
+        .clone()
+        .or_else(|| probe.suggested_filename.clone())
+        .or_else(|| {
+            parsed_url
+                .path_segments()
+                .and_then(|mut segments| segments.next_back().map(str::to_string))
+                .filter(|segment| !segment.is_empty())
+        });
 
     let handle = engine.add_uri(&AddUriSpec {
         uris: vec![options.url.clone()],
@@ -224,7 +235,11 @@ pub(crate) async fn run_download(options: SingleDownloadOptions) -> Result<()> {
         0
     };
 
-    let effective_connections = if existing_len > 0 { 1 } else { effective_connections };
+    let effective_connections = if existing_len > 0 {
+        1
+    } else {
+        effective_connections
+    };
 
     let ranges = if file_size > 0 {
         plan_segments(file_size, effective_connections)
@@ -281,14 +296,14 @@ pub(crate) async fn run_download(options: SingleDownloadOptions) -> Result<()> {
 
     let executor_cfg = apply_global_retry_policy(
         ExecutorConfig {
-        max_connections: effective_connections,
-        rate_limiter,
-        file_allocation: config.file_allocation,
-        request_timeout: std::time::Duration::from_secs(config.timeout.unwrap_or(60)),
-        request_headers: headers,
-        request_auth: auth,
-        request_etag: probe.etag.clone(),
-        ..Default::default()
+            max_connections: effective_connections,
+            rate_limiter,
+            file_allocation: config.file_allocation,
+            request_timeout: std::time::Duration::from_secs(config.timeout.unwrap_or(60)),
+            request_headers: headers,
+            request_auth: auth,
+            request_etag: probe.etag.clone(),
+            ..Default::default()
         },
         &config,
     );

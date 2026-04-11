@@ -73,7 +73,9 @@ pub fn job_to_aria2_status(job: &Job) -> Aria2Status {
     let (error_code, error_message) = if job.status == Status::Error {
         (
             Some("1".into()),
-            job.error_msg.clone().or_else(|| Some("unknown error".into())),
+            job.error_msg
+                .clone()
+                .or_else(|| Some("unknown error".into())),
         )
     } else {
         (None, None)

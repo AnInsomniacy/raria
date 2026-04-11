@@ -1,9 +1,9 @@
 use anyhow::{Context, Result};
 use base64::Engine as Base64Engine;
-use raria_bt::service::{BtService, BtSource};
+use raria_bt::service::{BtService, BtServiceConfig, BtSource};
 use raria_core::engine::Engine;
-use raria_core::job::{BtFile, BtPeer};
 use raria_core::job::Gid;
+use raria_core::job::{BtFile, BtPeer};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -37,6 +37,26 @@ fn map_bt_peers(peers: Vec<raria_bt::service::BtPeerInfo>) -> Vec<BtPeer> {
         .collect()
 }
 
+fn handle_bt_cancellation(engine: &Engine, gid: Gid) {
+    if let Some(job) = engine.registry.get(gid) {
+        info!(%gid, status = ?job.status, "preserving BT job status on cancellation");
+    } else {
+        warn!(%gid, "BT job missing while handling cancellation");
+    }
+}
+
+fn bt_service_config(engine: &Engine) -> BtServiceConfig {
+    BtServiceConfig {
+        socks_proxy_url: engine
+            .config
+            .all_proxy
+            .clone()
+            .filter(|proxy| proxy.starts_with("socks5://")),
+        dht_config_filename: engine.config.bt_dht_config_file.clone(),
+        ..Default::default()
+    }
+}
+
 pub(crate) async fn run_bt_download(
     engine: Arc<Engine>,
     gid: Gid,
@@ -62,7 +82,8 @@ pub(crate) async fn run_bt_download(
         BtSource::TorrentFile(std::path::PathBuf::from(uri_str))
     };
 
-    let bt_service = BtService::new(download_dir).context("failed to create BtService")?;
+    let bt_service = BtService::with_config(download_dir, bt_service_config(engine.as_ref()))
+        .context("failed to create BtService")?;
     let handle = bt_service
         .add(
             source,
@@ -81,7 +102,7 @@ pub(crate) async fn run_bt_download(
             _ = cancel.cancelled() => {
                 info!(%gid, "BT download cancelled");
                 let _ = bt_service.pause(&handle).await;
-                let _ = engine.fail_job(gid, "cancelled by user");
+                handle_bt_cancellation(engine.as_ref(), gid);
                 return Ok(());
             }
             _ = tokio::time::sleep(std::time::Duration::from_secs(2)) => {
@@ -153,7 +174,8 @@ fn should_stop_seeding(
         }
     }
     if let Some(minutes) = seed_time_minutes {
-        if now.duration_since(seeding_started_at) >= Duration::from_secs(minutes.saturating_mul(60)) {
+        if now.duration_since(seeding_started_at) >= Duration::from_secs(minutes.saturating_mul(60))
+        {
             return true;
         }
     }
@@ -162,8 +184,13 @@ fn should_stop_seeding(
 
 #[cfg(test)]
 mod tests {
-    use super::{map_bt_files, map_bt_peers, should_stop_seeding};
+    use super::{
+        bt_service_config, handle_bt_cancellation, map_bt_files, map_bt_peers, should_stop_seeding,
+    };
     use raria_bt::service::{BtFileInfo, BtPeerInfo};
+    use raria_core::config::GlobalConfig;
+    use raria_core::engine::{AddUriSpec, Engine};
+    use raria_core::job::Status;
     use std::path::PathBuf;
     use std::time::{Duration, Instant};
 
@@ -207,6 +234,39 @@ mod tests {
     }
 
     #[test]
+    fn bt_service_config_forwards_only_socks5_all_proxy() {
+        let config = GlobalConfig {
+            all_proxy: Some("socks5://127.0.0.1:1080".into()),
+            ..Default::default()
+        };
+        let engine = Engine::new(config);
+        let bt_config = bt_service_config(&engine);
+        assert_eq!(
+            bt_config.socks_proxy_url.as_deref(),
+            Some("socks5://127.0.0.1:1080")
+        );
+
+        let config = GlobalConfig {
+            all_proxy: Some("http://127.0.0.1:8080".into()),
+            ..Default::default()
+        };
+        let engine = Engine::new(config);
+        let bt_config = bt_service_config(&engine);
+        assert!(bt_config.socks_proxy_url.is_none());
+
+        let config = GlobalConfig {
+            bt_dht_config_file: Some(PathBuf::from("/tmp/raria-dht.json")),
+            ..Default::default()
+        };
+        let engine = Engine::new(config);
+        let bt_config = bt_service_config(&engine);
+        assert_eq!(
+            bt_config.dht_config_filename,
+            Some(PathBuf::from("/tmp/raria-dht.json"))
+        );
+    }
+
+    #[test]
     fn seeding_stops_when_ratio_reached() {
         let started = Instant::now();
         assert!(should_stop_seeding(
@@ -243,5 +303,43 @@ mod tests {
             started,
             started + Duration::from_secs(30),
         ));
+    }
+
+    #[test]
+    fn bt_cancel_handler_preserves_paused_status() {
+        let engine = Engine::new(GlobalConfig::default());
+        let handle = engine
+            .add_uri(&AddUriSpec {
+                uris: vec!["magnet:?xt=urn:btih:abc123".into()],
+                dir: PathBuf::from("/tmp"),
+                filename: Some("torrent".into()),
+                connections: 1,
+            })
+            .unwrap();
+        engine.pause(handle.gid).unwrap();
+
+        handle_bt_cancellation(&engine, handle.gid);
+
+        let job = engine.registry.get(handle.gid).unwrap();
+        assert_eq!(job.status, Status::Paused);
+    }
+
+    #[test]
+    fn bt_cancel_handler_does_not_force_active_job_into_error() {
+        let engine = Engine::new(GlobalConfig::default());
+        let handle = engine
+            .add_uri(&AddUriSpec {
+                uris: vec!["magnet:?xt=urn:btih:def456".into()],
+                dir: PathBuf::from("/tmp"),
+                filename: Some("torrent".into()),
+                connections: 1,
+            })
+            .unwrap();
+        engine.activate_job(handle.gid).unwrap();
+
+        handle_bt_cancellation(&engine, handle.gid);
+
+        let job = engine.registry.get(handle.gid).unwrap();
+        assert_eq!(job.status, Status::Active);
     }
 }

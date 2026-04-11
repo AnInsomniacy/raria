@@ -18,11 +18,9 @@
 
 use anyhow::{Context, Result};
 use async_trait::async_trait;
-use raria_range::backend::{
-    ByteSourceBackend, ByteStream, FileProbe, OpenContext, ProbeContext,
-};
+use raria_range::backend::{ByteSourceBackend, ByteStream, FileProbe, OpenContext, ProbeContext};
 use russh::client;
-use russh::keys::{check_known_hosts_path, load_secret_key, PrivateKeyWithHashAlg};
+use russh::keys::{PrivateKeyWithHashAlg, check_known_hosts_path, load_secret_key};
 use russh_sftp::client::SftpSession;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -73,10 +71,7 @@ impl Default for SftpBackend {
 
 /// Extract (host, port, user, password, path) from an SFTP URL.
 fn parse_sftp_url(uri: &Url) -> Result<(String, u16, String, String, String)> {
-    let host = uri
-        .host_str()
-        .context("SFTP URL missing host")?
-        .to_string();
+    let host = uri.host_str().context("SFTP URL missing host")?.to_string();
     let port = uri.port().unwrap_or(22);
 
     let user = if uri.username().is_empty() {
@@ -116,7 +111,11 @@ fn verify_known_host(
     if let Some(ref path) = config.known_hosts_path {
         Ok(check_known_hosts_path(host, port, server_public_key, path)?)
     } else {
-        Ok(russh::keys::check_known_hosts(host, port, server_public_key)?)
+        Ok(russh::keys::check_known_hosts(
+            host,
+            port,
+            server_public_key,
+        )?)
     }
 }
 
@@ -132,14 +131,21 @@ fn should_bypass_proxy(host: &str, no_proxy: Option<&str>) -> bool {
         .unwrap_or(false)
 }
 
-async fn connect_tcp_stream(host: &str, port: u16, config: &SftpBackendConfig) -> Result<TcpStream> {
+async fn connect_tcp_stream(
+    host: &str,
+    port: u16,
+    config: &SftpBackendConfig,
+) -> Result<TcpStream> {
     let addr = format!("{host}:{port}");
     if let Some(proxy) = config.all_proxy.as_deref() {
-        if proxy.starts_with("socks5://") && !should_bypass_proxy(host, config.no_proxy.as_deref()) {
+        if proxy.starts_with("socks5://") && !should_bypass_proxy(host, config.no_proxy.as_deref())
+        {
             let proxy_addr = proxy.trim_start_matches("socks5://");
             let stream = Socks5Stream::connect(proxy_addr, addr.as_str())
                 .await
-                .with_context(|| format!("failed to connect to SFTP server through SOCKS5 proxy {proxy_addr}"))?;
+                .with_context(|| {
+                    format!("failed to connect to SFTP server through SOCKS5 proxy {proxy_addr}")
+                })?;
             return Ok(stream.into_inner());
         }
     }
@@ -164,7 +170,10 @@ impl client::Handler for SshHandler {
 }
 
 /// Establish an SFTP session over SSH.
-async fn connect_sftp(uri: &Url, backend_config: &SftpBackendConfig) -> Result<(SftpSession, String)> {
+async fn connect_sftp(
+    uri: &Url,
+    backend_config: &SftpBackendConfig,
+) -> Result<(SftpSession, String)> {
     let (host, port, user, password, path) = parse_sftp_url(uri)?;
 
     debug!(host = %host, port, user = %user, "connecting via SSH");
@@ -183,7 +192,12 @@ async fn connect_sftp(uri: &Url, backend_config: &SftpBackendConfig) -> Result<(
             private_key_path,
             backend_config.private_key_passphrase.as_deref(),
         )
-        .with_context(|| format!("failed to load SSH private key: {}", private_key_path.display()))?;
+        .with_context(|| {
+            format!(
+                "failed to load SSH private key: {}",
+                private_key_path.display()
+            )
+        })?;
         session
             .authenticate_publickey(&user, PrivateKeyWithHashAlg::new(Arc::new(key), None))
             .await
@@ -295,10 +309,22 @@ mod tests {
             no_proxy: Some("localhost".into()),
         });
         assert!(backend.config.strict_host_key_check);
-        assert_eq!(backend.config.known_hosts_path, Some(PathBuf::from("/tmp/known_hosts")));
-        assert_eq!(backend.config.private_key_path, Some(PathBuf::from("/tmp/id_ed25519")));
-        assert_eq!(backend.config.private_key_passphrase.as_deref(), Some("secret"));
-        assert_eq!(backend.config.all_proxy.as_deref(), Some("socks5://127.0.0.1:1080"));
+        assert_eq!(
+            backend.config.known_hosts_path,
+            Some(PathBuf::from("/tmp/known_hosts"))
+        );
+        assert_eq!(
+            backend.config.private_key_path,
+            Some(PathBuf::from("/tmp/id_ed25519"))
+        );
+        assert_eq!(
+            backend.config.private_key_passphrase.as_deref(),
+            Some("secret")
+        );
+        assert_eq!(
+            backend.config.all_proxy.as_deref(),
+            Some("socks5://127.0.0.1:1080")
+        );
         assert_eq!(backend.config.no_proxy.as_deref(), Some("localhost"));
     }
 
@@ -424,5 +450,17 @@ mod tests {
         )
         .unwrap();
         assert!(!allowed);
+    }
+
+    #[test]
+    fn no_proxy_bypasses_exact_host() {
+        assert!(should_bypass_proxy(
+            "sftp.example.com",
+            Some("localhost,sftp.example.com")
+        ));
+        assert!(!should_bypass_proxy(
+            "sftp.example.com",
+            Some("localhost,127.0.0.1")
+        ));
     }
 }

@@ -14,20 +14,20 @@
 
 use crate::methods::{Aria2RpcServer, RpcHandler};
 use anyhow::{Context, Result};
+use axum::Router;
 use axum::body::Bytes;
 use axum::extract::State;
 use axum::extract::ws::{Message as WsMessage, WebSocket, WebSocketUpgrade};
 use axum::http::{HeaderMap, HeaderValue, Method, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::post;
-use axum::Router;
 use futures::{SinkExt, StreamExt};
 use raria_core::engine::Engine;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
-use tracing::info;
 use tower_http::cors::{Any, CorsLayer};
+use tracing::info;
 
 /// Configuration for the RPC server.
 #[derive(Debug, Clone)]
@@ -151,10 +151,7 @@ pub async fn start_rpc_server(
         module: Arc::clone(&module),
         notify_tx: notify_tx.clone(),
         max_request_size: 10 * 1024 * 1024,
-        transport_policy: RpcTransportPolicy::new(
-            rpc_secret,
-            engine.config.rpc_allow_origin_all,
-        ),
+        transport_policy: RpcTransportPolicy::new(rpc_secret, engine.config.rpc_allow_origin_all),
     };
     let mut app = Router::new()
         .route("/", post(handle_http_rpc).get(handle_ws_rpc))
@@ -192,16 +189,9 @@ pub async fn start_rpc_server(
     })
 }
 
-async fn handle_http_rpc(
-    State(state): State<RpcAppState>,
-    body: Bytes,
-) -> Response {
+async fn handle_http_rpc(State(state): State<RpcAppState>, body: Bytes) -> Response {
     let Ok(request_body) = std::str::from_utf8(&body) else {
-        return (
-            StatusCode::BAD_REQUEST,
-            "request body must be valid UTF-8",
-        )
-            .into_response();
+        return (StatusCode::BAD_REQUEST, "request body must be valid UTF-8").into_response();
     };
 
     match dispatch_rpc_request(&state, request_body).await {
@@ -414,19 +404,22 @@ fn wrap_module_with_auth(
                 let (response_str, _rx) = inner
                     .raw_json_request(&request.to_string(), 10 * 1024 * 1024)
                     .await
-                    .map_err(|e| ErrorObjectOwned::owned(
-                        -32603_i32,
-                        format!("internal dispatch error: {e}"),
-                        None::<()>,
-                    ))?;
+                    .map_err(|e| {
+                        ErrorObjectOwned::owned(
+                            -32603_i32,
+                            format!("internal dispatch error: {e}"),
+                            None::<()>,
+                        )
+                    })?;
 
                 // Parse response and extract result or error.
-                let resp: serde_json::Value = serde_json::from_str(&response_str)
-                    .map_err(|e| ErrorObjectOwned::owned(
+                let resp: serde_json::Value = serde_json::from_str(&response_str).map_err(|e| {
+                    ErrorObjectOwned::owned(
                         -32603_i32,
                         format!("internal response parse error: {e}"),
                         None::<()>,
-                    ))?;
+                    )
+                })?;
 
                 if let Some(error) = resp.get("error") {
                     let code = error["code"].as_i64().unwrap_or(-32000) as i32;
@@ -458,14 +451,9 @@ const ARIA2_NOTIFICATIONS: &[&str] = &[
 /// These are required for AriaNg and Motrix compatibility:
 /// - AriaNg sends every poll as a system.multicall batch
 /// - system.listMethods is used for capability discovery
-fn register_system_methods(
-    module: &mut jsonrpsee::RpcModule<RpcHandler>,
-) -> Result<()> {
+fn register_system_methods(module: &mut jsonrpsee::RpcModule<RpcHandler>) -> Result<()> {
     // Collect method names before registering system.* methods.
-    let method_names: Vec<String> = module
-        .method_names()
-        .map(String::from)
-        .collect();
+    let method_names: Vec<String> = module.method_names().map(String::from).collect();
 
     // system.listMethods — returns all registered method names.
     let names_for_list = method_names.clone();
@@ -476,16 +464,18 @@ fn register_system_methods(
             all_names.push("system.listMethods".into());
             all_names.push("system.listNotifications".into());
             all_names.sort();
-            serde_json::to_value(&all_names)
-                .map_err(|e| jsonrpsee::types::ErrorObjectOwned::owned(-32603, e.to_string(), None::<()>))
+            serde_json::to_value(&all_names).map_err(|e| {
+                jsonrpsee::types::ErrorObjectOwned::owned(-32603, e.to_string(), None::<()>)
+            })
         })
         .context("failed to register system.listMethods")?;
 
     // system.listNotifications — returns notification method names.
     module
         .register_method("system.listNotifications", move |_params, _ctx, _| {
-            serde_json::to_value(ARIA2_NOTIFICATIONS)
-                .map_err(|e| jsonrpsee::types::ErrorObjectOwned::owned(-32603, e.to_string(), None::<()>))
+            serde_json::to_value(ARIA2_NOTIFICATIONS).map_err(|e| {
+                jsonrpsee::types::ErrorObjectOwned::owned(-32603, e.to_string(), None::<()>)
+            })
         })
         .context("failed to register system.listNotifications")?;
 
@@ -649,7 +639,10 @@ mod tests {
     fn transport_policy_rejects_origin_by_default() {
         let policy = RpcTransportPolicy::new(None, false);
         let mut headers = HeaderMap::new();
-        headers.insert(axum::http::header::ORIGIN, HeaderValue::from_static("https://ui.example"));
+        headers.insert(
+            axum::http::header::ORIGIN,
+            HeaderValue::from_static("https://ui.example"),
+        );
         assert!(!policy.allows_ws_upgrade(&headers));
     }
 
@@ -657,7 +650,10 @@ mod tests {
     fn transport_policy_allows_origin_when_opted_in() {
         let policy = RpcTransportPolicy::new(None, true);
         let mut headers = HeaderMap::new();
-        headers.insert(axum::http::header::ORIGIN, HeaderValue::from_static("https://ui.example"));
+        headers.insert(
+            axum::http::header::ORIGIN,
+            HeaderValue::from_static("https://ui.example"),
+        );
         assert!(policy.allows_ws_upgrade(&headers));
     }
 
@@ -669,7 +665,8 @@ mod tests {
             "id": 1,
             "method": "aria2.getVersion",
             "params": ["token:secret"],
-        }).to_string();
+        })
+        .to_string();
 
         assert!(!policy.initial_ws_authenticated());
         assert!(policy.observe_ws_request(&request, false));

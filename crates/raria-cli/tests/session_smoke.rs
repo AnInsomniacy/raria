@@ -1,6 +1,6 @@
+use std::io::Read;
 use std::net::TcpListener;
 use std::path::Path;
-use std::io::Read;
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
@@ -72,7 +72,9 @@ async fn wait_for_rpc_ready_with_child(port: u16, child: &mut ChildGuard) -> Res
         }
 
         if Instant::now() >= deadline {
-            return Err(format!("daemon RPC server did not become ready on port {port}"));
+            return Err(format!(
+                "daemon RPC server did not become ready on port {port}"
+            ));
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
@@ -95,7 +97,12 @@ async fn rpc_call(port: u16, method_name: &str, params: serde_json::Value) -> se
         .expect("parse rpc response")
 }
 
-fn spawn_daemon(download_dir: &Path, session_file: &Path, rpc_port: u16, input_file: Option<&Path>) -> ChildGuard {
+fn spawn_daemon(
+    download_dir: &Path,
+    session_file: &Path,
+    rpc_port: u16,
+    input_file: Option<&Path>,
+) -> ChildGuard {
     let mut cmd = Command::new(cargo_bin("raria"));
     cmd.arg("daemon")
         .arg("-d")
@@ -172,7 +179,13 @@ async fn spawn_ready_daemon_with_args(
 ) -> (ChildGuard, u16) {
     for _ in 0..8 {
         let rpc_port = allocate_port();
-        let mut child = spawn_daemon_with_extra_args(download_dir, session_file, rpc_port, input_file, extra_args);
+        let mut child = spawn_daemon_with_extra_args(
+            download_dir,
+            session_file,
+            rpc_port,
+            input_file,
+            extra_args,
+        );
         match wait_for_rpc_ready_with_child(rpc_port, &mut child).await {
             Ok(()) => return (child, rpc_port),
             Err(message) if message.contains("failed to bind RPC server") => continue,
@@ -195,7 +208,10 @@ async fn graceful_shutdown(port: u16, child: &mut ChildGuard) {
                 return;
             }
             Ok(None) => {
-                assert!(Instant::now() < deadline, "daemon did not exit after shutdown");
+                assert!(
+                    Instant::now() < deadline,
+                    "daemon did not exit after shutdown"
+                );
                 tokio::time::sleep(Duration::from_millis(100)).await;
             }
             Err(error) => panic!("failed waiting for daemon exit: {error}"),
@@ -242,23 +258,41 @@ async fn daemon_restores_saved_job_after_restart() {
 
     let deadline = Instant::now() + Duration::from_secs(60);
     loop {
-        let status_resp = rpc_call(first_port, "aria2.tellStatus", serde_json::json!([gid.clone()])).await;
+        let status_resp = rpc_call(
+            first_port,
+            "aria2.tellStatus",
+            serde_json::json!([gid.clone()]),
+        )
+        .await;
         let status = status_resp["result"]["status"].as_str().expect("status");
         if matches!(status, "waiting" | "active") {
             break;
         }
 
-        assert!(Instant::now() < deadline, "job never reached a restorable state: {status_resp}");
+        assert!(
+            Instant::now() < deadline,
+            "job never reached a restorable state: {status_resp}"
+        );
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
 
     graceful_shutdown(first_port, &mut first).await;
-    assert!(session_file.is_file(), "session file should exist after graceful shutdown");
+    assert!(
+        session_file.is_file(),
+        "session file should exist after graceful shutdown"
+    );
 
     let (mut second, second_port) = spawn_ready_daemon(temp.path(), &session_file, None).await;
 
-    let restored = rpc_call(second_port, "aria2.tellStatus", serde_json::json!([gid.clone()])).await;
-    let restored_status = restored["result"]["status"].as_str().expect("restored status");
+    let restored = rpc_call(
+        second_port,
+        "aria2.tellStatus",
+        serde_json::json!([gid.clone()]),
+    )
+    .await;
+    let restored_status = restored["result"]["status"]
+        .as_str()
+        .expect("restored status");
     assert!(
         matches!(restored_status, "waiting" | "active" | "complete"),
         "expected restored job to be present after restart, got {restored}"
@@ -284,10 +318,7 @@ async fn daemon_resume_after_restart_issues_range_request() {
     Mock::given(method("GET"))
         .and(path("/resume-range.bin"))
         .and(wiremock::matchers::header_exists("range"))
-        .respond_with(
-            ResponseTemplate::new(206)
-                .set_body_bytes(vec![b'r'; 256 * 1024]),
-        )
+        .respond_with(ResponseTemplate::new(206).set_body_bytes(vec![b'r'; 256 * 1024]))
         .mount(&server)
         .await;
 
@@ -327,7 +358,12 @@ async fn daemon_resume_after_restart_issues_range_request() {
 
     let progress_deadline = Instant::now() + Duration::from_secs(20);
     loop {
-        let status_resp = rpc_call(first_port, "aria2.tellStatus", serde_json::json!([gid.clone()])).await;
+        let status_resp = rpc_call(
+            first_port,
+            "aria2.tellStatus",
+            serde_json::json!([gid.clone()]),
+        )
+        .await;
         let completed = status_resp["result"]["completedLength"]
             .as_str()
             .expect("completedLength string")
@@ -351,7 +387,12 @@ async fn daemon_resume_after_restart_issues_range_request() {
 
     let completion_deadline = Instant::now() + Duration::from_secs(30);
     loop {
-        let status_resp = rpc_call(second_port, "aria2.tellStatus", serde_json::json!([gid.clone()])).await;
+        let status_resp = rpc_call(
+            second_port,
+            "aria2.tellStatus",
+            serde_json::json!([gid.clone()]),
+        )
+        .await;
         let status = status_resp["result"]["status"].as_str().expect("status");
         if status == "complete" {
             break;
@@ -398,10 +439,7 @@ async fn daemon_resume_after_restart_sends_if_range_when_etag_is_known() {
         .and(path("/resume-if-range.bin"))
         .and(wiremock::matchers::header_exists("range"))
         .and(wiremock::matchers::header("if-range", etag))
-        .respond_with(
-            ResponseTemplate::new(206)
-                .set_body_bytes(vec![b'i'; 256 * 1024]),
-        )
+        .respond_with(ResponseTemplate::new(206).set_body_bytes(vec![b'i'; 256 * 1024]))
         .mount(&server)
         .await;
 
@@ -441,7 +479,12 @@ async fn daemon_resume_after_restart_sends_if_range_when_etag_is_known() {
 
     let progress_deadline = Instant::now() + Duration::from_secs(20);
     loop {
-        let status_resp = rpc_call(first_port, "aria2.tellStatus", serde_json::json!([gid.clone()])).await;
+        let status_resp = rpc_call(
+            first_port,
+            "aria2.tellStatus",
+            serde_json::json!([gid.clone()]),
+        )
+        .await;
         let completed = status_resp["result"]["completedLength"]
             .as_str()
             .expect("completedLength string")
@@ -464,7 +507,12 @@ async fn daemon_resume_after_restart_sends_if_range_when_etag_is_known() {
 
     let completion_deadline = Instant::now() + Duration::from_secs(30);
     loop {
-        let status_resp = rpc_call(second_port, "aria2.tellStatus", serde_json::json!([gid.clone()])).await;
+        let status_resp = rpc_call(
+            second_port,
+            "aria2.tellStatus",
+            serde_json::json!([gid.clone()]),
+        )
+        .await;
         let status = status_resp["result"]["status"].as_str().expect("status");
         if status == "complete" {
             break;
@@ -481,12 +529,12 @@ async fn daemon_resume_after_restart_sends_if_range_when_etag_is_known() {
     let saw_if_range = requests.iter().any(|req| {
         req.method.as_str() == "GET"
             && req.url.path() == "/resume-if-range.bin"
-            && req.headers
-                .get("if-range")
-                .and_then(|v| v.to_str().ok())
-                == Some(etag)
+            && req.headers.get("if-range").and_then(|v| v.to_str().ok()) == Some(etag)
     });
-    assert!(saw_if_range, "resumed daemon should send If-Range with the persisted ETag");
+    assert!(
+        saw_if_range,
+        "resumed daemon should send If-Range with the persisted ETag"
+    );
 
     graceful_shutdown(second_port, &mut second).await;
 }
@@ -552,7 +600,12 @@ async fn daemon_resume_after_restart_surfaces_non_zero_completed_length_before_c
 
     let progress_deadline = Instant::now() + Duration::from_secs(20);
     loop {
-        let status_resp = rpc_call(first_port, "aria2.tellStatus", serde_json::json!([gid.clone()])).await;
+        let status_resp = rpc_call(
+            first_port,
+            "aria2.tellStatus",
+            serde_json::json!([gid.clone()]),
+        )
+        .await;
         let completed = status_resp["result"]["completedLength"]
             .as_str()
             .expect("completedLength string")
@@ -576,7 +629,12 @@ async fn daemon_resume_after_restart_surfaces_non_zero_completed_length_before_c
 
     let resumed_deadline = Instant::now() + Duration::from_secs(20);
     loop {
-        let status_resp = rpc_call(second_port, "aria2.tellStatus", serde_json::json!([gid.clone()])).await;
+        let status_resp = rpc_call(
+            second_port,
+            "aria2.tellStatus",
+            serde_json::json!([gid.clone()]),
+        )
+        .await;
         let completed = status_resp["result"]["completedLength"]
             .as_str()
             .expect("completedLength string")
@@ -587,7 +645,9 @@ async fn daemon_resume_after_restart_surfaces_non_zero_completed_length_before_c
             break;
         }
         if status == "complete" {
-            panic!("resumed job completed before showing preserved non-zero completedLength: {status_resp}");
+            panic!(
+                "resumed job completed before showing preserved non-zero completedLength: {status_resp}"
+            );
         }
 
         assert!(
@@ -656,7 +716,8 @@ async fn daemon_loads_jobs_from_input_file_on_startup() {
     )
     .expect("write input file");
 
-    let (mut child, rpc_port) = spawn_ready_daemon(temp.path(), &session_file, Some(&input_file)).await;
+    let (mut child, rpc_port) =
+        spawn_ready_daemon(temp.path(), &session_file, Some(&input_file)).await;
 
     let deadline = Instant::now() + Duration::from_secs(60);
     let jobs = loop {
@@ -664,7 +725,10 @@ async fn daemon_loads_jobs_from_input_file_on_startup() {
         let waiting = rpc_call(rpc_port, "aria2.tellWaiting", serde_json::json!([0, 10])).await;
         let stopped = rpc_call(rpc_port, "aria2.tellStopped", serde_json::json!([0, 10])).await;
 
-        let mut jobs = active["result"].as_array().expect("active jobs array").clone();
+        let mut jobs = active["result"]
+            .as_array()
+            .expect("active jobs array")
+            .clone();
         jobs.extend(
             waiting["result"]
                 .as_array()
@@ -691,7 +755,11 @@ async fn daemon_loads_jobs_from_input_file_on_startup() {
         tokio::time::sleep(Duration::from_millis(100)).await;
     };
 
-    assert_eq!(jobs.len(), 2, "daemon should create one job per non-option URI line");
+    assert_eq!(
+        jobs.len(),
+        2,
+        "daemon should create one job per non-option URI line"
+    );
 
     let mut uri_counts = Vec::new();
     for job in &jobs {
@@ -753,7 +821,12 @@ async fn daemon_periodically_saves_session_when_interval_is_enabled() {
 
     let active_deadline = Instant::now() + Duration::from_secs(20);
     loop {
-        let status_resp = rpc_call(rpc_port, "aria2.tellStatus", serde_json::json!([gid.clone()])).await;
+        let status_resp = rpc_call(
+            rpc_port,
+            "aria2.tellStatus",
+            serde_json::json!([gid.clone()]),
+        )
+        .await;
         let status = status_resp["result"]["status"].as_str().expect("status");
         if matches!(status, "waiting" | "active" | "complete") {
             break;
@@ -768,7 +841,12 @@ async fn daemon_periodically_saves_session_when_interval_is_enabled() {
 
     let save_deadline = Instant::now() + Duration::from_secs(10);
     loop {
-        if session_file.is_file() && std::fs::metadata(&session_file).map(|m| m.len()).unwrap_or(0) > 0 {
+        if session_file.is_file()
+            && std::fs::metadata(&session_file)
+                .map(|m| m.len())
+                .unwrap_or(0)
+                > 0
+        {
             break;
         }
 
@@ -820,7 +898,12 @@ async fn daemon_saves_session_when_save_session_rpc_is_called() {
 
     let active_deadline = Instant::now() + Duration::from_secs(20);
     loop {
-        let status_resp = rpc_call(rpc_port, "aria2.tellStatus", serde_json::json!([gid.clone()])).await;
+        let status_resp = rpc_call(
+            rpc_port,
+            "aria2.tellStatus",
+            serde_json::json!([gid.clone()]),
+        )
+        .await;
         let status = status_resp["result"]["status"].as_str().expect("status");
         if matches!(status, "waiting" | "active" | "complete") {
             break;
@@ -837,7 +920,12 @@ async fn daemon_saves_session_when_save_session_rpc_is_called() {
 
     let save_deadline = Instant::now() + Duration::from_secs(10);
     loop {
-        if session_file.is_file() && std::fs::metadata(&session_file).map(|m| m.len()).unwrap_or(0) > 0 {
+        if session_file.is_file()
+            && std::fs::metadata(&session_file)
+                .map(|m| m.len())
+                .unwrap_or(0)
+                > 0
+        {
             break;
         }
         assert!(
@@ -889,7 +977,12 @@ async fn daemon_saves_session_when_sigusr1_is_received() {
 
     let active_deadline = Instant::now() + Duration::from_secs(20);
     loop {
-        let status_resp = rpc_call(rpc_port, "aria2.tellStatus", serde_json::json!([gid.clone()])).await;
+        let status_resp = rpc_call(
+            rpc_port,
+            "aria2.tellStatus",
+            serde_json::json!([gid.clone()]),
+        )
+        .await;
         let status = status_resp["result"]["status"].as_str().expect("status");
         if matches!(status, "waiting" | "active" | "complete") {
             break;
@@ -911,7 +1004,12 @@ async fn daemon_saves_session_when_sigusr1_is_received() {
 
     let save_deadline = Instant::now() + Duration::from_secs(10);
     loop {
-        if session_file.is_file() && std::fs::metadata(&session_file).map(|m| m.len()).unwrap_or(0) > 0 {
+        if session_file.is_file()
+            && std::fs::metadata(&session_file)
+                .map(|m| m.len())
+                .unwrap_or(0)
+                > 0
+        {
             break;
         }
 
@@ -969,7 +1067,12 @@ async fn daemon_cli_headers_apply_to_input_file_downloads() {
         let active = rpc_call(rpc_port, "aria2.tellActive", serde_json::json!([])).await;
         let stopped = rpc_call(rpc_port, "aria2.tellStopped", serde_json::json!([0, 10])).await;
 
-        if stopped["result"].as_array().unwrap().iter().any(|job| job["status"] == "complete") {
+        if stopped["result"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|job| job["status"] == "complete")
+        {
             break;
         }
 
@@ -994,12 +1097,18 @@ async fn daemon_cli_basic_auth_applies_to_input_file_downloads() {
     let server = MockServer::start().await;
     let auth_value = format!(
         "Basic {}",
-        base64::Engine::encode(&base64::engine::general_purpose::STANDARD, b"daemon-user:daemon-pass")
+        base64::Engine::encode(
+            &base64::engine::general_purpose::STANDARD,
+            b"daemon-user:daemon-pass"
+        )
     );
 
     Mock::given(method("HEAD"))
         .and(path("/daemon-auth.bin"))
-        .and(wiremock::matchers::header("authorization", auth_value.as_str()))
+        .and(wiremock::matchers::header(
+            "authorization",
+            auth_value.as_str(),
+        ))
         .respond_with(
             ResponseTemplate::new(200)
                 .insert_header("content-length", "4")
@@ -1010,7 +1119,10 @@ async fn daemon_cli_basic_auth_applies_to_input_file_downloads() {
 
     Mock::given(method("GET"))
         .and(path("/daemon-auth.bin"))
-        .and(wiremock::matchers::header("authorization", auth_value.as_str()))
+        .and(wiremock::matchers::header(
+            "authorization",
+            auth_value.as_str(),
+        ))
         .respond_with(
             ResponseTemplate::new(200)
                 .set_delay(Duration::from_millis(200))
@@ -1028,19 +1140,19 @@ async fn daemon_cli_basic_auth_applies_to_input_file_downloads() {
         temp.path(),
         &session_file,
         Some(&input_file),
-        &[
-            "--http-user",
-            "daemon-user",
-            "--http-passwd",
-            "daemon-pass",
-        ],
+        &["--http-user", "daemon-user", "--http-passwd", "daemon-pass"],
     )
     .await;
 
     let deadline = Instant::now() + Duration::from_secs(30);
     loop {
         let stopped = rpc_call(rpc_port, "aria2.tellStopped", serde_json::json!([0, 10])).await;
-        if stopped["result"].as_array().unwrap().iter().any(|job| job["status"] == "complete") {
+        if stopped["result"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|job| job["status"] == "complete")
+        {
             break;
         }
 
@@ -1090,7 +1202,10 @@ async fn daemon_runs_on_download_start_hook() {
     let script = temp.path().join("start-hook.sh");
     std::fs::write(
         &script,
-        format!("#!/bin/sh\nprintf \"%s|%s|%s\" \"$1\" \"$2\" \"$3\" > \"{}\"\n", hook_out.display()),
+        format!(
+            "#!/bin/sh\nprintf \"%s|%s|%s\" \"$1\" \"$2\" \"$3\" > \"{}\"\n",
+            hook_out.display()
+        ),
     )
     .expect("write hook script");
     #[cfg(unix)]
@@ -1161,7 +1276,10 @@ async fn daemon_runs_on_download_complete_hook() {
     let script = temp.path().join("complete-hook.sh");
     std::fs::write(
         &script,
-        format!("#!/bin/sh\nprintf \"%s|%s|%s\" \"$1\" \"$2\" \"$3\" > \"{}\"\n", hook_out.display()),
+        format!(
+            "#!/bin/sh\nprintf \"%s|%s|%s\" \"$1\" \"$2\" \"$3\" > \"{}\"\n",
+            hook_out.display()
+        ),
     )
     .expect("write hook script");
     #[cfg(unix)]
@@ -1190,7 +1308,12 @@ async fn daemon_runs_on_download_complete_hook() {
 
     let deadline = Instant::now() + Duration::from_secs(20);
     loop {
-        let status_resp = rpc_call(rpc_port, "aria2.tellStatus", serde_json::json!([gid.clone()])).await;
+        let status_resp = rpc_call(
+            rpc_port,
+            "aria2.tellStatus",
+            serde_json::json!([gid.clone()]),
+        )
+        .await;
         let status = status_resp["result"]["status"].as_str().expect("status");
         if status == "complete" && hook_out.is_file() {
             break;
@@ -1238,7 +1361,10 @@ async fn daemon_runs_on_download_error_hook() {
     let script = temp.path().join("error-hook.sh");
     std::fs::write(
         &script,
-        format!("#!/bin/sh\nprintf \"%s|%s|%s\" \"$1\" \"$2\" \"$3\" > \"{}\"\n", hook_out.display()),
+        format!(
+            "#!/bin/sh\nprintf \"%s|%s|%s\" \"$1\" \"$2\" \"$3\" > \"{}\"\n",
+            hook_out.display()
+        ),
     )
     .expect("write hook script");
     #[cfg(unix)]
@@ -1274,7 +1400,12 @@ async fn daemon_runs_on_download_error_hook() {
 
     let deadline = Instant::now() + Duration::from_secs(20);
     loop {
-        let status_resp = rpc_call(rpc_port, "aria2.tellStatus", serde_json::json!([gid.clone()])).await;
+        let status_resp = rpc_call(
+            rpc_port,
+            "aria2.tellStatus",
+            serde_json::json!([gid.clone()]),
+        )
+        .await;
         let status = status_resp["result"]["status"].as_str().expect("status");
         if status == "error" && hook_out.is_file() {
             break;
@@ -1346,7 +1477,12 @@ async fn daemon_fails_over_to_next_mirror_when_first_mirror_fails() {
 
     let deadline = Instant::now() + Duration::from_secs(30);
     loop {
-        let status_resp = rpc_call(rpc_port, "aria2.tellStatus", serde_json::json!([gid.clone()])).await;
+        let status_resp = rpc_call(
+            rpc_port,
+            "aria2.tellStatus",
+            serde_json::json!([gid.clone()]),
+        )
+        .await;
         let status = status_resp["result"]["status"].as_str().expect("status");
         if status == "complete" {
             break;
@@ -1358,6 +1494,9 @@ async fn daemon_fails_over_to_next_mirror_when_first_mirror_fails() {
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
 
-    assert_eq!(std::fs::read(temp.path().join("mirror.bin")).unwrap(), b"pass");
+    assert_eq!(
+        std::fs::read(temp.path().join("mirror.bin")).unwrap(),
+        b"pass"
+    );
     graceful_shutdown(rpc_port, &mut child).await;
 }

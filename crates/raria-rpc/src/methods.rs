@@ -65,11 +65,7 @@ pub trait Aria2Rpc {
     // ── Download control ─────────────────────────────────────────────
 
     #[method(name = "aria2.addUri")]
-    async fn add_uri(
-        &self,
-        uris: Vec<String>,
-        options: Option<RpcOptions>,
-    ) -> RpcResult<String>;
+    async fn add_uri(&self, uris: Vec<String>, options: Option<RpcOptions>) -> RpcResult<String>;
 
     #[method(name = "aria2.addTorrent")]
     async fn add_torrent(
@@ -148,11 +144,7 @@ pub trait Aria2Rpc {
     // ── Configuration ────────────────────────────────────────────────
 
     #[method(name = "aria2.changeOption")]
-    async fn change_option(
-        &self,
-        gid: String,
-        options: serde_json::Value,
-    ) -> RpcResult<String>;
+    async fn change_option(&self, gid: String, options: serde_json::Value) -> RpcResult<String>;
 
     #[method(name = "aria2.getOption")]
     async fn get_option(&self, gid: String) -> RpcResult<serde_json::Value>;
@@ -164,12 +156,7 @@ pub trait Aria2Rpc {
     async fn get_global_option(&self) -> RpcResult<serde_json::Value>;
 
     #[method(name = "aria2.changePosition")]
-    async fn change_position(
-        &self,
-        gid: String,
-        pos: i32,
-        how: String,
-    ) -> RpcResult<i64>;
+    async fn change_position(&self, gid: String, pos: i32, how: String) -> RpcResult<i64>;
 
     // ── Session management ───────────────────────────────────────────
 
@@ -205,11 +192,7 @@ impl RpcHandler {
 impl Aria2RpcServer for RpcHandler {
     // ── Download control ─────────────────────────────────────────────
 
-    async fn add_uri(
-        &self,
-        uris: Vec<String>,
-        options: Option<RpcOptions>,
-    ) -> RpcResult<String> {
+    async fn add_uri(&self, uris: Vec<String>, options: Option<RpcOptions>) -> RpcResult<String> {
         let opts = options.unwrap_or_default();
         let dir = opts
             .dir
@@ -249,10 +232,9 @@ impl Aria2RpcServer for RpcHandler {
             if let Some(ref headers) = opts.header {
                 for h in headers {
                     if let Some((key, value)) = h.split_once(':') {
-                        job.options.headers.push((
-                            key.trim().to_string(),
-                            value.trim().to_string(),
-                        ));
+                        job.options
+                            .headers
+                            .push((key.trim().to_string(), value.trim().to_string()));
                     }
                 }
             }
@@ -432,19 +414,25 @@ impl Aria2RpcServer for RpcHandler {
 
     async fn remove(&self, gid: String) -> RpcResult<String> {
         let parsed_gid = parse_gid(&gid)?;
-        self.engine.remove(parsed_gid).map_err(|e| rpc_err(1, &e.to_string()))?;
+        self.engine
+            .remove(parsed_gid)
+            .map_err(|e| rpc_err(1, &e.to_string()))?;
         Ok(gid)
     }
 
     async fn force_remove(&self, gid: String) -> RpcResult<String> {
         let parsed_gid = parse_gid(&gid)?;
-        self.engine.force_remove(parsed_gid).map_err(|e| rpc_err(1, &e.to_string()))?;
+        self.engine
+            .force_remove(parsed_gid)
+            .map_err(|e| rpc_err(1, &e.to_string()))?;
         Ok(gid)
     }
 
     async fn pause(&self, gid: String) -> RpcResult<String> {
         let parsed_gid = parse_gid(&gid)?;
-        self.engine.pause(parsed_gid).map_err(|e| rpc_err(1, &e.to_string()))?;
+        self.engine
+            .pause(parsed_gid)
+            .map_err(|e| rpc_err(1, &e.to_string()))?;
         Ok(gid)
     }
 
@@ -457,7 +445,9 @@ impl Aria2RpcServer for RpcHandler {
         // In aria2, forcePause is like pause but doesn't wait for piece completion.
         // For raria, pause is already immediate since we cancel tokens.
         let parsed_gid = parse_gid(&gid)?;
-        self.engine.pause(parsed_gid).map_err(|e| rpc_err(1, &e.to_string()))?;
+        self.engine
+            .pause(parsed_gid)
+            .map_err(|e| rpc_err(1, &e.to_string()))?;
         Ok(gid)
     }
 
@@ -468,7 +458,9 @@ impl Aria2RpcServer for RpcHandler {
 
     async fn unpause(&self, gid: String) -> RpcResult<String> {
         let parsed_gid = parse_gid(&gid)?;
-        self.engine.unpause(parsed_gid).map_err(|e| rpc_err(1, &e.to_string()))?;
+        self.engine
+            .unpause(parsed_gid)
+            .map_err(|e| rpc_err(1, &e.to_string()))?;
         Ok(gid)
     }
 
@@ -481,14 +473,22 @@ impl Aria2RpcServer for RpcHandler {
 
     async fn tell_status(&self, gid: String) -> RpcResult<serde_json::Value> {
         let parsed_gid = parse_gid(&gid)?;
-        let job = self.engine.registry.get(parsed_gid).ok_or_else(|| gid_not_found(&gid))?;
+        let job = self
+            .engine
+            .registry
+            .get(parsed_gid)
+            .ok_or_else(|| gid_not_found(&gid))?;
         let status = facade::job_to_aria2_status(&job);
         serde_json::to_value(&status).map_err(|e| internal_error(&e.to_string()))
     }
 
     async fn get_uris(&self, gid: String) -> RpcResult<Vec<serde_json::Value>> {
         let parsed_gid = parse_gid(&gid)?;
-        let job = self.engine.registry.get(parsed_gid).ok_or_else(|| gid_not_found(&gid))?;
+        let job = self
+            .engine
+            .registry
+            .get(parsed_gid)
+            .ok_or_else(|| gid_not_found(&gid))?;
         let uris: Vec<serde_json::Value> = job
             .uris
             .iter()
@@ -504,7 +504,11 @@ impl Aria2RpcServer for RpcHandler {
 
     async fn get_files(&self, gid: String) -> RpcResult<Vec<serde_json::Value>> {
         let parsed_gid = parse_gid(&gid)?;
-        let job = self.engine.registry.get(parsed_gid).ok_or_else(|| gid_not_found(&gid))?;
+        let job = self
+            .engine
+            .registry
+            .get(parsed_gid)
+            .ok_or_else(|| gid_not_found(&gid))?;
         let status = facade::job_to_aria2_status(&job);
         let files: Vec<serde_json::Value> = status
             .files
@@ -516,7 +520,11 @@ impl Aria2RpcServer for RpcHandler {
 
     async fn get_peers(&self, gid: String) -> RpcResult<Vec<serde_json::Value>> {
         let parsed_gid = parse_gid(&gid)?;
-        let job = self.engine.registry.get(parsed_gid).ok_or_else(|| gid_not_found(&gid))?;
+        let job = self
+            .engine
+            .registry
+            .get(parsed_gid)
+            .ok_or_else(|| gid_not_found(&gid))?;
         if job.kind != raria_core::job::JobKind::Bt {
             return Ok(vec![]);
         }
@@ -527,17 +535,19 @@ impl Aria2RpcServer for RpcHandler {
             .map(|peers| {
                 peers
                     .iter()
-                    .map(|peer| serde_json::json!({
-                        "peerId": "",
-                        "ip": peer.ip,
-                        "port": peer.port.to_string(),
-                        "bitfield": "",
-                        "amChoking": "false",
-                        "peerChoking": "false",
-                        "downloadSpeed": peer.download_speed.to_string(),
-                        "uploadSpeed": peer.upload_speed.to_string(),
-                        "seeder": if peer.seeder { "true" } else { "false" },
-                    }))
+                    .map(|peer| {
+                        serde_json::json!({
+                            "peerId": "",
+                            "ip": peer.ip,
+                            "port": peer.port.to_string(),
+                            "bitfield": "",
+                            "amChoking": "false",
+                            "peerChoking": "false",
+                            "downloadSpeed": peer.download_speed.to_string(),
+                            "uploadSpeed": peer.upload_speed.to_string(),
+                            "seeder": if peer.seeder { "true" } else { "false" },
+                        })
+                    })
                     .collect::<Vec<_>>()
             })
             .unwrap_or_default();
@@ -546,7 +556,11 @@ impl Aria2RpcServer for RpcHandler {
 
     async fn get_servers(&self, gid: String) -> RpcResult<Vec<serde_json::Value>> {
         let parsed_gid = parse_gid(&gid)?;
-        let job = self.engine.registry.get(parsed_gid).ok_or_else(|| gid_not_found(&gid))?;
+        let job = self
+            .engine
+            .registry
+            .get(parsed_gid)
+            .ok_or_else(|| gid_not_found(&gid))?;
         let servers: Vec<serde_json::Value> = job
             .uris
             .iter()
@@ -613,13 +627,13 @@ impl Aria2RpcServer for RpcHandler {
 
     // ── Configuration ────────────────────────────────────────────────
 
-    async fn change_option(
-        &self,
-        gid: String,
-        options: serde_json::Value,
-    ) -> RpcResult<String> {
+    async fn change_option(&self, gid: String, options: serde_json::Value) -> RpcResult<String> {
         let parsed_gid = parse_gid(&gid)?;
-        let _job = self.engine.registry.get(parsed_gid).ok_or_else(|| gid_not_found(&gid))?;
+        let _job = self
+            .engine
+            .registry
+            .get(parsed_gid)
+            .ok_or_else(|| gid_not_found(&gid))?;
         let select_file = options
             .get("select-file")
             .and_then(|v| v.as_str())
@@ -655,7 +669,10 @@ impl Aria2RpcServer for RpcHandler {
                     debug!(%gid, bps, "changed max-upload-limit");
                 }
             }
-            if let Some(conns) = options.get("max-connection-per-server").and_then(|v| v.as_str()) {
+            if let Some(conns) = options
+                .get("max-connection-per-server")
+                .and_then(|v| v.as_str())
+            {
                 if let Ok(n) = conns.parse::<u32>() {
                     job.options.max_connections = n;
                     debug!(%gid, n, "changed max-connection-per-server");
@@ -699,7 +716,11 @@ impl Aria2RpcServer for RpcHandler {
 
     async fn get_option(&self, gid: String) -> RpcResult<serde_json::Value> {
         let parsed_gid = parse_gid(&gid)?;
-        let job = self.engine.registry.get(parsed_gid).ok_or_else(|| gid_not_found(&gid))?;
+        let job = self
+            .engine
+            .registry
+            .get(parsed_gid)
+            .ok_or_else(|| gid_not_found(&gid))?;
 
         Ok(serde_json::json!({
             "dir": job.out_path.parent().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default(),
@@ -731,13 +752,19 @@ impl Aria2RpcServer for RpcHandler {
     }
 
     async fn change_global_option(&self, options: serde_json::Value) -> RpcResult<String> {
-        if let Some(limit) = options.get("max-overall-download-limit").and_then(|v| v.as_str()) {
+        if let Some(limit) = options
+            .get("max-overall-download-limit")
+            .and_then(|v| v.as_str())
+        {
             if let Ok(bytes) = limit.parse::<u64>() {
                 self.engine.global_rate_limiter.update_limit(bytes);
                 debug!(limit, bytes, "changed global download limit");
             }
         }
-        if let Some(max) = options.get("max-concurrent-downloads").and_then(|v| v.as_str()) {
+        if let Some(max) = options
+            .get("max-concurrent-downloads")
+            .and_then(|v| v.as_str())
+        {
             if let Ok(n) = max.parse::<u32>() {
                 self.engine.scheduler.set_max_concurrent(n);
                 self.engine.work_notify().notify_one();
@@ -763,12 +790,7 @@ impl Aria2RpcServer for RpcHandler {
         }))
     }
 
-    async fn change_position(
-        &self,
-        gid: String,
-        pos: i32,
-        how: String,
-    ) -> RpcResult<i64> {
+    async fn change_position(&self, gid: String, pos: i32, how: String) -> RpcResult<i64> {
         let parsed_gid = parse_gid(&gid)?;
         let position_how = match how.as_str() {
             "POS_SET" => PositionHow::Set,
@@ -821,7 +843,8 @@ impl Aria2RpcServer for RpcHandler {
 // ── Helpers ──────────────────────────────────────────────────────────
 
 fn parse_gid(gid: &str) -> RpcResult<raria_core::job::Gid> {
-    let raw = u64::from_str_radix(gid, 16).map_err(|_| rpc_err(1, &format!("invalid GID: {gid}")))?;
+    let raw =
+        u64::from_str_radix(gid, 16).map_err(|_| rpc_err(1, &format!("invalid GID: {gid}")))?;
     Ok(raria_core::job::Gid::from_raw(raw))
 }
 
@@ -850,7 +873,10 @@ fn parse_select_file_spec(spec: &str) -> anyhow::Result<Vec<usize>> {
         anyhow::ensure!(one_based > 0, "select-file indices must be 1-based");
         result.push(one_based - 1);
     }
-    anyhow::ensure!(!result.is_empty(), "select-file must contain at least one index");
+    anyhow::ensure!(
+        !result.is_empty(),
+        "select-file must contain at least one index"
+    );
     Ok(result)
 }
 
@@ -861,7 +887,10 @@ fn parse_bt_tracker_spec(spec: &str) -> anyhow::Result<Vec<String>> {
         .filter(|part| !part.is_empty())
         .map(ToOwned::to_owned)
         .collect::<Vec<_>>();
-    anyhow::ensure!(!result.is_empty(), "bt-tracker must contain at least one tracker");
+    anyhow::ensure!(
+        !result.is_empty(),
+        "bt-tracker must contain at least one tracker"
+    );
     Ok(result)
 }
 
@@ -949,14 +978,24 @@ mod tests {
             .unwrap();
 
         let status = handler.tell_status(gid_str).await.unwrap();
-        assert!(status["files"][0]["path"].as_str().unwrap().contains("my.zip"));
+        assert!(
+            status["files"][0]["path"]
+                .as_str()
+                .unwrap()
+                .contains("my.zip")
+        );
     }
 
     #[tokio::test]
     async fn tell_status_gid_not_found() {
         let engine = test_engine();
         let handler = RpcHandler::new(engine);
-        assert!(handler.tell_status("00000000deadbeef".into()).await.is_err());
+        assert!(
+            handler
+                .tell_status("00000000deadbeef".into())
+                .await
+                .is_err()
+        );
     }
 
     #[tokio::test]
@@ -1030,9 +1069,18 @@ mod tests {
         let engine = test_engine();
         let handler = RpcHandler::new(Arc::clone(&engine));
 
-        handler.add_uri(vec!["https://a.com/1".into()], None).await.unwrap();
-        handler.add_uri(vec!["https://a.com/2".into()], None).await.unwrap();
-        handler.add_uri(vec!["https://a.com/3".into()], None).await.unwrap();
+        handler
+            .add_uri(vec!["https://a.com/1".into()], None)
+            .await
+            .unwrap();
+        handler
+            .add_uri(vec!["https://a.com/2".into()], None)
+            .await
+            .unwrap();
+        handler
+            .add_uri(vec!["https://a.com/3".into()], None)
+            .await
+            .unwrap();
 
         let waiting = handler.tell_waiting(0, 2).await.unwrap();
         assert_eq!(waiting.len(), 2);
@@ -1070,8 +1118,14 @@ mod tests {
         let engine = test_engine();
         let handler = RpcHandler::new(Arc::clone(&engine));
 
-        handler.add_uri(vec!["https://a.com/1".into()], None).await.unwrap();
-        handler.add_uri(vec!["https://a.com/2".into()], None).await.unwrap();
+        handler
+            .add_uri(vec!["https://a.com/1".into()], None)
+            .await
+            .unwrap();
+        handler
+            .add_uri(vec!["https://a.com/2".into()], None)
+            .await
+            .unwrap();
 
         let result = handler.pause_all().await.unwrap();
         assert_eq!(result, "OK");
@@ -1086,8 +1140,14 @@ mod tests {
         let engine = test_engine();
         let handler = RpcHandler::new(Arc::clone(&engine));
 
-        let g1 = handler.add_uri(vec!["https://a.com/1".into()], None).await.unwrap();
-        let g2 = handler.add_uri(vec!["https://a.com/2".into()], None).await.unwrap();
+        let g1 = handler
+            .add_uri(vec!["https://a.com/1".into()], None)
+            .await
+            .unwrap();
+        let g2 = handler
+            .add_uri(vec!["https://a.com/2".into()], None)
+            .await
+            .unwrap();
 
         // Pause via engine to get them into Paused.
         engine.activate_job(parse_gid(&g1).unwrap()).unwrap();
@@ -1291,11 +1351,23 @@ mod tests {
         let engine = test_engine();
         let handler = RpcHandler::new(Arc::clone(&engine));
 
-        let _g1 = handler.add_uri(vec!["https://a.com/1".into()], None).await.unwrap();
-        let _g2 = handler.add_uri(vec!["https://a.com/2".into()], None).await.unwrap();
-        let g3 = handler.add_uri(vec!["https://a.com/3".into()], None).await.unwrap();
+        let _g1 = handler
+            .add_uri(vec!["https://a.com/1".into()], None)
+            .await
+            .unwrap();
+        let _g2 = handler
+            .add_uri(vec!["https://a.com/2".into()], None)
+            .await
+            .unwrap();
+        let g3 = handler
+            .add_uri(vec!["https://a.com/3".into()], None)
+            .await
+            .unwrap();
 
-        let new_pos = handler.change_position(g3, 0, "POS_SET".into()).await.unwrap();
+        let new_pos = handler
+            .change_position(g3, 0, "POS_SET".into())
+            .await
+            .unwrap();
         assert_eq!(new_pos, 0);
     }
 
@@ -1304,8 +1376,16 @@ mod tests {
         let engine = test_engine();
         let handler = RpcHandler::new(Arc::clone(&engine));
 
-        let g1 = handler.add_uri(vec!["https://a.com/1".into()], None).await.unwrap();
-        assert!(handler.change_position(g1, 0, "INVALID".into()).await.is_err());
+        let g1 = handler
+            .add_uri(vec!["https://a.com/1".into()], None)
+            .await
+            .unwrap();
+        assert!(
+            handler
+                .change_position(g1, 0, "INVALID".into())
+                .await
+                .is_err()
+        );
     }
 
     #[tokio::test]
@@ -1338,7 +1418,10 @@ mod tests {
         engine.activate_job(parsed_gid).unwrap();
         engine.complete_job(parsed_gid).unwrap();
 
-        handler.remove_download_result(gid_str.clone()).await.unwrap();
+        handler
+            .remove_download_result(gid_str.clone())
+            .await
+            .unwrap();
         assert!(handler.tell_status(gid_str).await.is_err());
     }
 
@@ -1354,6 +1437,11 @@ mod tests {
     async fn add_torrent_returns_error() {
         let engine = test_engine();
         let handler = RpcHandler::new(engine);
-        assert!(handler.add_torrent("base64data".into(), None, None).await.is_err());
+        assert!(
+            handler
+                .add_torrent("base64data".into(), None, None)
+                .await
+                .is_err()
+        );
     }
 }

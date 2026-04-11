@@ -17,7 +17,8 @@ pub(crate) fn apply_global_retry_policy(
     // retry loops into a busy loop under failure. When `retry_wait` is 0 (default),
     // we keep the executor's internal default.
     if global_config.retry_wait > 0 {
-        executor_config.retry_base_delay_ms = (global_config.retry_wait as u64).saturating_mul(1000);
+        executor_config.retry_base_delay_ms =
+            (global_config.retry_wait as u64).saturating_mul(1000);
     }
 
     executor_config.lowest_speed_limit_bps = global_config.lowest_speed_limit;
@@ -64,7 +65,10 @@ mod tests {
     fn retry_wait_zero_keeps_executor_default_delay() {
         let global = GlobalConfig::default();
         let executor = apply_global_retry_policy(ExecutorConfig::default(), &global);
-        assert_eq!(executor.retry_base_delay_ms, ExecutorConfig::default().retry_base_delay_ms);
+        assert_eq!(
+            executor.retry_base_delay_ms,
+            ExecutorConfig::default().retry_base_delay_ms
+        );
     }
 
     #[test]

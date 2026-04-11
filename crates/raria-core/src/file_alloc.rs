@@ -99,9 +99,7 @@ pub fn preallocate(path: &Path, size: u64, mode: FileAllocation) -> Result<()> {
                     .truncate(false)
                     .open(path)
                     .context("failed to open file for fallocate")?;
-                let ret = unsafe {
-                    libc::fallocate(file.as_raw_fd(), 0, 0, size as libc::off_t)
-                };
+                let ret = unsafe { libc::fallocate(file.as_raw_fd(), 0, 0, size as libc::off_t) };
                 if ret != 0 {
                     return Err(anyhow::anyhow!(
                         "fallocate failed: {}",
@@ -127,16 +125,30 @@ mod tests {
     #[test]
     fn parse_file_allocation_modes() {
         assert_eq!(FileAllocation::parse("none").unwrap(), FileAllocation::None);
-        assert_eq!(FileAllocation::parse("prealloc").unwrap(), FileAllocation::Prealloc);
-        assert_eq!(FileAllocation::parse("trunc").unwrap(), FileAllocation::Trunc);
-        assert_eq!(FileAllocation::parse("falloc").unwrap(), FileAllocation::Falloc);
+        assert_eq!(
+            FileAllocation::parse("prealloc").unwrap(),
+            FileAllocation::Prealloc
+        );
+        assert_eq!(
+            FileAllocation::parse("trunc").unwrap(),
+            FileAllocation::Trunc
+        );
+        assert_eq!(
+            FileAllocation::parse("falloc").unwrap(),
+            FileAllocation::Falloc
+        );
         assert_eq!(FileAllocation::parse("NONE").unwrap(), FileAllocation::None);
         assert!(FileAllocation::parse("invalid").is_err());
     }
 
     #[test]
     fn display_roundtrips() {
-        for mode in [FileAllocation::None, FileAllocation::Prealloc, FileAllocation::Trunc, FileAllocation::Falloc] {
+        for mode in [
+            FileAllocation::None,
+            FileAllocation::Prealloc,
+            FileAllocation::Trunc,
+            FileAllocation::Falloc,
+        ] {
             assert_eq!(FileAllocation::parse(&mode.to_string()).unwrap(), mode);
         }
     }

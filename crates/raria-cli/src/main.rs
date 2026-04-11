@@ -282,6 +282,10 @@ enum Commands {
         #[arg(long)]
         ca_certificate: Option<PathBuf>,
 
+        /// Optional BT DHT persistence/config file path for librqbit.
+        #[arg(long = "bt-dht-config-file")]
+        bt_dht_config_file: Option<PathBuf>,
+
         /// Path to client certificate chain for mTLS.
         #[arg(long)]
         certificate: Option<PathBuf>,
@@ -397,7 +401,10 @@ async fn main() -> Result<()> {
     {
         let daemonize_requested = matches!(
             &cli.command,
-            Commands::Daemon { daemonize: true, .. }
+            Commands::Daemon {
+                daemonize: true,
+                ..
+            }
         );
         if daemonize_requested {
             spawn_background_daemon(&raw_args)?;
@@ -407,8 +414,8 @@ async fn main() -> Result<()> {
         }
     }
 
-    let env_filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new(&cli.log_level));
+    let env_filter =
+        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(&cli.log_level));
     if let Some(ref log_path) = cli.log {
         let directory = log_path
             .parent()
@@ -523,7 +530,8 @@ async fn main() -> Result<()> {
                 sftp_private_key,
                 sftp_private_key_passphrase,
                 quiet: cli.quiet,
-            }).await?;
+            })
+            .await?;
         }
         Commands::Daemon {
             dir,
@@ -543,6 +551,7 @@ async fn main() -> Result<()> {
             no_proxy,
             check_certificate,
             ca_certificate,
+            bt_dht_config_file,
             certificate,
             private_key,
             user_agent,
@@ -612,6 +621,9 @@ async fn main() -> Result<()> {
             if ca_certificate.is_some() {
                 config.ca_certificate = ca_certificate;
             }
+            if bt_dht_config_file.is_some() {
+                config.bt_dht_config_file = bt_dht_config_file;
+            }
             if certificate.is_some() {
                 config.certificate = certificate;
             }
@@ -667,7 +679,8 @@ async fn main() -> Result<()> {
             if sftp_private_key_passphrase.is_some() {
                 config.sftp_private_key_passphrase = sftp_private_key_passphrase;
             }
-            config.file_allocation = raria_core::file_alloc::FileAllocation::parse(&file_allocation)?;
+            config.file_allocation =
+                raria_core::file_alloc::FileAllocation::parse(&file_allocation)?;
 
             let input_uris = if let Some(ref path) = input_file {
                 let uris = raria_core::input_file::load_input_file(path)?;
@@ -679,14 +692,8 @@ async fn main() -> Result<()> {
 
             let _ = daemonize;
 
-            daemon::run_daemon_with_config(
-                config,
-                &session_file,
-                input_uris,
-                dir.clone(),
-                header,
-            )
-            .await?;
+            daemon::run_daemon_with_config(config, &session_file, input_uris, dir.clone(), header)
+                .await?;
         }
     }
 

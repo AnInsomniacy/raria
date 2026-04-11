@@ -164,7 +164,11 @@ impl Job {
     }
 
     /// Create a new Range (HTTP/FTP/SFTP) job with custom options.
-    pub fn new_range_with_options(uris: Vec<String>, out_path: PathBuf, options: JobOptions) -> Self {
+    pub fn new_range_with_options(
+        uris: Vec<String>,
+        out_path: PathBuf,
+        options: JobOptions,
+    ) -> Self {
         Self {
             gid: Gid::new(),
             kind: JobKind::Range,

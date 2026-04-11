@@ -19,7 +19,7 @@
 | Method | aria2 | raria | Status | Notes |
 |--------|-------|-------|--------|-------|
 | `aria2.addUri` | ✅ | ✅ | `client_verified` | Covered by daemon RPC smoke |
-| `aria2.addTorrent` | ✅ | ✅ | `tested` | BT dispatch tests exercise job creation |
+| `aria2.addTorrent` | ✅ | ✅ | `client_verified` | BT dispatch tests exercise job creation, and daemon BT smokes now prove real `addTorrent` flows for tracker announce and live peer-detail RPC |
 | `aria2.addMetalink` | ✅ | ✅ | `tested` | Metalink dispatch tests exist |
 | `aria2.remove` | ✅ | ✅ | `tested` | Unit coverage |
 | `aria2.forceRemove` | ✅ | ✅ | `tested` | Unit coverage |
@@ -37,7 +37,7 @@
 | `aria2.tellStatus` | ✅ | ✅ | `client_verified` | RPC smoke and parity tests |
 | `aria2.getUris` | ✅ | ✅ | `tested` | RPC tests |
 | `aria2.getFiles` | ✅ | ✅ | `tested` | RPC tests |
-| `aria2.getPeers` | ✅ | ✅ | `tested` | HTTP path returns empty and BT cached peer detail is covered by RPC tests |
+| `aria2.getPeers` | ✅ | ✅ | `client_verified` | HTTP path returns empty, RPC tests cover cached BT peer detail, and daemon BT smoke now proves live peer detail surfaces through `aria2.getPeers` |
 | `aria2.getServers` | ✅ | ✅ | `tested` | RPC tests |
 | `aria2.tellActive` | ✅ | ✅ | `tested` | RPC tests |
 | `aria2.tellWaiting` | ✅ | ✅ | `tested` | RPC tests |

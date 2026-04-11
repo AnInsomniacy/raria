@@ -30,9 +30,7 @@ fn extract_filename(value: &str) -> Option<String> {
         Some(stripped[..end].to_string())
     } else {
         // Unquoted token: filename=file.zip
-        let end = after
-            .find([';', ' ', '\t'])
-            .unwrap_or(after.len());
+        let end = after.find([';', ' ', '\t']).unwrap_or(after.len());
         let name = after[..end].trim();
         if name.is_empty() {
             None
@@ -55,10 +53,7 @@ fn extract_filename_star(value: &str) -> Option<String> {
         return None;
     }
 
-    let encoded = parts[2]
-        .split([';', ' ', '\t'])
-        .next()
-        .unwrap_or("");
+    let encoded = parts[2].split([';', ' ', '\t']).next().unwrap_or("");
 
     // Percent-decode the filename.
     let decoded = percent_decode(encoded);
@@ -76,10 +71,9 @@ fn percent_decode(input: &str) -> String {
     let mut i = 0;
     while i < bytes.len() {
         if bytes[i] == b'%' && i + 2 < bytes.len() {
-            if let Ok(byte) = u8::from_str_radix(
-                std::str::from_utf8(&bytes[i + 1..i + 3]).unwrap_or(""),
-                16,
-            ) {
+            if let Ok(byte) =
+                u8::from_str_radix(std::str::from_utf8(&bytes[i + 1..i + 3]).unwrap_or(""), 16)
+            {
                 result.push(byte);
                 i += 3;
                 continue;
@@ -128,10 +122,7 @@ mod tests {
     #[test]
     fn filename_star_takes_precedence() {
         let val = r#"attachment; filename="fallback.zip"; filename*=UTF-8''preferred.zip"#;
-        assert_eq!(
-            parse_content_disposition(val),
-            Some("preferred.zip".into())
-        );
+        assert_eq!(parse_content_disposition(val), Some("preferred.zip".into()));
     }
 
     #[test]
@@ -161,10 +152,7 @@ mod tests {
     fn parse_filename_with_semicolon_in_quotes() {
         // This is an edge case — the filename contains a semicolon inside quotes
         let val = r#"attachment; filename="file;name.zip""#;
-        assert_eq!(
-            parse_content_disposition(val),
-            Some("file;name.zip".into())
-        );
+        assert_eq!(parse_content_disposition(val), Some("file;name.zip".into()));
     }
 
     #[test]

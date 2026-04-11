@@ -16,9 +16,8 @@
 
 use anyhow::{Context, Result};
 use async_trait::async_trait;
-use raria_range::backend::{
-    ByteSourceBackend, ByteStream, FileProbe, OpenContext, ProbeContext,
-};
+use raria_range::backend::{ByteSourceBackend, ByteStream, FileProbe, OpenContext, ProbeContext};
+use std::path::PathBuf;
 use std::pin::Pin;
 use std::task::{self, Poll};
 use suppaftp::tokio::AsyncNativeTlsFtpStream;
@@ -66,10 +65,23 @@ impl<S: AsyncRead + Unpin> AsyncRead for FtpOwnedStream<S> {
 unsafe impl<S: AsyncRead + Unpin + Send> Send for FtpOwnedStream<S> {}
 
 /// FTP/FTPS download backend.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct FtpBackendConfig {
     pub all_proxy: Option<String>,
     pub no_proxy: Option<String>,
+    pub check_certificate: bool,
+    pub ca_certificate: Option<PathBuf>,
+}
+
+impl Default for FtpBackendConfig {
+    fn default() -> Self {
+        Self {
+            all_proxy: None,
+            no_proxy: None,
+            check_certificate: true,
+            ca_certificate: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -131,11 +143,14 @@ fn should_bypass_proxy(host: &str, no_proxy: Option<&str>) -> bool {
 
 async fn connect_tcp(addr: &str, host: &str, config: &FtpBackendConfig) -> Result<TcpStream> {
     if let Some(proxy) = config.all_proxy.as_deref() {
-        if proxy.starts_with("socks5://") && !should_bypass_proxy(host, config.no_proxy.as_deref()) {
+        if proxy.starts_with("socks5://") && !should_bypass_proxy(host, config.no_proxy.as_deref())
+        {
             let proxy_addr = proxy.trim_start_matches("socks5://");
             let stream = Socks5Stream::connect(proxy_addr, addr)
                 .await
-                .with_context(|| format!("failed to connect to FTP server through SOCKS5 proxy {proxy_addr}"))?;
+                .with_context(|| {
+                    format!("failed to connect to FTP server through SOCKS5 proxy {proxy_addr}")
+                })?;
             return Ok(stream.into_inner());
         }
     }
@@ -145,23 +160,42 @@ async fn connect_tcp(addr: &str, host: &str, config: &FtpBackendConfig) -> Resul
 }
 
 /// Create an authenticated FTP connection.
-async fn connect_ftp(uri: &Url, config: &FtpBackendConfig) -> Result<(AsyncNativeTlsFtpStream, String)> {
+async fn connect_ftp(
+    uri: &Url,
+    config: &FtpBackendConfig,
+) -> Result<(AsyncNativeTlsFtpStream, String)> {
     let (addr, user, password, path) = parse_ftp_url(uri)?;
     let host = uri.host_str().context("FTP URL missing host")?;
 
     debug!(addr = %addr, user = %user, "connecting to FTP server");
     let stream = connect_tcp(&addr, host, config).await?;
-    let mut ftp: AsyncNativeTlsFtpStream =
-        AsyncNativeTlsFtpStream::connect_with_stream(stream)
-            .await
-            .with_context(|| format!("failed to initialize FTP stream for {addr}"))?;
+    let mut ftp: AsyncNativeTlsFtpStream = AsyncNativeTlsFtpStream::connect_with_stream(stream)
+        .await
+        .with_context(|| format!("failed to initialize FTP stream for {addr}"))?;
 
     if uri.scheme() == "ftps" {
+        let mut tls_connector = suppaftp::async_native_tls::TlsConnector::new()
+            .danger_accept_invalid_certs(!config.check_certificate)
+            .danger_accept_invalid_hostnames(!config.check_certificate);
+        if let Some(ca_path) = config.ca_certificate.as_ref() {
+            let pem = std::fs::read(ca_path).with_context(|| {
+                format!(
+                    "failed to read FTPS CA certificate from {}",
+                    ca_path.display()
+                )
+            })?;
+            let cert =
+                suppaftp::async_native_tls::Certificate::from_pem(&pem).with_context(|| {
+                    format!(
+                        "failed to parse FTPS CA certificate from {}",
+                        ca_path.display()
+                    )
+                })?;
+            tls_connector = tls_connector.add_root_certificate(cert);
+        }
         ftp = ftp
             .into_secure(
-                suppaftp::tokio::AsyncNativeTlsConnector::from(
-                    suppaftp::async_native_tls::TlsConnector::new(),
-                ),
+                suppaftp::tokio::AsyncNativeTlsConnector::from(tls_connector),
                 host,
             )
             .await
@@ -317,10 +351,20 @@ mod tests {
 
     #[test]
     fn parse_ftp_url_deep_path() {
-        let url: Url = "ftp://ftp.example.com/a/b/c/d/file.tar.gz"
-            .parse()
-            .unwrap();
+        let url: Url = "ftp://ftp.example.com/a/b/c/d/file.tar.gz".parse().unwrap();
         let (_, _, _, path) = parse_ftp_url(&url).unwrap();
         assert_eq!(path, "/a/b/c/d/file.tar.gz");
+    }
+
+    #[test]
+    fn no_proxy_bypasses_exact_host() {
+        assert!(should_bypass_proxy(
+            "ftp.example.com",
+            Some("localhost,ftp.example.com")
+        ));
+        assert!(!should_bypass_proxy(
+            "ftp.example.com",
+            Some("localhost,127.0.0.1")
+        ));
     }
 }

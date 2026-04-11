@@ -1,9 +1,9 @@
 #[cfg(test)]
 mod tests {
-    use reqwest::header::{ACCESS_CONTROL_REQUEST_METHOD, ORIGIN};
     use raria_core::config::GlobalConfig;
     use raria_core::engine::Engine;
-    use raria_rpc::server::{start_rpc_server, RpcServerConfig};
+    use raria_rpc::server::{RpcServerConfig, start_rpc_server};
+    use reqwest::header::{ACCESS_CONTROL_REQUEST_METHOD, ORIGIN};
     use std::net::SocketAddr;
     use std::sync::Arc;
     use tokio_util::sync::CancellationToken;

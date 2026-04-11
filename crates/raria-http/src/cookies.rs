@@ -99,7 +99,11 @@ pub fn save_cookie_store(path: &Path, store: &CookieStoreMutex) -> std::io::Resu
             domain.to_string()
         };
         let path = cookie.path.as_ref();
-        let secure = if cookie.secure().unwrap_or(false) { "TRUE" } else { "FALSE" };
+        let secure = if cookie.secure().unwrap_or(false) {
+            "TRUE"
+        } else {
+            "FALSE"
+        };
         let expires = match cookie.expires {
             CookieExpiration::AtUtc(dt) => dt.unix_timestamp().max(0) as u64,
             CookieExpiration::SessionEnd => 0,

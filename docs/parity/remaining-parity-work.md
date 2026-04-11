@@ -11,8 +11,8 @@
 
 ## Snapshot
 
-- **Protocol matrix:** only a small set of protocol rows remain open (`wired`, `has_code`, or `gap`)
-- **RPC matrix:** only a small set of RPC rows remain open after promoting `aria2.changeGlobalOption` to `client_verified`
+- **Protocol matrix:** `has_code` rows are now cleared; remaining protocol work is concentrated in `wired` promotions plus explicit accepted gaps
+- **RPC matrix:** `has_code` rows are now cleared; the remaining open RPC work is primarily `wired` → `tested/client_verified`
 - **Accepted gaps:** BT-GAP-001 through BT-GAP-004 remain intentional gaps today
 - **Next promotion candidates:** the remaining `wired` rows with fresh daemon/binary evidence
 
@@ -23,7 +23,7 @@ before claiming aria2-grade daemon replacement.
 
 | Ledger row | Current | Evidence already in repo | What still blocks closure |
 | --- | --- | --- | --- |
-| HTTP resume (partial download) | `wired` | `crates/raria-core/tests/segment_checkpoint.rs`, `crates/raria-cli/tests/session_smoke.rs`, `crates/raria-cli/tests/single_download.rs` | Current evidence proves daemon restart resume and minimal single-download `--continue`, but not the full aria2 continuation surface |
+| HTTP resume (partial download) | `tested` | `crates/raria-core/tests/segment_checkpoint.rs`, `crates/raria-cli/tests/session_smoke.rs`, `crates/raria-cli/tests/single_download.rs` | Remaining work is about broader `client_verified` confidence, not missing hot-path implementation |
 | `aria2.changeGlobalOption` | `client_verified` | `crates/raria-cli/tests/rpc_smoke.rs`, `crates/raria-rpc/tests/options_parity.rs` | No blocker on core replacement path; ledger retained here as a closed core contract |
 
 ## Secondary Protocol Promotion
@@ -33,9 +33,9 @@ than immediate replacement blockers.
 
 | Theme | Ledger rows | Current status | Existing evidence | Next gate |
 | --- | --- | --- | --- | --- |
-| FTP lifecycle hardening | FTP basic download, passive mode, range/resume, explicit FTPS | `wired` | Backend exists in `crates/raria-ftp`; explicit FTPS hot path now performs `AUTH TLS` | Add dedicated binary-path or daemon-path FTP/FTPS E2E before promotion beyond `wired` |
-| SFTP end-to-end coverage | SFTP basic/password/key auth/host verification | `wired` | Backend + config live in `crates/raria-sftp`, `crates/raria-core/src/config.rs` | Add real SFTP integration coverage, especially key-auth happy path |
-| BitTorrent runtime fidelity | DHT, PEX, uTP, pause/resume, fastresume, SOCKS5 proxy | `wired` | librqbit-backed service and BT dispatch tests | Add product-path BT verification, especially pause/resume and peer/detail UX |
+| FTP lifecycle hardening | Explicit FTPS daemon-path confidence | `client_verified` | Backend and single-download binary path now both verify explicit FTPS with AUTH TLS + PBSZ/PROT + protected data transfer under a custom trusted CA | Next gate is daemon-path confidence before calling the entire FTPS lane fully closed |
+| SFTP end-to-end coverage | daemon-path confidence only | `client_verified` | Dedicated in-process SFTP smoke plus binary-path smoke now cover password auth, key auth, strict known_hosts, and SOCKS5 proxy transport | Next gate is daemon-path confidence if we want to push the SFTP lane beyond binary-path replacement readiness |
+| BitTorrent runtime fidelity | DHT, PEX | `wired` | librqbit-backed service, BT dispatch tests, daemon RPC smoke now cover magnet creation + pause/resume, daemon tracker smoke verifies `bt-tracker` announce on the real daemon path, `aria2.getPeers` is daemon-verified, and `raria-bt` product-path smokes cover real torrent transfer plus fastresume progress restore and end-to-end SOCKS5 torrent completion | Add transport-specific evidence for DHT/PEX. `uTP` is no longer treated as open work; see [`bt-transport-tail-blocker.md`](./bt-transport-tail-blocker.md) for the source-grounded incompatibility rationale. |
 | Metalink runtime verification | Chunk checksum, Metalink/HTTP | `gap` | Parser and normalizer cover file-level hashes and URL ordering only | Accepted gaps unless the project later chooses to add piece-level Metalink models and RFC 6249 header discovery |
 
 ## Compatibility Tail
@@ -45,7 +45,7 @@ lower-value follow-ups instead of core replacement gates.
 
 | Theme | Ledger rows | Current status | Review note |
 | --- | --- | --- | --- |
-| Proxy and TLS polish | FTP proxy, SFTP proxy | `has_code` | Current transport crates do not yet provide a ready-made product path in this repo; treat as explicit follow-up or accepted gap, not silent backlog |
+| Proxy and TLS polish | Explicit FTPS daemon path | `client_verified` | SOCKS5-backed FTP/SFTP transport hooks now have dedicated protocol-specific smoke coverage, and explicit FTPS is verified on both backend and single-download binary paths; the remaining gap is daemon-path parity confidence |
 | Core daemon ergonomics | Remaining CLI/session polish rows still at `wired` | `wired` | Promote only when daemon/binary smoke covers the real product path |
 
 ## Accepted Gaps

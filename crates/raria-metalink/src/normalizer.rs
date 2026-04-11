@@ -83,10 +83,7 @@ fn normalize_file(file: &MetalinkFile, opts: &NormalizeOptions) -> RangeJobSeed 
     }
 }
 
-fn select_best_hash(
-    hashes: &[MetalinkHash],
-    preferred: &[String],
-) -> Option<NormalizedChecksum> {
+fn select_best_hash(hashes: &[MetalinkHash], preferred: &[String]) -> Option<NormalizedChecksum> {
     for algo in preferred {
         if let Some(hash) = hashes.iter().find(|h| h.algo.eq_ignore_ascii_case(algo)) {
             return Some(NormalizedChecksum {
@@ -120,7 +117,8 @@ mod tests {
                     },
                     MetalinkHash {
                         algo: "sha-256".into(),
-                        value: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855".into(),
+                        value: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+                            .into(),
                     },
                 ],
                 urls: vec![

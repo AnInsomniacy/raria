@@ -7,7 +7,7 @@
 mod tests {
     use raria_core::config::GlobalConfig;
     use raria_core::engine::Engine;
-    use raria_rpc::server::{start_rpc_server, RpcServerConfig};
+    use raria_rpc::server::{RpcServerConfig, start_rpc_server};
     use std::net::SocketAddr;
     use std::sync::Arc;
     use tokio_util::sync::CancellationToken;
@@ -94,8 +94,14 @@ mod tests {
         let result = &resp["result"];
 
         // aria2 returns speeds as string-encoded integers.
-        assert!(result["downloadSpeed"].as_str().is_some(), "downloadSpeed should be string");
-        assert!(result["uploadSpeed"].as_str().is_some(), "uploadSpeed should be string");
+        assert!(
+            result["downloadSpeed"].as_str().is_some(),
+            "downloadSpeed should be string"
+        );
+        assert!(
+            result["uploadSpeed"].as_str().is_some(),
+            "uploadSpeed should be string"
+        );
 
         cancel.cancel();
     }

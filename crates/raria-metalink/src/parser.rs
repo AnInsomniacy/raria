@@ -4,8 +4,8 @@
 // download orchestration. Uses quick-xml for parsing.
 
 use anyhow::Result;
-use quick_xml::events::Event;
 use quick_xml::Reader;
+use quick_xml::events::Event;
 use serde::{Deserialize, Serialize};
 
 /// Raw parsed Metalink file representation (v3 or v4).
@@ -90,9 +90,7 @@ pub fn parse_metalink(xml: &str) -> Result<RawMetalink> {
                         for attr in e.attributes().flatten() {
                             let key = String::from_utf8_lossy(attr.key.as_ref()).to_string();
                             let val = String::from_utf8_lossy(&attr.value).to_string();
-                            if key == "xmlns"
-                                && val.contains("ietf")
-                            {
+                            if key == "xmlns" && val.contains("ietf") {
                                 version = MetalinkVersion::V4;
                             } else if key == "version" && val.starts_with('3') {
                                 version = MetalinkVersion::V3;
@@ -118,14 +116,11 @@ pub fn parse_metalink(xml: &str) -> Result<RawMetalink> {
                         current_url_priority = 999999;
                         current_url_location = None;
                         for attr in e.attributes().flatten() {
-                            let key =
-                                String::from_utf8_lossy(attr.key.as_ref()).to_string();
-                            let val =
-                                String::from_utf8_lossy(&attr.value).to_string();
+                            let key = String::from_utf8_lossy(attr.key.as_ref()).to_string();
+                            let val = String::from_utf8_lossy(&attr.value).to_string();
                             match key.as_str() {
                                 "priority" | "preference" => {
-                                    current_url_priority =
-                                        val.parse().unwrap_or(999999);
+                                    current_url_priority = val.parse().unwrap_or(999999);
                                 }
                                 "location" => {
                                     current_url_location = Some(val);
@@ -300,7 +295,8 @@ mod tests {
 
     #[test]
     fn parse_empty_metalink() {
-        let xml = r#"<?xml version="1.0"?><metalink xmlns="urn:ietf:params:xml:ns:metalink"></metalink>"#;
+        let xml =
+            r#"<?xml version="1.0"?><metalink xmlns="urn:ietf:params:xml:ns:metalink"></metalink>"#;
         let ml = parse_metalink(xml).unwrap();
         assert!(ml.files.is_empty());
     }
