@@ -117,7 +117,9 @@ impl Scheduler {
     /// and returns GIDs from the front of the queue that can be activated.
     pub fn jobs_to_activate(&self, registry: &JobRegistry) -> Vec<Gid> {
         let max = self.max_concurrent.load(Ordering::Relaxed);
-        let active_count = registry.by_status(Status::Active).len() as u32;
+        let active_count =
+            (registry.by_status(Status::Active).len() + registry.by_status(Status::Seeding).len())
+                as u32;
         if active_count >= max {
             return Vec::new();
         }

@@ -127,7 +127,7 @@ impl Engine {
     /// Restore jobs from the persistent store into the in-memory registry.
     ///
     /// - Waiting and Paused jobs are re-enqueued into the scheduler.
-    /// - Active jobs are demoted to Waiting (the process crashed mid-download).
+    /// - Active / Seeding jobs are demoted to Waiting (the process crashed mid-download).
     /// - Complete, Error, and Removed jobs are loaded but not enqueued.
     pub fn restore(&self) -> Result<usize> {
         let store = self
@@ -143,9 +143,9 @@ impl Engine {
         for mut job in jobs {
             let gid = job.gid;
             match job.status {
-                Status::Active => {
-                    // Process crashed while downloading — demote to Waiting.
-                    warn!(%gid, "restoring active job as waiting (process crash recovery)");
+                Status::Active | Status::Seeding => {
+                    // Process crashed while downloading or seeding — demote to Waiting.
+                    warn!(%gid, "restoring active-like job as waiting (process crash recovery)");
                     job.status = Status::Waiting;
                     self.registry.load_from(vec![job]);
                     self.cancel_registry.register(gid);
@@ -415,10 +415,11 @@ impl Engine {
     /// Returns the number of jobs paused.
     pub fn pause_all(&self) -> usize {
         let active = self.registry.by_status(Status::Active);
+        let seeding = self.registry.by_status(Status::Seeding);
         let waiting = self.registry.by_status(Status::Waiting);
         let mut count = 0;
 
-        for job in active.iter().chain(waiting.iter()) {
+        for job in active.iter().chain(seeding.iter()).chain(waiting.iter()) {
             if self.pause(job.gid).is_ok() {
                 count += 1;
             }
