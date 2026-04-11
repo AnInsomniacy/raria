@@ -2,26 +2,39 @@
 
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/rust-1.85%2B-orange.svg)](https://www.rust-lang.org/)
-[![Tests](https://img.shields.io/badge/tests-205%20passing-brightgreen.svg)](#testing)
+[![Tests](https://img.shields.io/badge/tests-workspace%20verified-brightgreen.svg)](#testing)
 
-A high-performance, multi-protocol download engine written in Rust. 
+A Rust download engine with a practical, capability-first maturity model.
 
-## Features
+> The active execution contract is **light governance + progressive capability maturity**. Public-facing guidance lives in [`docs/practical-maturity.md`](docs/practical-maturity.md). The detailed planning source of truth remains `.omx/plans/2026-04-11-raria-practical-maturity-plan.md`.
 
-| Feature | Status | Backend |
-|---------|--------|---------|
-| Multi-connection HTTP/HTTPS | ✅ Working | [reqwest](https://docs.rs/reqwest) |
-| Concurrent segment downloads | ✅ Working | tokio + Semaphore |
-| Automatic retry + exponential backoff | ✅ Working | — |
-| Session persistence / crash recovery | ✅ Working | [redb](https://docs.rs/redb) |
-| aria2-compatible JSON-RPC (10 methods) | ✅ Working | [jsonrpsee](https://docs.rs/jsonrpsee) |
-| Daemon mode with scheduler | ✅ Working | tokio |
-| Rate limiting | ✅ Working | [governor](https://docs.rs/governor) |
-| SHA-256 checksum verification | ✅ Working | [sha2](https://docs.rs/sha2) |
-| Metalink v3/v4 parsing | ✅ Working | [quick-xml](https://docs.rs/quick-xml) |
-| FTP/FTPS | 🔧 Planned | [suppaftp](https://docs.rs/suppaftp) |
-| SFTP | 🔧 Planned | [russh](https://docs.rs/russh) |
-| BitTorrent (DHT, PEX, magnet) | 🔧 Planned | [librqbit](https://docs.rs/librqbit) |
+## Current Capability Snapshot
+
+| Capability | Status | Notes |
+| --- | --- | --- |
+| HTTP/HTTPS segmented downloads | ✅ Verified | `reqwest` backend with range support, retries, cookies, proxy support, and checksum hooks |
+| FTP/FTPS downloads | ✅ Verified | `suppaftp` backend with smoke coverage in CLI/backend tests |
+| SFTP downloads | ✅ Verified | `russh`/`russh-sftp` backend with smoke coverage |
+| Metalink parsing | ✅ Verified | v3/v4 parser and normalizer are in-tree |
+| aria2-style JSON-RPC daemon | ✅ Verified | HTTP + WebSocket server, queue/status/global-stat flow, daemon lifecycle tests |
+| Session persistence / restore | ✅ Verified | redb-backed store and daemon/session smoke coverage |
+| BitTorrent service integration | ⚠️ In progress | `raria-bt` and daemon BT flow exist, but seeding semantics, honest facade projection, and some stop-line gaps are still being closed |
+| XML-RPC | ❌ Not supported | Permanently out of scope |
+
+## Practical Maturity Model
+
+raria is intentionally not following a "rebuild the foundation first" plan. The current execution model is:
+
+1. **Keep the target unchanged** — raria becomes a mature Rust download engine, with download-core and BitTorrent as the top priorities.
+2. **Prefer real capability output** — each step should land user-visible or testable behavior, not just internal reshuffling.
+3. **Keep governance light but real** — only three hard gates remain:
+   - stop-line grading
+   - dependency viability audit
+   - write-scope / crate-boundary discipline
+4. **Do local refactors only when blocked** — internal cleanup is allowed only when the current structure clearly prevents the next capability from landing honestly.
+5. **Treat aria2 compatibility as a migration facade** — it must project internal truth, not redefine it.
+
+See [`docs/practical-maturity.md`](docs/practical-maturity.md) for the English companion document that translates the active execution plan into repo-facing guidance.
 
 ## Quick Start
 
@@ -47,7 +60,7 @@ raria download https://example.com/file.zip --checksum sha-256=e3b0c44298fc...
 # Start daemon with RPC on port 6800
 raria daemon -d ~/Downloads --rpc-port 6800
 
-# Add a download via JSON-RPC (same as aria2!)
+# Add a download via JSON-RPC
 curl -X POST http://127.0.0.1:6800/ \
   -H "Content-Type: application/json" \
   -d '{
@@ -61,110 +74,79 @@ curl -X POST http://127.0.0.1:6800/ \
 curl -X POST http://127.0.0.1:6800/ \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","method":"aria2.tellStatus","id":"2","params":["0000000000000001"]}'
-
-# Global stats
-curl -X POST http://127.0.0.1:6800/ \
-  -H "Content-Type: application/json" \
-  -d '{"jsonrpc":"2.0","method":"aria2.getGlobalStat","id":"3","params":[]}'
 ```
 
 ## Building from Source
 
 ```bash
-# Requirements: Rust 1.85+ (stable)
 git clone https://github.com/AnInsomniacy/raria.git
 cd raria
 cargo build --release
 ```
 
-The binary is at `target/release/raria`.
+The binary is emitted at `target/release/raria`.
 
-## Architecture
+## Workspace Layout
 
-raria is a Cargo workspace with 9 crates, designed for library-first usage:
+raria is a Cargo workspace with focused crates rather than one monolith:
 
-```
+```text
 raria/
 ├── crates/
 │   ├── raria-core      # Job model, engine, scheduler, persistence, config, checksum
 │   ├── raria-range     # ByteSourceBackend trait + concurrent SegmentExecutor
 │   ├── raria-http      # HTTP/HTTPS backend (reqwest)
-│   ├── raria-ftp       # FTP/FTPS backend (suppaftp) [planned]
-│   ├── raria-sftp      # SFTP backend (russh) [planned]
-│   ├── raria-bt        # BitTorrent service (librqbit) [planned]
-│   ├── raria-metalink  # Metalink v3/v4 XML parser
-│   ├── raria-rpc       # aria2-compatible JSON-RPC server (jsonrpsee)
-│   └── raria-cli       # CLI binary (clap) — download + daemon modes
-├── Cargo.toml          # Workspace manifest
-├── LICENSE             # Apache 2.0
+│   ├── raria-ftp       # FTP/FTPS backend (suppaftp)
+│   ├── raria-sftp      # SFTP backend (russh / russh-sftp)
+│   ├── raria-bt        # BitTorrent service (librqbit)
+│   ├── raria-metalink  # Metalink parser / normalizer
+│   ├── raria-rpc       # aria2-style JSON-RPC server / facade
+│   └── raria-cli       # CLI + daemon integration layer
+├── docs/
+│   └── practical-maturity.md
+├── Cargo.toml
 └── README.md
 ```
 
-### Design Principles
+## Architecture Notes
 
-1. **Library-first** — all logic lives in library crates; the CLI is a thin integration layer. This enables direct Tauri integration without a sidecar process.
-2. **Protocol separation** — HTTP/FTP/SFTP implement `ByteSourceBackend` (range-based downloads); BT uses a separate `BtService` (session-based, piece-driven).
-3. **Persistence-by-default** — all job state changes are written to redb before in-memory state is updated. Active jobs are demoted to Waiting on crash recovery.
-4. **Cancel propagation** — every activated job gets a `CancellationToken` from the engine's `CancelRegistry`; pause/Ctrl+C/shutdown propagates automatically to all segment tasks.
-5. **aria2 compatibility** — RPC responses use aria2's camelCase format with string-typed numbers, so existing aria2 clients (including Motrix Next) work without changes.
+- **Library-first:** protocol/runtime logic lives in library crates; `raria-cli` wires the CLI and daemon.
+- **Protocol split:** HTTP/FTP/SFTP share the range-download path; BitTorrent is session/piece driven and intentionally separate.
+- **Persistence-first engine state:** job state is stored in redb and restored through the core engine.
+- **Facade honesty:** aria2-style responses should project internal truth instead of forcing the core model to imitate aria2 internals.
+- **Capability-first delivery:** roadmap steps are evaluated by shipped behavior and tests, not abstract architecture completeness.
 
-## RPC Methods
+## Current Maturity Sequence
 
-| Method | Description | Status |
-|--------|-------------|--------|
-| `aria2.addUri` | Add a new download | ✅ |
-| `aria2.tellStatus` | Query job status | ✅ |
-| `aria2.pause` | Pause a download | ✅ |
-| `aria2.unpause` | Resume a paused download | ✅ |
-| `aria2.remove` | Remove a download | ✅ |
-| `aria2.getGlobalStat` | Global statistics | ✅ |
-| `aria2.tellActive` | List active downloads | ✅ |
-| `aria2.tellWaiting` | List waiting downloads | ✅ |
-| `aria2.tellStopped` | List stopped downloads | ✅ |
-| `aria2.getVersion` | Version information | ✅ |
+The active plan advances in this order:
+
+1. Minimal core semantics for BT seeding and shared events
+2. BT field synchronization and one-shot download-complete semantics
+3. Daemon checksum / conditional-get capability closure
+4. Honest RPC / facade projection of real BT fields
+5. Metalink execution-path upgrades
+6. Full verification closure plus docs that describe only real capabilities
+
+Each step has an explicit primary write scope, allowed support crates, and forbidden write zones. See [`docs/practical-maturity.md`](docs/practical-maturity.md) for the condensed contract.
 
 ## Testing
 
 ```bash
-# Run all tests (205 tests across 9 crates)
+# Full workspace tests
 cargo test --workspace
 
-# Run with logging
-RUST_LOG=debug cargo test --workspace
+# Full type-check without producing release artifacts
+cargo check --workspace
 
-# Clippy lint check (zero warnings enforced)
-cargo clippy --workspace -- -D warnings
+# Lint with warnings denied
+cargo clippy --workspace --all-targets -- -D warnings
 ```
-
-## Roadmap
-
-- [x] Core engine with job lifecycle state machine
-- [x] Concurrent segment executor with retry and backoff
-- [x] HTTP/HTTPS backend with range support
-- [x] Metalink v3/v4 parsing
-- [x] redb persistence layer with crash recovery
-- [x] Engine ↔ Store integration
-- [x] CancelToken propagation (Engine → Executor)
-- [x] Rate limiting integration
-- [x] SHA-256 checksum verification
-- [x] aria2-compatible JSON-RPC server (10 methods)
-- [x] Daemon mode with scheduler run loop
-- [ ] FTP/FTPS backend implementation
-- [ ] SFTP backend implementation
-- [ ] BitTorrent integration via librqbit
-- [ ] WebSocket event push notifications
-- [ ] Tauri plugin for direct Motrix Next integration
-- [ ] Resume/checkpoint support
 
 ## Related Projects
 
-- [Motrix Next](https://github.com/AnInsomniacy/motrix-next) — full-featured download manager built with Tauri + Vue 3
-- [aria2-builder](https://github.com/AnInsomniacy/aria2-builder) — cross-platform static aria2 builds (the current engine)
+- [Motrix Next](https://github.com/AnInsomniacy/motrix-next) — a Tauri/Vue download manager that can consume aria2-style control surfaces
+- [aria2-builder](https://github.com/AnInsomniacy/aria2-builder) — cross-platform aria2 builds
 - [aria2](https://github.com/aria2/aria2) — the original C++ download utility
-
-## Author
-
-**AnInsomniacy** — [@AnInsomniacy](https://github.com/AnInsomniacy)
 
 ## License
 

@@ -1,60 +1,93 @@
 # Contributing to raria
 
-Thank you for your interest in contributing to raria!
+Thanks for helping improve raria.
 
 ## Development Setup
 
 ```bash
-# Clone
 git clone https://github.com/AnInsomniacy/raria.git
 cd raria
-
-# Build
 cargo build --workspace
-
-# Test (must pass before any PR)
 cargo test --workspace
-cargo clippy --workspace -- -D warnings
+cargo clippy --workspace --all-targets -- -D warnings
 ```
 
-## Quality Standards
+## Working Rules
 
-All contributions must meet these requirements:
+raria currently follows the practical maturity contract described in [`docs/practical-maturity.md`](docs/practical-maturity.md). Contributions should preserve these rules:
 
-1. **Tests pass** — `cargo test --workspace` with 0 failures
-2. **Clippy clean** — `cargo clippy --workspace -- -D warnings` with 0 warnings
-3. **TDD workflow** — write tests first, then implementation
-4. **No stub tests** — tests must exercise real logic, not just constructor validation
+1. **Capability-first delivery** — each change should land real behavior, better verification, or an honest documentation update.
+2. **TDD is required** — add or tighten tests first when changing behavior.
+3. **No fake green** — do not weaken tests, hide regressions, or claim unsupported capability.
+4. **Write-scope discipline** — stay inside the step's allowed crates/files unless correctness clearly forces a broader change.
+5. **Facade honesty** — aria2-style responses may default or omit unstable fields, but must not distort internal truth.
 
-## Code Organization
+## Hard Governance Gates
+
+Every meaningful change should respect the three active hard gates:
+
+### 1. Stop-line grading
+
+If a dependency or architectural limit prevents parity, record it honestly instead of papering it over. Use these grades:
+
+- `core-blocking`
+- `advanced-but-acceptable`
+- `migration-only`
+
+### 2. Dependency viability audit
+
+Before leaning on dependency behavior, confirm the dependency can actually support the intended capability. The current high-value dependency set is:
+
+- `librqbit`
+- `reqwest`
+- `suppaftp`
+- `russh` / `russh-sftp`
+- `redb`
+- `jsonrpsee`
+
+### 3. Write-scope / crate-boundary discipline
+
+Each roadmap step has:
+
+- a **primary write** crate
+- optional **supporting write** crates
+- explicit **forbidden** crates
+
+If you need to cross those boundaries, document why the wider change is unavoidable.
+
+## Workspace Overview
 
 | Crate | Purpose |
-|-------|---------|
+| --- | --- |
 | `raria-core` | Job model, engine, scheduler, persistence, config, checksum |
-| `raria-range` | `ByteSourceBackend` trait + `SegmentExecutor` |
-| `raria-http` | HTTP/HTTPS backend (reqwest) |
-| `raria-ftp` | FTP/FTPS backend (suppaftp) |
-| `raria-sftp` | SFTP backend (russh) |
-| `raria-bt` | BitTorrent service (librqbit) |
-| `raria-metalink` | Metalink XML parser |
-| `raria-rpc` | JSON-RPC server (jsonrpsee) |
-| `raria-cli` | CLI binary (clap) |
+| `raria-range` | Shared segmented-download abstractions and executor |
+| `raria-http` | HTTP/HTTPS backend |
+| `raria-ftp` | FTP/FTPS backend |
+| `raria-sftp` | SFTP backend |
+| `raria-metalink` | Metalink parser / normalizer |
+| `raria-bt` | BitTorrent service integration |
+| `raria-rpc` | aria2-style JSON-RPC server / facade |
+| `raria-cli` | CLI and daemon integration |
 
-## Pull Request Process
+## Pull Request Expectations
 
-1. Fork the repository
-2. Create a feature branch from `main`
-3. Write tests first (TDD)
-4. Implement the feature
-5. Ensure all quality gates pass
-6. Submit a PR with a clear description
+1. Identify which practical-maturity step, stop-line, or documentation correction your change addresses.
+2. Add tests first when behavior changes.
+3. Keep the diff inside the declared write scope whenever possible.
+4. Run the relevant verification commands before opening the PR.
+5. Update docs when capability claims or operational guidance change.
 
-## Architecture Notes
+## Verification Checklist
 
-- **Protocols**: HTTP/FTP/SFTP implement `ByteSourceBackend` (range-based). BT uses `BtService` (session-based).
-- **Concurrency**: `SegmentExecutor` uses `tokio::spawn` + `Semaphore` for controlled parallelism.
-- **Persistence**: All job state changes persist to redb before in-memory update.
-- **Cancellation**: `CancelRegistry` manages per-job `CancellationToken` trees. Pause/shutdown propagates via child tokens.
+Before submitting a change, run the checks that match your scope:
+
+```bash
+cargo test --workspace
+cargo check --workspace
+cargo clippy --workspace --all-targets -- -D warnings
+```
+
+For narrower changes, include focused crate/test evidence as well.
 
 ## License
 
