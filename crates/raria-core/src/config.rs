@@ -56,7 +56,7 @@ pub struct GlobalConfig {
     /// Path to Netscape cookie file for persistence (aria2: --save-cookies).
     pub save_cookie_file: Option<PathBuf>,
     /// RPC secret token (aria2: --rpc-secret). When set, all RPC
-    /// requests must include "token:<secret>" as the first parameter.
+    /// requests must include `token:<secret>` as the first parameter.
     pub rpc_secret: Option<String>,
     /// Allow browsers from any origin to call the HTTP JSON-RPC endpoint.
     pub rpc_allow_origin_all: bool,

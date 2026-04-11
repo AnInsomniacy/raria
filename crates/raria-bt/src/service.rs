@@ -167,7 +167,7 @@ pub struct BtService {
     config: BtServiceConfig,
     /// librqbit session (initialized lazily on first use).
     session: Arc<RwLock<Option<Arc<Session>>>>,
-    /// Map from raria GID → librqbit Arc<ManagedTorrent> for active torrents.
+    /// Map from raria GID → librqbit `Arc<ManagedTorrent>` for active torrents.
     handles: Arc<RwLock<HashMap<raria_core::job::Gid, Arc<ManagedTorrent>>>>,
 }
 
@@ -421,7 +421,7 @@ impl BtService {
         }
     }
 
-    /// Internal: get the Arc<ManagedTorrent> for a BtHandle.
+    /// Internal: get the `Arc<ManagedTorrent>` for a BtHandle.
     fn get_managed_handle(&self, handle: &BtHandle) -> Result<Arc<ManagedTorrent>> {
         self.handles
             .read()
