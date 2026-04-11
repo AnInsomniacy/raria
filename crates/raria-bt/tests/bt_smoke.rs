@@ -349,6 +349,63 @@ async fn bt_service_completes_peer_download_through_socks5_proxy() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[serial_test::serial]
+async fn bt_service_status_exposes_reachable_bt_metadata_fields() {
+    let seed = start_seed_fixture(2 * 1024 * 1024)
+        .await
+        .expect("seed fixture");
+    let download_dir = tempdir().expect("download tempdir");
+    let service = BtService::with_config(
+        download_dir.path().to_path_buf(),
+        BtServiceConfig {
+            disable_dht: true,
+            disable_dht_persistence: true,
+            initial_peers: Some(vec![seed.seed_addr]),
+            ..Default::default()
+        },
+    )
+    .expect("create bt service");
+
+    let tracker_url = "http://127.0.0.1:9/announce".to_string();
+    let handle = service
+        .add(
+            BtSource::TorrentBytes(seed.torrent_bytes.clone()),
+            Gid::from_raw(22),
+            None,
+            Some(vec![tracker_url.clone()]),
+        )
+        .await
+        .expect("add torrent to BtService");
+
+    let status = timeout(Duration::from_secs(30), async {
+        loop {
+            let status = service.status(&handle).await.expect("bt status");
+            if status.total_size > 0
+                && status.torrent_name.as_deref() == Some(seed.output_name.as_str())
+                && status.piece_length.is_some()
+                && status.num_pieces.is_some()
+            {
+                return status;
+            }
+            sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await
+    .expect("BT metadata status timeout");
+
+    assert!(!status.info_hash.is_empty(), "info hash should be exposed");
+    assert_eq!(status.torrent_name.as_deref(), Some(seed.output_name.as_str()));
+    assert_eq!(status.announce_list, Some(vec![tracker_url]));
+    assert_eq!(status.piece_length, Some(16 * 1024));
+    assert_eq!(
+        status.num_pieces,
+        Some((seed.payload.len() as u64).div_ceil((16 * 1024) as u64))
+    );
+
+    service.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[serial_test::serial]
 async fn bt_service_persists_fastresume_state_and_restores_progress_after_restart() {
     let seed = start_seed_fixture(64 * 1024 * 1024)
         .await
