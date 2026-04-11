@@ -79,7 +79,7 @@ fn sync_bt_job_from_status(
     bt_files: Option<Vec<BtFile>>,
     bt_peers: Option<Vec<BtPeer>>,
 ) -> Result<BtStatusSyncOutcome> {
-    engine
+    Ok(engine
         .registry
         .update(gid, |job| -> Result<BtStatusSyncOutcome> {
             job.downloaded = status.downloaded;
@@ -132,7 +132,7 @@ fn sync_bt_job_from_status(
                 seed_time: job.options.seed_time,
             })
         })
-        .context("BT job not found in registry")?
+        .context("BT job not found in registry")??)
 }
 
 fn persist_bt_runtime_job(engine: &Engine, gid: Gid) {
