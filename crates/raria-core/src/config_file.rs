@@ -39,32 +39,61 @@ pub fn parse_config_file(content: &str) -> HashMap<String, String> {
     map
 }
 
+/// Controls how config parsing errors are handled.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConfigParseMode {
+    /// Log warnings for invalid values but continue (aria2 compatibility).
+    Lenient,
+    /// Return an error on the first invalid value (fail-fast for daemon mode).
+    Strict,
+}
+
 /// Apply parsed key-value options onto a GlobalConfig.
 ///
 /// Unknown keys are silently ignored (forward compatibility).
+/// Invalid values for known keys are silently skipped (aria2 behavior).
 pub fn apply_config_map(config: &mut GlobalConfig, map: &HashMap<String, String>) {
+    // Delegate to lenient mode, ignore the always-Ok result.
+    let _ = apply_config_map_with_mode(config, map, ConfigParseMode::Lenient);
+}
+
+/// Apply parsed key-value options onto a GlobalConfig with explicit error handling.
+///
+/// - [`ConfigParseMode::Lenient`]: invalid values are silently skipped.
+/// - [`ConfigParseMode::Strict`]: returns `Err` with the key name on the first
+///   value that cannot be parsed.
+pub fn apply_config_map_with_mode(
+    config: &mut GlobalConfig,
+    map: &HashMap<String, String>,
+    mode: ConfigParseMode,
+) -> anyhow::Result<()> {
+    /// Helper: parse an integer value, returning an error in strict mode.
+    macro_rules! parse_int {
+        ($key:expr, $value:expr, $field:expr, $mode:expr) => {
+            match $value.parse() {
+                Ok(n) => $field = n,
+                Err(_) if $mode == ConfigParseMode::Strict => {
+                    anyhow::bail!("invalid value for '{}': expected integer, got '{}'", $key, $value);
+                }
+                Err(_) => {} // lenient: skip
+            }
+        };
+    }
+
     for (key, value) in map {
         match key.as_str() {
             "dir" => config.dir = PathBuf::from(value),
             "max-concurrent-downloads" => {
-                if let Ok(n) = value.parse() {
-                    config.max_concurrent_downloads = n;
-                }
+                parse_int!(key, value, config.max_concurrent_downloads, mode);
             }
             "max-overall-download-limit" => {
-                if let Ok(n) = value.parse() {
-                    config.max_overall_download_limit = n;
-                }
+                parse_int!(key, value, config.max_overall_download_limit, mode);
             }
             "max-overall-upload-limit" => {
-                if let Ok(n) = value.parse() {
-                    config.max_overall_upload_limit = n;
-                }
+                parse_int!(key, value, config.max_overall_upload_limit, mode);
             }
             "rpc-listen-port" => {
-                if let Ok(n) = value.parse() {
-                    config.rpc_listen_port = n;
-                }
+                parse_int!(key, value, config.rpc_listen_port, mode);
             }
             "enable-rpc" | "rpc" => {
                 config.enable_rpc = value == "true" || value == "1";
@@ -177,56 +206,58 @@ pub fn apply_config_map(config: &mut GlobalConfig, map: &HashMap<String, String>
                 };
             }
             "save-session-interval" => {
-                config.save_session_interval = value.parse::<u64>().ok();
+                match value.parse::<u64>() {
+                    Ok(n) => config.save_session_interval = Some(n),
+                    Err(_) if mode == ConfigParseMode::Strict => {
+                        anyhow::bail!("invalid value for '{}': expected integer, got '{}'", key, value);
+                    }
+                    Err(_) => config.save_session_interval = None,
+                }
             }
             "rpc-allow-origin-all" => {
                 config.rpc_allow_origin_all = value == "true" || value == "1";
             }
             "file-allocation" => {
-                if let Ok(mode) = crate::file_alloc::FileAllocation::parse(value) {
-                    config.file_allocation = mode;
+                match crate::file_alloc::FileAllocation::parse(value) {
+                    Ok(m) => config.file_allocation = m,
+                    Err(_) if mode == ConfigParseMode::Strict => {
+                        anyhow::bail!("invalid value for '{}': unrecognized mode '{}'", key, value);
+                    }
+                    Err(_) => {} // lenient: skip
                 }
             }
             "max-connection-per-server" => {
-                if let Ok(n) = value.parse() {
-                    config.max_connection_per_server = n;
-                }
+                parse_int!(key, value, config.max_connection_per_server, mode);
             }
             "split" => {
-                if let Ok(n) = value.parse() {
-                    config.split = n;
-                }
+                parse_int!(key, value, config.split, mode);
             }
             "continue" => {
                 config.continue_download = value == "true" || value.is_empty();
             }
             "min-split-size" => {
-                if let Ok(n) = value.parse() {
-                    config.min_split_size = n;
-                }
+                parse_int!(key, value, config.min_split_size, mode);
             }
             "lowest-speed-limit" => {
-                if let Ok(n) = value.parse() {
-                    config.lowest_speed_limit = n;
-                }
+                parse_int!(key, value, config.lowest_speed_limit, mode);
             }
             "max-file-not-found" => {
-                if let Ok(n) = value.parse() {
-                    config.max_file_not_found = n;
-                }
+                parse_int!(key, value, config.max_file_not_found, mode);
             }
             "max-tries" => {
-                if let Ok(n) = value.parse() {
-                    config.max_tries = n;
-                }
+                parse_int!(key, value, config.max_tries, mode);
             }
             "retry-wait" => {
-                if let Ok(n) = value.parse() {
-                    config.retry_wait = n;
-                }
+                parse_int!(key, value, config.retry_wait, mode);
             }
             "max-redirect" => {
-                config.max_redirects = value.parse::<usize>().ok();
+                match value.parse::<usize>() {
+                    Ok(n) => config.max_redirects = Some(n),
+                    Err(_) if mode == ConfigParseMode::Strict => {
+                        anyhow::bail!("invalid value for '{}': expected integer, got '{}'", key, value);
+                    }
+                    Err(_) => config.max_redirects = None,
+                }
             }
             "netrc-path" => {
                 config.netrc_path = if value.is_empty() {
@@ -239,10 +270,22 @@ pub fn apply_config_map(config: &mut GlobalConfig, map: &HashMap<String, String>
                 config.no_netrc = value == "true" || value == "1";
             }
             "timeout" => {
-                config.timeout = value.parse::<u64>().ok();
+                match value.parse::<u64>() {
+                    Ok(n) => config.timeout = Some(n),
+                    Err(_) if mode == ConfigParseMode::Strict => {
+                        anyhow::bail!("invalid value for '{}': expected integer, got '{}'", key, value);
+                    }
+                    Err(_) => config.timeout = None,
+                }
             }
             "connect-timeout" => {
-                config.connect_timeout = value.parse::<u64>().ok();
+                match value.parse::<u64>() {
+                    Ok(n) => config.connect_timeout = Some(n),
+                    Err(_) if mode == ConfigParseMode::Strict => {
+                        anyhow::bail!("invalid value for '{}': expected integer, got '{}'", key, value);
+                    }
+                    Err(_) => config.connect_timeout = None,
+                }
             }
             "conditional-get" => {
                 config.conditional_get = value == "true" || value == "1";
@@ -303,6 +346,7 @@ pub fn apply_config_map(config: &mut GlobalConfig, map: &HashMap<String, String>
             }
         }
     }
+    Ok(())
 }
 
 /// Load and apply a configuration file onto an existing GlobalConfig.
@@ -747,5 +791,52 @@ user-agent=raria/1.0
         map.insert("auto-file-renaming".into(), "false".into());
         apply_config_map(&mut config, &map);
         assert!(!config.auto_file_renaming);
+    }
+    #[test]
+    fn strict_mode_rejects_invalid_integer_value() {
+        let mut config = GlobalConfig::default();
+        let mut map = HashMap::new();
+        map.insert("max-concurrent-downloads".into(), "not_a_number".into());
+        let result = apply_config_map_with_mode(&mut config, &map, ConfigParseMode::Strict);
+        assert!(result.is_err(), "strict mode must reject unparseable integer");
+        let err_msg = format!("{}", result.unwrap_err());
+        assert!(
+            err_msg.contains("max-concurrent-downloads"),
+            "error must name the invalid key: {err_msg}"
+        );
+    }
+
+    #[test]
+    fn strict_mode_accepts_valid_config() {
+        let mut config = GlobalConfig::default();
+        let mut map = HashMap::new();
+        map.insert("max-concurrent-downloads".into(), "10".into());
+        map.insert("dir".into(), "/tmp/downloads".into());
+        let result = apply_config_map_with_mode(&mut config, &map, ConfigParseMode::Strict);
+        assert!(result.is_ok(), "strict mode must accept valid config");
+        assert_eq!(config.max_concurrent_downloads, 10);
+    }
+
+    #[test]
+    fn lenient_mode_ignores_invalid_integer_value() {
+        let mut config = GlobalConfig::default();
+        let original_value = config.max_concurrent_downloads;
+        let mut map = HashMap::new();
+        map.insert("max-concurrent-downloads".into(), "not_a_number".into());
+        let result = apply_config_map_with_mode(&mut config, &map, ConfigParseMode::Lenient);
+        assert!(result.is_ok(), "lenient mode must not error");
+        assert_eq!(
+            config.max_concurrent_downloads, original_value,
+            "invalid value should not change config"
+        );
+    }
+
+    #[test]
+    fn strict_mode_rejects_invalid_file_allocation_value() {
+        let mut config = GlobalConfig::default();
+        let mut map = HashMap::new();
+        map.insert("file-allocation".into(), "invalid_mode".into());
+        let result = apply_config_map_with_mode(&mut config, &map, ConfigParseMode::Strict);
+        assert!(result.is_err(), "strict mode must reject invalid file-allocation");
     }
 }
