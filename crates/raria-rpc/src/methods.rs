@@ -33,28 +33,40 @@ use tracing::{debug, info, warn};
 /// aria2-style request options (per-download overrides).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct RpcOptions {
+    /// Override download directory.
     #[serde(default)]
     pub dir: Option<String>,
+    /// Override output filename.
     #[serde(default, rename = "out")]
     pub filename: Option<String>,
+    /// Number of parallel connections (string, e.g. `"4"`).
     #[serde(default, rename = "split")]
     pub connections: Option<String>,
+    /// Per-download speed limit in bytes/sec (string).
     #[serde(default, rename = "max-download-limit")]
     pub max_download_limit: Option<String>,
+    /// Additional HTTP headers (`Name: Value` format).
     #[serde(default, rename = "header")]
     pub header: Option<Vec<String>>,
+    /// Expected checksum in `algo=hex` format (e.g. `sha-256=abc123`).
     #[serde(default, rename = "checksum")]
     pub checksum: Option<String>,
+    /// HTTP basic auth username.
     #[serde(default, rename = "http-user")]
     pub http_user: Option<String>,
+    /// HTTP basic auth password.
     #[serde(default, rename = "http-passwd")]
     pub http_passwd: Option<String>,
+    /// Comma-separated file indices to download (BT only).
     #[serde(default, rename = "select-file")]
     pub select_file: Option<String>,
+    /// Additional BT tracker URLs (comma-separated).
     #[serde(default, rename = "bt-tracker")]
     pub bt_tracker: Option<String>,
+    /// Stop seeding after reaching this ratio (e.g. `"1.0"`).
     #[serde(default, rename = "seed-ratio")]
     pub seed_ratio: Option<String>,
+    /// Stop seeding after this many minutes.
     #[serde(default, rename = "seed-time")]
     pub seed_time: Option<String>,
 }
@@ -64,9 +76,11 @@ pub struct RpcOptions {
 pub trait Aria2Rpc {
     // ── Download control ─────────────────────────────────────────────
 
+    /// Add a download by URI(s). Returns the GID.
     #[method(name = "aria2.addUri")]
     async fn add_uri(&self, uris: Vec<String>, options: Option<RpcOptions>) -> RpcResult<String>;
 
+    /// Add a download by base64-encoded `.torrent` file. Returns the GID.
     #[method(name = "aria2.addTorrent")]
     async fn add_torrent(
         &self,
@@ -75,6 +89,7 @@ pub trait Aria2Rpc {
         options: Option<RpcOptions>,
     ) -> RpcResult<String>;
 
+    /// Add downloads from a base64-encoded `.metalink` file. Returns GIDs.
     #[method(name = "aria2.addMetalink")]
     async fn add_metalink(
         &self,
@@ -82,96 +97,125 @@ pub trait Aria2Rpc {
         options: Option<RpcOptions>,
     ) -> RpcResult<Vec<String>>;
 
+    /// Remove a download. Returns the GID.
     #[method(name = "aria2.remove")]
     async fn remove(&self, gid: String) -> RpcResult<String>;
 
+    /// Forcefully remove a download (no graceful teardown).
     #[method(name = "aria2.forceRemove")]
     async fn force_remove(&self, gid: String) -> RpcResult<String>;
 
+    /// Pause a download. Returns the GID.
     #[method(name = "aria2.pause")]
     async fn pause(&self, gid: String) -> RpcResult<String>;
 
+    /// Pause all active/waiting downloads.
     #[method(name = "aria2.pauseAll")]
     async fn pause_all(&self) -> RpcResult<String>;
 
+    /// Forcefully pause a download.
     #[method(name = "aria2.forcePause")]
     async fn force_pause(&self, gid: String) -> RpcResult<String>;
 
+    /// Forcefully pause all downloads.
     #[method(name = "aria2.forcePauseAll")]
     async fn force_pause_all(&self) -> RpcResult<String>;
 
+    /// Resume a paused download. Returns the GID.
     #[method(name = "aria2.unpause")]
     async fn unpause(&self, gid: String) -> RpcResult<String>;
 
+    /// Resume all paused downloads.
     #[method(name = "aria2.unpauseAll")]
     async fn unpause_all(&self) -> RpcResult<String>;
 
     // ── Query ────────────────────────────────────────────────────────
 
+    /// Get status of a download by GID.
     #[method(name = "aria2.tellStatus")]
     async fn tell_status(&self, gid: String) -> RpcResult<serde_json::Value>;
 
+    /// Get URIs associated with a download.
     #[method(name = "aria2.getUris")]
     async fn get_uris(&self, gid: String) -> RpcResult<Vec<serde_json::Value>>;
 
+    /// Get file information for a download.
     #[method(name = "aria2.getFiles")]
     async fn get_files(&self, gid: String) -> RpcResult<Vec<serde_json::Value>>;
 
+    /// Get BT peer list for a download.
     #[method(name = "aria2.getPeers")]
     async fn get_peers(&self, gid: String) -> RpcResult<Vec<serde_json::Value>>;
 
+    /// Get server information for a download.
     #[method(name = "aria2.getServers")]
     async fn get_servers(&self, gid: String) -> RpcResult<Vec<serde_json::Value>>;
 
+    /// List all active downloads.
     #[method(name = "aria2.tellActive")]
     async fn tell_active(&self) -> RpcResult<Vec<serde_json::Value>>;
 
+    /// List waiting downloads (paginated by offset and count).
     #[method(name = "aria2.tellWaiting")]
     async fn tell_waiting(&self, offset: i64, num: u32) -> RpcResult<Vec<serde_json::Value>>;
 
+    /// List stopped downloads (paginated by offset and count).
     #[method(name = "aria2.tellStopped")]
     async fn tell_stopped(&self, offset: i64, num: u32) -> RpcResult<Vec<serde_json::Value>>;
 
+    /// Get global download/upload statistics.
     #[method(name = "aria2.getGlobalStat")]
     async fn get_global_stat(&self) -> RpcResult<serde_json::Value>;
 
+    /// Get raria version information.
     #[method(name = "aria2.getVersion")]
     async fn get_version(&self) -> RpcResult<serde_json::Value>;
 
+    /// Get current session information.
     #[method(name = "aria2.getSessionInfo")]
     async fn get_session_info(&self) -> RpcResult<serde_json::Value>;
 
     // ── Configuration ────────────────────────────────────────────────
 
+    /// Change per-download options at runtime.
     #[method(name = "aria2.changeOption")]
     async fn change_option(&self, gid: String, options: serde_json::Value) -> RpcResult<String>;
 
+    /// Get per-download options.
     #[method(name = "aria2.getOption")]
     async fn get_option(&self, gid: String) -> RpcResult<serde_json::Value>;
 
+    /// Change global options at runtime.
     #[method(name = "aria2.changeGlobalOption")]
     async fn change_global_option(&self, options: serde_json::Value) -> RpcResult<String>;
 
+    /// Get global options.
     #[method(name = "aria2.getGlobalOption")]
     async fn get_global_option(&self) -> RpcResult<serde_json::Value>;
 
+    /// Change queue position of a download.
     #[method(name = "aria2.changePosition")]
     async fn change_position(&self, gid: String, pos: i32, how: String) -> RpcResult<i64>;
 
     // ── Session management ───────────────────────────────────────────
 
+    /// Remove all completed/failed/removed downloads from memory.
     #[method(name = "aria2.purgeDownloadResult")]
     async fn purge_download_result(&self) -> RpcResult<String>;
 
+    /// Remove a single completed/failed download from memory.
     #[method(name = "aria2.removeDownloadResult")]
     async fn remove_download_result(&self, gid: String) -> RpcResult<String>;
 
+    /// Persist current session state to disk.
     #[method(name = "aria2.saveSession")]
     async fn save_session(&self) -> RpcResult<String>;
 
+    /// Gracefully shut down the daemon.
     #[method(name = "aria2.shutdown")]
     async fn shutdown(&self) -> RpcResult<String>;
 
+    /// Forcefully shut down the daemon.
     #[method(name = "aria2.forceShutdown")]
     async fn force_shutdown(&self) -> RpcResult<String>;
 }

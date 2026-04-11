@@ -73,9 +73,13 @@ unsafe impl<S: AsyncRead + Unpin + Send> Send for FtpOwnedStream<S> {}
 /// FTP/FTPS download backend.
 #[derive(Debug, Clone)]
 pub struct FtpBackendConfig {
+    /// SOCKS5 or HTTP proxy for all connections (aria2: `--all-proxy`).
     pub all_proxy: Option<String>,
+    /// Comma-separated hosts/CIDRs that bypass the proxy.
     pub no_proxy: Option<String>,
+    /// Whether to verify the server's TLS certificate for FTPS.
     pub check_certificate: bool,
+    /// Path to a custom CA certificate bundle for FTPS verification.
     pub ca_certificate: Option<PathBuf>,
 }
 
@@ -90,16 +94,19 @@ impl Default for FtpBackendConfig {
     }
 }
 
+/// FTP download backend using `suppaftp`.
 #[derive(Debug, Clone)]
 pub struct FtpBackend {
     config: FtpBackendConfig,
 }
 
 impl FtpBackend {
+    /// Create a backend with default configuration.
     pub fn new() -> Self {
         Self::with_config(FtpBackendConfig::default())
     }
 
+    /// Create a backend with the given configuration.
     pub fn with_config(config: FtpBackendConfig) -> Self {
         Self { config }
     }

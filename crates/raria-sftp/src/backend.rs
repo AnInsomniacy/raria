@@ -54,10 +54,12 @@ pub struct SftpBackend {
 }
 
 impl SftpBackend {
+    /// Create a backend with default configuration.
     pub fn new() -> Self {
         Self::with_config(SftpBackendConfig::default())
     }
 
+    /// Create a backend with the given configuration.
     pub fn with_config(config: SftpBackendConfig) -> Self {
         Self { config }
     }

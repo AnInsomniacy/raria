@@ -11,19 +11,31 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Aria2Status {
+    /// Download GID (hex string).
     pub gid: String,
+    /// Lifecycle status: `active`, `waiting`, `paused`, `error`, `complete`, `removed`.
     pub status: String,
+    /// Total file size in bytes (string for aria2 compat).
     pub total_length: String,
+    /// Bytes downloaded so far (string).
     pub completed_length: String,
+    /// Current download speed in bytes/sec (string).
     pub download_speed: String,
+    /// Current upload speed in bytes/sec (string, always "0" for non-BT).
     pub upload_speed: String,
+    /// Number of active connections (string).
     pub connections: String,
+    /// Download directory path.
     pub dir: String,
+    /// File list associated with this download.
     pub files: Vec<Aria2File>,
+    /// aria2 error code (present only on error).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error_code: Option<String>,
+    /// Human-readable error description (present only on error).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error_message: Option<String>,
+    /// BitTorrent-specific metadata (present only for BT downloads).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub bittorrent: Option<serde_json::Value>,
 }
@@ -32,18 +44,26 @@ pub struct Aria2Status {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Aria2File {
+    /// One-based file index (string).
     pub index: String,
+    /// Absolute file path.
     pub path: String,
+    /// File size in bytes (string).
     pub length: String,
+    /// Bytes downloaded for this file (string).
     pub completed_length: String,
+    /// Whether this file is selected: `"true"` or `"false"`.
     pub selected: String,
+    /// URIs serving this file.
     pub uris: Vec<Aria2Uri>,
 }
 
 /// aria2-compatible URI information.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Aria2Uri {
+    /// URI string.
     pub uri: String,
+    /// URI status: `"used"` or `"waiting"`.
     pub status: String,
 }
 
@@ -51,11 +71,17 @@ pub struct Aria2Uri {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Aria2GlobalStat {
+    /// Overall download speed in bytes/sec (string).
     pub download_speed: String,
+    /// Overall upload speed in bytes/sec (string).
     pub upload_speed: String,
+    /// Number of active downloads (string).
     pub num_active: String,
+    /// Number of waiting downloads (string).
     pub num_waiting: String,
+    /// Number of stopped downloads in current session (string).
     pub num_stopped: String,
+    /// Number of stopped downloads total (string).
     pub num_stopped_total: String,
 }
 

@@ -36,6 +36,7 @@ pub struct Aria2Notification {
 /// GID parameter in a notification.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GidParam {
+    /// GID of the affected download.
     pub gid: String,
 }
 

@@ -1,4 +1,5 @@
 #![deny(unsafe_code)]
+#![warn(missing_docs)]
 //! # raria-metalink
 //!
 //! Metalink 4.0 (RFC 5854) parser for raria.
@@ -11,5 +12,7 @@
 //! - [`parser`] — XML deserialization of Metalink documents
 //! - [`normalizer`] — conversion to raria's internal job representation
 
+/// Conversion of parsed Metalink data to raria download jobs.
 pub mod normalizer;
+/// XML deserialization of Metalink 4.0 documents.
 pub mod parser;

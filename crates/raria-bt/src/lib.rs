@@ -1,4 +1,5 @@
 #![deny(unsafe_code)]
+#![warn(missing_docs)]
 //! # raria-bt
 //!
 //! BitTorrent download service for raria, powered by `librqbit`.
@@ -11,4 +12,5 @@
 //! - SOCKS5 proxy passthrough
 //! - Fastresume / JSON session persistence
 
+/// BitTorrent service, session management, and torrent lifecycle.
 pub mod service;

@@ -134,11 +134,17 @@ pub struct BtFileInfo {
 /// Information about a peer connected to a torrent.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BtPeerInfo {
+    /// Socket address as `ip:port`.
     pub addr: String,
+    /// Peer IP address.
     pub ip: String,
+    /// Peer port number.
     pub port: u16,
+    /// Current download speed from this peer (bytes/sec).
     pub download_speed: u64,
+    /// Current upload speed to this peer (bytes/sec).
     pub upload_speed: u64,
+    /// `true` if this peer has 100% of the torrent.
     pub seeder: bool,
 }
 
@@ -153,13 +159,19 @@ pub struct BtPeerInfo {
 /// This is an accepted product constraint.
 #[derive(Debug, Clone, Default)]
 pub struct BtServiceConfig {
+    /// SOCKS5 proxy URL for tracker and peer connections.
     pub socks_proxy_url: Option<String>,
+    /// Disable DHT node discovery.
     pub disable_dht: bool,
+    /// Disable persisting DHT routing table to disk.
     pub disable_dht_persistence: bool,
+    /// Custom path for DHT routing table persistence.
     pub dht_config_filename: Option<PathBuf>,
+    /// Bootstrap peers to connect to before DHT discovery.
     pub initial_peers: Option<Vec<SocketAddr>>,
 }
 
+/// BitTorrent download service managing a librqbit session.
 pub struct BtService {
     /// Output directory for downloads.
     output_dir: PathBuf,
@@ -180,6 +192,7 @@ impl BtService {
         Self::with_config(output_dir, BtServiceConfig::default())
     }
 
+    /// Create a BT service with custom configuration.
     pub fn with_config(output_dir: PathBuf, config: BtServiceConfig) -> Result<Self> {
         Ok(Self {
             output_dir,

@@ -1,4 +1,5 @@
 #![deny(unsafe_code)]
+#![warn(missing_docs)]
 //! # raria-rpc
 //!
 //! aria2-compatible JSON-RPC/WebSocket server for raria.
@@ -13,7 +14,11 @@
 //! - [`facade`] — conversion between raria-core types and aria2 response format
 //! - [`events`] — mapping download events to aria2 notification methods
 
+/// Download event to aria2 notification mapping.
 pub mod events;
+/// Conversion between raria-core types and aria2 JSON response format.
 pub mod facade;
+/// RPC method implementations (aria2 JSON-RPC parity).
 pub mod methods;
+/// HTTP + WebSocket server, authentication, and CORS.
 pub mod server;
