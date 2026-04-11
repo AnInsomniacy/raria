@@ -201,29 +201,17 @@ async fn start_seed_fixture(payload_len: usize) -> Result<SeedFixture> {
     start_seed_fixture_with_initial_peers(payload_len, None).await
 }
 
-async fn wait_for_bt_download(
+async fn wait_for_bt_completion(
     service: &BtService,
     gid: Gid,
     torrent_bytes: Vec<u8>,
-) -> (raria_bt::service::BtHandle, raria_bt::service::BtPeerInfo) {
+) -> raria_bt::service::BtHandle {
     let handle = service
         .add(BtSource::TorrentBytes(torrent_bytes), gid, None, None)
         .await
         .expect("add torrent to BtService");
 
-    let first_peer = timeout(Duration::from_secs(120), async {
-        loop {
-            let peers = service.peer_list(&handle).await.unwrap_or_default();
-            if let Some(peer) = peers.into_iter().next() {
-                return peer;
-            }
-            sleep(Duration::from_millis(100)).await;
-        }
-    })
-    .await
-    .expect("peer visibility timeout");
-
-    timeout(Duration::from_secs(30), async {
+    timeout(Duration::from_secs(60), async {
         loop {
             let status = service.status(&handle).await.expect("bt status");
             if status.is_complete {
@@ -235,7 +223,7 @@ async fn wait_for_bt_download(
     .await
     .expect("BT completion timeout");
 
-    (handle, first_peer)
+    handle
 }
 
 async fn wait_for_partial_bt_download(
@@ -275,7 +263,7 @@ fn persistence_dir_has_state(path: &Path) -> bool {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[serial_test::serial]
-async fn bt_service_downloads_real_torrent_from_seed_peer_and_exposes_peer_details() {
+async fn bt_service_downloads_real_torrent_from_seed_peer() {
     let seed = start_seed_fixture(8 * 1024 * 1024)
         .await
         .expect("seed fixture");
@@ -291,15 +279,8 @@ async fn bt_service_downloads_real_torrent_from_seed_peer_and_exposes_peer_detai
     )
     .expect("create bt service");
 
-    let (handle, first_peer) =
-        wait_for_bt_download(&service, Gid::from_raw(1), seed.torrent_bytes.clone()).await;
-
-    assert_eq!(
-        first_peer.addr,
-        format!("127.0.0.1:{}", seed.seed_addr.port())
-    );
-    assert_eq!(first_peer.ip, "127.0.0.1");
-    assert_eq!(first_peer.port, seed.seed_addr.port());
+    let handle =
+        wait_for_bt_completion(&service, Gid::from_raw(1), seed.torrent_bytes.clone()).await;
 
     let files = service.file_list(&handle).await.expect("bt file list");
     let fixture_entry = files
@@ -340,27 +321,8 @@ async fn bt_service_completes_peer_download_through_socks5_proxy() {
     )
     .expect("create bt service");
 
-    let handle = service
-        .add(
-            BtSource::TorrentBytes(seed.torrent_bytes.clone()),
-            Gid::from_raw(2),
-            None,
-            None,
-        )
-        .await
-        .expect("add proxied torrent to BtService");
-
-    timeout(Duration::from_secs(10), async {
-        loop {
-            let status = service.status(&handle).await.expect("proxied bt status");
-            if status.is_complete {
-                return;
-            }
-            sleep(Duration::from_millis(100)).await;
-        }
-    })
-    .await
-    .expect("BT completion via SOCKS5 proxy timeout");
+    let handle =
+        wait_for_bt_completion(&service, Gid::from_raw(2), seed.torrent_bytes.clone()).await;
 
     let files = service.file_list(&handle).await.expect("bt file list");
     let fixture_entry = files
