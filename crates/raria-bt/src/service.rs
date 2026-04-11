@@ -114,14 +114,14 @@ pub struct BtStatus {
     pub is_complete: bool,
     /// Info hash (hex).
     pub info_hash: String,
-    /// Torrent display name, when known.
+    /// Torrent display name when metadata is available.
     pub torrent_name: Option<String>,
-    /// Tracker announce list, when known.
+    /// Best-effort tracker announce list.
     pub announce_list: Option<Vec<String>>,
     /// Default piece length in bytes, when known.
-    pub piece_length: Option<u64>,
-    /// Total number of pieces, when known.
-    pub num_pieces: Option<u64>,
+    pub piece_length: u64,
+    /// Number of pieces in the torrent, when known.
+    pub num_pieces: u64,
 }
 
 /// Information about a file within a torrent.
@@ -330,6 +330,7 @@ impl BtService {
     pub async fn status(&self, handle: &BtHandle) -> Result<BtStatus> {
         let managed = self.get_managed_handle(handle)?;
         let stats = managed.stats();
+        let metadata = managed.metadata.load();
 
         let (download_speed, upload_speed, num_peers, num_seeders) =
             if let Some(ref live) = stats.live {
@@ -349,21 +350,26 @@ impl BtService {
         let info_hash_bytes = managed.info_hash();
         let info_hash = hex::encode(info_hash_bytes.0);
         let torrent_name = managed.name();
-        let metadata = managed.metadata.load();
-        let piece_length = metadata
+        let announce_list = {
+            let mut trackers = managed
+                .shared()
+                .trackers
+                .iter()
+                .map(|tracker| tracker.as_str().to_string())
+                .collect::<Vec<_>>();
+            trackers.sort();
+            trackers.dedup();
+            (!trackers.is_empty()).then_some(trackers)
+        };
+        let (piece_length, num_pieces) = metadata
             .as_ref()
-            .map(|metadata| metadata.lengths.default_piece_length() as u64);
-        let num_pieces = metadata
-            .as_ref()
-            .map(|metadata| metadata.lengths.total_pieces() as u64);
-        let mut announce_list = managed
-            .shared()
-            .trackers
-            .iter()
-            .map(|tracker| tracker.as_str().to_string())
-            .collect::<Vec<_>>();
-        announce_list.sort();
-        let announce_list = (!announce_list.is_empty()).then_some(announce_list);
+            .map(|metadata| {
+                (
+                    metadata.info.piece_length as u64,
+                    metadata.lengths.total_pieces() as u64,
+                )
+            })
+            .unwrap_or((0, 0));
 
         Ok(BtStatus {
             total_size: stats.total_bytes,
@@ -522,9 +528,9 @@ mod tests {
             is_complete: false,
             info_hash: "abcdef1234567890".into(),
             torrent_name: Some("fixture.bin".into()),
-            announce_list: Some(vec!["http://127.0.0.1:9/announce".into()]),
-            piece_length: Some(16 * 1024),
-            num_pieces: Some(64),
+            announce_list: Some(vec!["udp://tracker.example:80/announce".into()]),
+            piece_length: 16_384,
+            num_pieces: 64,
         };
         let json = serde_json::to_string(&status).unwrap();
         let recovered: BtStatus = serde_json::from_str(&json).unwrap();
@@ -534,11 +540,11 @@ mod tests {
         assert_eq!(recovered.info_hash, "abcdef1234567890");
         assert_eq!(recovered.torrent_name.as_deref(), Some("fixture.bin"));
         assert_eq!(
-            recovered.announce_list,
-            Some(vec!["http://127.0.0.1:9/announce".into()])
+            recovered.announce_list.as_deref(),
+            Some(&["udp://tracker.example:80/announce".to_string()][..])
         );
-        assert_eq!(recovered.piece_length, Some(16 * 1024));
-        assert_eq!(recovered.num_pieces, Some(64));
+        assert_eq!(recovered.piece_length, 16_384);
+        assert_eq!(recovered.num_pieces, 64);
     }
 
     #[test]
