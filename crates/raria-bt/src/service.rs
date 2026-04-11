@@ -114,6 +114,14 @@ pub struct BtStatus {
     pub is_complete: bool,
     /// Info hash (hex).
     pub info_hash: String,
+    /// Torrent display name, when known.
+    pub torrent_name: Option<String>,
+    /// Tracker announce list, when known.
+    pub announce_list: Option<Vec<String>>,
+    /// Default piece length in bytes, when known.
+    pub piece_length: Option<u64>,
+    /// Total number of pieces, when known.
+    pub num_pieces: Option<u64>,
 }
 
 /// Information about a file within a torrent.
@@ -340,6 +348,22 @@ impl BtService {
         // Id20 is [u8; 20] — format as hex.
         let info_hash_bytes = managed.info_hash();
         let info_hash = hex::encode(info_hash_bytes.0);
+        let torrent_name = managed.name();
+        let metadata = managed.metadata.load();
+        let piece_length = metadata
+            .as_ref()
+            .map(|metadata| metadata.lengths.default_piece_length() as u64);
+        let num_pieces = metadata
+            .as_ref()
+            .map(|metadata| metadata.lengths.total_pieces() as u64);
+        let mut announce_list = managed
+            .shared()
+            .trackers
+            .iter()
+            .map(|tracker| tracker.as_str().to_string())
+            .collect::<Vec<_>>();
+        announce_list.sort();
+        let announce_list = (!announce_list.is_empty()).then_some(announce_list);
 
         Ok(BtStatus {
             total_size: stats.total_bytes,
@@ -351,6 +375,10 @@ impl BtService {
             num_seeders,
             is_complete: stats.finished,
             info_hash,
+            torrent_name,
+            announce_list,
+            piece_length,
+            num_pieces,
         })
     }
 
@@ -493,6 +521,10 @@ mod tests {
             num_seeders: 5,
             is_complete: false,
             info_hash: "abcdef1234567890".into(),
+            torrent_name: Some("fixture.bin".into()),
+            announce_list: Some(vec!["http://127.0.0.1:9/announce".into()]),
+            piece_length: Some(16 * 1024),
+            num_pieces: Some(64),
         };
         let json = serde_json::to_string(&status).unwrap();
         let recovered: BtStatus = serde_json::from_str(&json).unwrap();
@@ -500,6 +532,13 @@ mod tests {
         assert_eq!(recovered.downloaded, 500_000);
         assert_eq!(recovered.uploaded, 123_000);
         assert_eq!(recovered.info_hash, "abcdef1234567890");
+        assert_eq!(recovered.torrent_name.as_deref(), Some("fixture.bin"));
+        assert_eq!(
+            recovered.announce_list,
+            Some(vec!["http://127.0.0.1:9/announce".into()])
+        );
+        assert_eq!(recovered.piece_length, Some(16 * 1024));
+        assert_eq!(recovered.num_pieces, Some(64));
     }
 
     #[test]
