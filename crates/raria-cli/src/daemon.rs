@@ -600,3 +600,43 @@ async fn run_job_download(
     engine.fail_job(gid, last_error.as_deref().unwrap_or("all mirrors failed"))?;
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn heuristic_classifies_transient_errors() {
+        assert_eq!(classify_error("operation timed out"), ErrorClass::Transient);
+        assert_eq!(
+            classify_error("connection reset by peer"),
+            ErrorClass::Transient
+        );
+        assert_eq!(
+            classify_error("temporary dns resolution failure"),
+            ErrorClass::Transient
+        );
+    }
+
+    #[test]
+    fn heuristic_classifies_permanent_errors() {
+        assert_eq!(classify_error("http status 404 not found"), ErrorClass::Permanent);
+        assert_eq!(
+            classify_error("checksum mismatch for /tmp/file.bin"),
+            ErrorClass::Permanent
+        );
+        assert_eq!(classify_error("invalid URI"), ErrorClass::Permanent);
+    }
+
+    #[test]
+    fn prefixes_error_messages_with_classification() {
+        assert_eq!(
+            classified_error_message("operation timed out"),
+            "transient error: operation timed out"
+        );
+        assert_eq!(
+            classified_error_message("http status 404 not found"),
+            "permanent error: http status 404 not found"
+        );
+    }
+}

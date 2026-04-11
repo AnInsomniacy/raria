@@ -778,6 +778,77 @@ async fn daemon_loads_jobs_from_input_file_on_startup() {
 }
 
 #[tokio::test]
+async fn daemon_input_file_out_option_overrides_output_name() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("HEAD"))
+        .and(path("/source.bin"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-length", "4")
+                .insert_header("accept-ranges", "bytes"),
+        )
+        .mount(&server)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path("/source.bin"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_delay(Duration::from_secs(5))
+                .set_body_bytes(b"data"),
+        )
+        .mount(&server)
+        .await;
+
+    let temp = tempdir().expect("tempdir");
+    let session_file = temp.path().join("input-out.session.redb");
+    let input_file = temp.path().join("uris.txt");
+    std::fs::write(
+        &input_file,
+        format!("{}/source.bin\n  out=renamed.bin\n", server.uri()),
+    )
+    .expect("write input file");
+
+    let (mut child, rpc_port) =
+        spawn_ready_daemon(temp.path(), &session_file, Some(&input_file)).await;
+
+    let deadline = Instant::now() + Duration::from_secs(60);
+    let status = loop {
+        let active = rpc_call(rpc_port, "aria2.tellActive", serde_json::json!([])).await;
+        if let Some(first) = active["result"].as_array().and_then(|jobs| jobs.first()) {
+            break first.clone();
+        }
+
+        let waiting = rpc_call(rpc_port, "aria2.tellWaiting", serde_json::json!([0, 10])).await;
+        if let Some(first) = waiting["result"].as_array().and_then(|jobs| jobs.first()) {
+            break first.clone();
+        }
+
+        assert!(
+            Instant::now() < deadline,
+            "daemon did not surface the input-file job with out= option in time"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    };
+
+    assert!(
+        status["result"].is_null(),
+        "unexpected nested RPC result payload: {status}"
+    );
+    let files = status["files"].as_array().expect("files array");
+    assert_eq!(files.len(), 1);
+    assert_eq!(
+        std::path::Path::new(files[0]["path"].as_str().expect("file path"))
+            .file_name()
+            .and_then(|name| name.to_str()),
+        Some("renamed.bin")
+    );
+
+    graceful_shutdown(rpc_port, &mut child).await;
+}
+
+#[tokio::test]
 async fn daemon_periodically_saves_session_when_interval_is_enabled() {
     let server = MockServer::start().await;
 

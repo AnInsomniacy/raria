@@ -7,10 +7,15 @@
 mod tests {
     use raria_core::config::GlobalConfig;
     use raria_core::engine::Engine;
+    use raria_core::input_file::InputFileEntry;
 
     /// Parse an input file and return URIs.
     fn parse_input_file(content: &str) -> Vec<String> {
         raria_core::input_file::parse_input_file(content)
+    }
+
+    fn parse_input_file_entries(content: &str) -> Vec<InputFileEntry> {
+        raria_core::input_file::parse_input_file_entries(content)
     }
 
     #[test]
@@ -74,6 +79,40 @@ https://example.com/file2.zip
         // Tab-separated URIs should be treated as one entry (multi-source).
         assert_eq!(uris.len(), 1);
         assert!(uris[0].contains("mirror1.com"));
+    }
+
+    #[test]
+    fn richer_api_parses_per_uri_options_without_breaking_legacy_api() {
+        let content = "\
+https://mirror1.com/file.zip\thttps://mirror2.com/file.zip
+  dir=/tmp/downloads
+  out=custom_name.zip
+  checksum=sha-256=abcdef
+";
+
+        let entries = parse_input_file_entries(content);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(
+            entries[0].uris,
+            vec![
+                "https://mirror1.com/file.zip".to_string(),
+                "https://mirror2.com/file.zip".to_string()
+            ]
+        );
+        assert_eq!(
+            entries[0].options,
+            vec![
+                ("dir".to_string(), "/tmp/downloads".to_string()),
+                ("out".to_string(), "custom_name.zip".to_string()),
+                ("checksum".to_string(), "sha-256=abcdef".to_string()),
+            ]
+        );
+
+        let legacy_uris = parse_input_file(content);
+        assert_eq!(
+            legacy_uris,
+            vec!["https://mirror1.com/file.zip\thttps://mirror2.com/file.zip".to_string()]
+        );
     }
 
     #[test]
