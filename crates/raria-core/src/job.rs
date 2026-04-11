@@ -100,6 +100,16 @@ pub enum JobKind {
     Bt,
 }
 
+/// How a BT job should advance once payload download completes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum BtCompletionDisposition {
+    /// Continue into the internal seeding state.
+    Seed,
+    /// Finish immediately without entering seeding.
+    Complete,
+}
+
 /// BT file entry cached on the job for RPC-facing metadata/file views.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BtFile {
@@ -156,6 +166,9 @@ pub struct BtSnapshot {
     /// Number of pieces, when known.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub num_pieces: Option<u64>,
+    /// `true` once the BT payload-complete event has been consumed/emitted.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub download_complete_emitted: bool,
 }
 
 /// A download job with all metadata needed for scheduling and persistence.
@@ -303,7 +316,6 @@ impl Job {
             (Status::Waiting, Status::Active)
                 | (Status::Waiting, Status::Paused)
                 | (Status::Waiting, Status::Removed)
-                | (Status::Active, Status::Seeding)
                 | (Status::Active, Status::Paused)
                 | (Status::Active, Status::Complete)
                 | (Status::Active, Status::Error)
@@ -317,7 +329,8 @@ impl Job {
                 | (Status::Error, Status::Waiting)
                 | (Status::Error, Status::Removed)
                 | (Status::Complete, Status::Removed)
-        )
+        ) || (self.kind == JobKind::Bt
+            && matches!((self.status, new_status), (Status::Active, Status::Seeding)))
     }
 
     /// Calculate completion percentage (0.0 to 100.0).
@@ -326,6 +339,46 @@ impl Job {
             Some(total) if total > 0 => (self.downloaded as f64 / total as f64) * 100.0,
             _ => 0.0,
         }
+    }
+
+    /// Whether the BT payload-complete semantic event has already been consumed.
+    pub fn bt_download_complete_emitted(&self) -> bool {
+        self.bt
+            .as_ref()
+            .map(|snapshot| snapshot.download_complete_emitted)
+            .unwrap_or(false)
+    }
+
+    /// Apply the minimal BT payload-complete contract.
+    ///
+    /// This is a core semantic helper only: runtime/event emitters can call this first,
+    /// then publish `BtDownloadComplete` based on the resulting state.
+    pub fn record_bt_download_complete(
+        &mut self,
+        disposition: BtCompletionDisposition,
+    ) -> Result<(), BtSemanticError> {
+        if self.kind != JobKind::Bt {
+            return Err(BtSemanticError::NotBt);
+        }
+        if self.bt_download_complete_emitted() {
+            return Err(BtSemanticError::AlreadyEmitted);
+        }
+        if self.status != Status::Active {
+            return Err(BtSemanticError::InvalidStatus(self.status));
+        }
+
+        let next_status = match disposition {
+            BtCompletionDisposition::Seed => Status::Seeding,
+            BtCompletionDisposition::Complete => Status::Complete,
+        };
+        self.transition(next_status)
+            .map_err(|_| BtSemanticError::InvalidStatus(self.status))?;
+        self.bt_snapshot_mut().download_complete_emitted = true;
+        Ok(())
+    }
+
+    fn bt_snapshot_mut(&mut self) -> &mut BtSnapshot {
+        self.bt.get_or_insert_with(BtSnapshot::default)
     }
 }
 
@@ -337,6 +390,24 @@ pub struct InvalidTransition {
     pub from: Status,
     /// Status that was requested but rejected.
     pub to: Status,
+}
+
+/// Core semantic errors for BT-only lifecycle helpers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum BtSemanticError {
+    /// The helper was called for a non-BT job.
+    #[error("BT semantic helper requires a bt job")]
+    NotBt,
+    /// The BT payload-complete semantic event has already been recorded once.
+    #[error("BT payload complete already recorded")]
+    AlreadyEmitted,
+    /// The BT payload-complete helper only applies while the job is active.
+    #[error("BT payload complete requires active status, got {0}")]
+    InvalidStatus(Status),
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 #[cfg(test)]
@@ -424,7 +495,10 @@ mod tests {
 
     #[test]
     fn valid_transitions_succeed() {
-        let mut job = Job::new_range(vec![], PathBuf::from("/tmp/f"));
+        let mut job = Job::new_bt(
+            vec!["magnet:?xt=urn:btih:abc123".into()],
+            PathBuf::from("/tmp/f"),
+        );
 
         // Waiting → Active
         assert!(job.transition(Status::Active).is_ok());
