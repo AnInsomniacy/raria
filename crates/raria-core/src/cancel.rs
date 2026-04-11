@@ -5,7 +5,8 @@
 
 use crate::job::Gid;
 use std::collections::HashMap;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
+use parking_lot::RwLock;
 use tokio_util::sync::CancellationToken;
 
 /// Manages cancellation tokens keyed by job GID.
@@ -28,7 +29,7 @@ impl CancelRegistry {
     /// replaced (the old token is NOT cancelled).
     pub fn register(&self, gid: Gid) -> CancellationToken {
         let token = CancellationToken::new();
-        let mut inner = self.inner.write().unwrap();
+        let mut inner = self.inner.write();
         inner.insert(gid, token.clone());
         token
     }
@@ -37,7 +38,7 @@ impl CancelRegistry {
     ///
     /// Returns `None` if no token is registered for this GID.
     pub fn child_token(&self, gid: Gid) -> Option<CancellationToken> {
-        let inner = self.inner.read().unwrap();
+        let inner = self.inner.read();
         inner.get(&gid).map(|t| t.child_token())
     }
 
@@ -45,7 +46,7 @@ impl CancelRegistry {
     ///
     /// Returns `true` if the token existed and was cancelled.
     pub fn cancel(&self, gid: Gid) -> bool {
-        let inner = self.inner.read().unwrap();
+        let inner = self.inner.read();
         if let Some(token) = inner.get(&gid) {
             token.cancel();
             true
@@ -56,19 +57,19 @@ impl CancelRegistry {
 
     /// Check if a job's token has been cancelled.
     pub fn is_cancelled(&self, gid: Gid) -> Option<bool> {
-        let inner = self.inner.read().unwrap();
+        let inner = self.inner.read();
         inner.get(&gid).map(|t| t.is_cancelled())
     }
 
     /// Remove a token from the registry (e.g., after job completion).
     pub fn remove(&self, gid: Gid) -> Option<CancellationToken> {
-        let mut inner = self.inner.write().unwrap();
+        let mut inner = self.inner.write();
         inner.remove(&gid)
     }
 
     /// Number of registered tokens.
     pub fn len(&self) -> usize {
-        let inner = self.inner.read().unwrap();
+        let inner = self.inner.read();
         inner.len()
     }
 

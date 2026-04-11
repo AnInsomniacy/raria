@@ -5,7 +5,8 @@
 
 use crate::job::{Gid, Job, Status};
 use std::collections::HashMap;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
+use parking_lot::RwLock;
 
 /// Thread-safe registry of all download jobs.
 #[derive(Debug, Clone)]
@@ -28,7 +29,7 @@ impl JobRegistry {
 
     /// Insert a job into the registry. Returns an error if the GID already exists.
     pub fn insert(&self, job: Job) -> Result<Gid, RegistryError> {
-        let mut inner = self.inner.write().unwrap();
+        let mut inner = self.inner.write();
         let gid = job.gid;
         if inner.jobs.contains_key(&gid) {
             return Err(RegistryError::DuplicateGid(gid));
@@ -39,13 +40,13 @@ impl JobRegistry {
 
     /// Look up a job by GID. Returns a clone.
     pub fn get(&self, gid: Gid) -> Option<Job> {
-        let inner = self.inner.read().unwrap();
+        let inner = self.inner.read();
         inner.jobs.get(&gid).cloned()
     }
 
     /// Remove a job from the registry. Returns the removed job if it existed.
     pub fn remove(&self, gid: Gid) -> Option<Job> {
-        let mut inner = self.inner.write().unwrap();
+        let mut inner = self.inner.write();
         inner.jobs.remove(&gid)
     }
 
@@ -56,13 +57,13 @@ impl JobRegistry {
     where
         F: FnOnce(&mut Job) -> R,
     {
-        let mut inner = self.inner.write().unwrap();
+        let mut inner = self.inner.write();
         inner.jobs.get_mut(&gid).map(f)
     }
 
     /// Return the number of jobs in the registry.
     pub fn len(&self) -> usize {
-        let inner = self.inner.read().unwrap();
+        let inner = self.inner.read();
         inner.jobs.len()
     }
 
@@ -73,7 +74,7 @@ impl JobRegistry {
 
     /// List all jobs with a given status.
     pub fn by_status(&self, status: Status) -> Vec<Job> {
-        let inner = self.inner.read().unwrap();
+        let inner = self.inner.read();
         inner
             .jobs
             .values()
@@ -84,19 +85,19 @@ impl JobRegistry {
 
     /// List all GIDs.
     pub fn all_gids(&self) -> Vec<Gid> {
-        let inner = self.inner.read().unwrap();
+        let inner = self.inner.read();
         inner.jobs.keys().copied().collect()
     }
 
     /// Snapshot: return clones of all jobs.
     pub fn snapshot(&self) -> Vec<Job> {
-        let inner = self.inner.read().unwrap();
+        let inner = self.inner.read();
         inner.jobs.values().cloned().collect()
     }
 
     /// Load jobs from a vector (e.g., restored from persistence).
     pub fn load_from(&self, jobs: Vec<Job>) {
-        let mut inner = self.inner.write().unwrap();
+        let mut inner = self.inner.write();
         for job in jobs {
             inner.jobs.insert(job.gid, job);
         }

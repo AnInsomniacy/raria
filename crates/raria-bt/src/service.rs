@@ -19,7 +19,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
+use parking_lot::RwLock;
 use tracing::{debug, info, warn};
 
 fn is_selected_file(selected_files: Option<&[usize]>, file_index: usize) -> bool {
@@ -192,7 +193,7 @@ impl BtService {
     async fn ensure_session(&self) -> Result<Arc<Session>> {
         // Fast path: session already initialized.
         {
-            let guard = self.session.read().unwrap();
+            let guard = self.session.read();
             if let Some(ref session) = *guard {
                 return Ok(Arc::clone(session));
             }
@@ -205,7 +206,7 @@ impl BtService {
             .await
             .context("failed to initialize librqbit session")?;
 
-        let mut guard = self.session.write().unwrap();
+        let mut guard = self.session.write();
         *guard = Some(Arc::clone(&session));
         info!("librqbit session initialized");
 
@@ -261,7 +262,7 @@ impl BtService {
         };
 
         // Store the handle for later operations.
-        self.handles.write().unwrap().insert(gid, handle);
+        self.handles.write().insert(gid, handle);
 
         Ok(BtHandle { torrent_id, gid })
     }
@@ -299,7 +300,7 @@ impl BtService {
             .context("failed to remove torrent")?;
 
         // Remove from our handle map.
-        self.handles.write().unwrap().remove(&handle.gid);
+        self.handles.write().remove(&handle.gid);
         debug!(gid = %handle.gid, "torrent removed");
         Ok(())
     }
@@ -411,7 +412,7 @@ impl BtService {
     /// Stop the librqbit session.
     pub async fn shutdown(&self) {
         let session = {
-            let guard = self.session.read().unwrap();
+            let guard = self.session.read();
             guard.clone()
         };
         if let Some(session) = session {
@@ -424,7 +425,6 @@ impl BtService {
     fn get_managed_handle(&self, handle: &BtHandle) -> Result<Arc<ManagedTorrent>> {
         self.handles
             .read()
-            .unwrap()
             .get(&handle.gid)
             .cloned()
             .with_context(|| format!("no managed handle for GID {}", handle.gid))
@@ -514,14 +514,14 @@ mod tests {
     #[test]
     fn bt_service_session_starts_none() {
         let svc = BtService::new(PathBuf::from("/tmp")).unwrap();
-        let guard = svc.session.read().unwrap();
+        let guard = svc.session.read();
         assert!(guard.is_none(), "session should be lazy-initialized");
     }
 
     #[test]
     fn bt_service_handles_starts_empty() {
         let svc = BtService::new(PathBuf::from("/tmp")).unwrap();
-        let guard = svc.handles.read().unwrap();
+        let guard = svc.handles.read();
         assert!(guard.is_empty());
     }
 

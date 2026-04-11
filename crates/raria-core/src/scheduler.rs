@@ -7,7 +7,8 @@ use crate::job::{Gid, Status};
 use crate::registry::JobRegistry;
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
+use parking_lot::RwLock;
 
 /// Controls the execution queue for download jobs.
 #[derive(Debug)]
@@ -38,21 +39,21 @@ impl Scheduler {
 
     /// Enqueue a job GID at the back of the waiting queue.
     pub fn enqueue(&self, gid: Gid) {
-        let mut queue = self.queue.write().unwrap();
+        let mut queue = self.queue.write();
         queue.push_back(gid);
     }
 
     /// Enqueue a job GID at a specific position (0-indexed).
     /// If `position` exceeds the queue length, it is appended to the end.
     pub fn enqueue_at(&self, gid: Gid, position: usize) {
-        let mut queue = self.queue.write().unwrap();
+        let mut queue = self.queue.write();
         let pos = position.min(queue.len());
         queue.insert(pos, gid);
     }
 
     /// Remove a GID from the waiting queue.
     pub fn dequeue(&self, gid: Gid) -> bool {
-        let mut queue = self.queue.write().unwrap();
+        let mut queue = self.queue.write();
         if let Some(pos) = queue.iter().position(|g| *g == gid) {
             queue.remove(pos);
             true
@@ -63,13 +64,13 @@ impl Scheduler {
 
     /// Return the current queue (in order).
     pub fn waiting_queue(&self) -> Vec<Gid> {
-        let queue = self.queue.read().unwrap();
+        let queue = self.queue.read();
         queue.iter().copied().collect()
     }
 
     /// The number of jobs in the waiting queue.
     pub fn queue_len(&self) -> usize {
-        let queue = self.queue.read().unwrap();
+        let queue = self.queue.read();
         queue.len()
     }
 
@@ -88,7 +89,7 @@ impl Scheduler {
         how: crate::engine::PositionHow,
     ) -> anyhow::Result<usize> {
         use crate::engine::PositionHow;
-        let mut queue = self.queue.write().unwrap();
+        let mut queue = self.queue.write();
         let cur_pos = queue
             .iter()
             .position(|g| *g == gid)
@@ -122,7 +123,7 @@ impl Scheduler {
         }
 
         let slots = (max - active_count) as usize;
-        let queue = self.queue.read().unwrap();
+        let queue = self.queue.read();
         queue.iter().take(slots).copied().collect()
     }
 
