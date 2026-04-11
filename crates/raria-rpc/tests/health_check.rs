@@ -32,7 +32,10 @@ mod tests {
         let body: serde_json::Value = resp.json().await.unwrap();
         assert_eq!(body["status"], "ok");
         assert!(body["version"].is_string(), "version must be present");
-        assert!(body["uptime_seconds"].is_number(), "uptime must be a number");
+        assert!(
+            body["uptime_seconds"].is_number(),
+            "uptime must be a number"
+        );
 
         cancel.cancel();
     }
@@ -62,15 +65,13 @@ mod tests {
             .update(seeding.gid, |job| job.status = Status::Seeding)
             .unwrap();
 
-        let addrs = {
-            let cancel = CancellationToken::new();
-            let config = RpcServerConfig {
-                listen_addr: SocketAddr::from(([127, 0, 0, 1], 0)),
-            };
-            start_rpc_server(Arc::clone(&engine), &config, cancel.clone())
-                .await
-                .unwrap()
+        let cancel = CancellationToken::new();
+        let config = RpcServerConfig {
+            listen_addr: SocketAddr::from(([127, 0, 0, 1], 0)),
         };
+        let addrs = start_rpc_server(Arc::clone(&engine), &config, cancel.clone())
+            .await
+            .unwrap();
 
         let client = reqwest::Client::new();
         let body: serde_json::Value = client
@@ -84,7 +85,12 @@ mod tests {
 
         let waiting_gid = waiting.gid.to_string();
         assert_eq!(body["num_active"], 1, "seeding job should count as active");
-        assert_eq!(body["num_waiting"], 1, "waiting job {waiting_gid} should stay waiting");
+        assert_eq!(
+            body["num_waiting"], 1,
+            "waiting job {waiting_gid} should stay waiting"
+        );
         assert_eq!(body["num_stopped"], 0);
+
+        cancel.cancel();
     }
 }

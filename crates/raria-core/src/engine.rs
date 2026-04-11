@@ -918,7 +918,9 @@ mod tests {
             .registry
             .update(handle.gid, |job| job.status = Status::Seeding)
             .unwrap();
-        store.put_job(&engine1.registry.get(handle.gid).unwrap()).unwrap();
+        store
+            .put_job(&engine1.registry.get(handle.gid).unwrap())
+            .unwrap();
         let gid = handle.gid;
         drop(engine1);
 
