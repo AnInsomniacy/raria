@@ -46,16 +46,23 @@ pub struct AddUriSpec {
 /// Handle returned when a job is submitted.
 #[derive(Debug, Clone)]
 pub struct JobHandle {
+    /// GID of the newly created job.
     pub gid: Gid,
 }
 
 /// The download engine.
 pub struct Engine {
+    /// Thread-safe job index (read/write job metadata by GID).
     pub registry: Arc<JobRegistry>,
+    /// FIFO waiting queue with configurable concurrency.
     pub scheduler: Scheduler,
+    /// Per-job cancellation tokens.
     pub cancel_registry: CancelRegistry,
+    /// Broadcast bus for progress and status events.
     pub event_bus: EventBus,
+    /// Global configuration snapshot taken at engine creation.
     pub config: GlobalConfig,
+    /// Workspace-wide download rate limiter.
     pub global_rate_limiter: Arc<SharedRateLimiter>,
     /// Unique session identifier (random hex, persisted for lifetime of process).
     pub session_id: String,

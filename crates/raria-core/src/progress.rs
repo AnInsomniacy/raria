@@ -12,26 +12,50 @@ use tokio::sync::broadcast;
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum DownloadEvent {
     /// A job started downloading.
-    Started { gid: Gid },
+    Started {
+        /// GID of the started job.
+        gid: Gid,
+    },
     /// A job was paused.
-    Paused { gid: Gid },
+    Paused {
+        /// GID of the paused job.
+        gid: Gid,
+    },
     /// A job was stopped (removed or error).
-    Stopped { gid: Gid },
+    Stopped {
+        /// GID of the stopped job.
+        gid: Gid,
+    },
     /// A job completed successfully.
-    Complete { gid: Gid },
+    Complete {
+        /// GID of the completed job.
+        gid: Gid,
+    },
     /// A job encountered an error.
-    Error { gid: Gid, message: String },
+    Error {
+        /// GID of the failed job.
+        gid: Gid,
+        /// Human-readable error description.
+        message: String,
+    },
     /// A job's status changed.
     StatusChanged {
+        /// GID of the affected job.
         gid: Gid,
+        /// Previous lifecycle status.
         old_status: Status,
+        /// New lifecycle status.
         new_status: Status,
     },
     /// Progress update for a job.
     Progress {
+        /// GID of the job being tracked.
         gid: Gid,
+        /// Bytes downloaded so far.
         downloaded: u64,
+        /// Total file size (if known from HTTP Content-Length or equivalent).
         total: Option<u64>,
+        /// Current download speed in bytes per second.
         speed: u64,
     },
 }

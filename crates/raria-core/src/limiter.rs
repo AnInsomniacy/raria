@@ -94,6 +94,7 @@ impl RateLimiter {
 }
 
 impl SharedRateLimiter {
+    /// Create a new shared limiter. Pass `0` to disable rate limiting.
     pub fn new(limit_bps: u64) -> Self {
         let inner = if limit_bps > 0 {
             Some(Arc::new(RateLimiter::new(limit_bps)))
@@ -105,6 +106,7 @@ impl SharedRateLimiter {
         }
     }
 
+    /// Current limit in bytes per second, or `0` if unlimited.
     pub fn limit_bps(&self) -> u64 {
         self.inner
             .load_full()
@@ -112,10 +114,12 @@ impl SharedRateLimiter {
             .unwrap_or(0)
     }
 
+    /// Returns `true` if a rate limit is currently active.
     pub fn is_limited(&self) -> bool {
         self.inner.load().is_some()
     }
 
+    /// Hot-swap the rate limit. Pass `0` to disable. Takes effect immediately.
     pub fn update_limit(&self, limit_bps: u64) {
         let next = if limit_bps > 0 {
             Some(Arc::new(RateLimiter::new(limit_bps)))
@@ -125,6 +129,7 @@ impl SharedRateLimiter {
         self.inner.store(next);
     }
 
+    /// Consume `n` bytes of bandwidth, blocking until the limiter allows it.
     pub async fn consume(&self, n: u32) {
         let mut remaining = n;
         while remaining > 0 {

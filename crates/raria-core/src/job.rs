@@ -100,21 +100,32 @@ pub enum JobKind {
 /// BT file entry cached on the job for RPC-facing metadata/file views.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BtFile {
+    /// Zero-based file index within the torrent.
     pub index: usize,
+    /// Relative path inside the torrent output directory.
     pub path: PathBuf,
+    /// Total file size in bytes.
     pub length: u64,
+    /// Bytes already downloaded for this file.
     pub completed_length: u64,
+    /// Whether this file is selected for download.
     pub selected: bool,
 }
 
 /// BT peer entry cached on the job for RPC peer-list views when available.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BtPeer {
+    /// Socket address as `ip:port`.
     pub addr: String,
+    /// Peer IP address.
     pub ip: String,
+    /// Peer port number.
     pub port: u16,
+    /// Current download speed from this peer (bytes/sec).
     pub download_speed: u64,
+    /// Current upload speed to this peer (bytes/sec).
     pub upload_speed: u64,
+    /// `true` if this peer is a seeder (has 100% of the torrent).
     pub seeder: bool,
 }
 
@@ -281,7 +292,9 @@ impl Job {
 #[derive(Debug, Clone, thiserror::Error)]
 #[error("invalid transition from {from} to {to}")]
 pub struct InvalidTransition {
+    /// Status before the attempted transition.
     pub from: Status,
+    /// Status that was requested but rejected.
     pub to: Status,
 }
 

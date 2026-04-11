@@ -113,6 +113,7 @@ impl Default for JobRegistry {
 /// Errors that can occur in registry operations.
 #[derive(Debug, Clone, thiserror::Error)]
 pub enum RegistryError {
+    /// A job with this GID already exists in the registry.
     #[error("duplicate GID: {0}")]
     DuplicateGid(Gid),
 }

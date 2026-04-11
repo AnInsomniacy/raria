@@ -14,8 +14,11 @@ use tokio::io::AsyncReadExt;
 /// Supported checksum algorithms.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChecksumAlgo {
+    /// SHA-256 (recommended, 256-bit digest).
     Sha256,
+    /// SHA-1 (legacy, 160-bit digest).
     Sha1,
+    /// MD5 (legacy, 128-bit digest).
     Md5,
 }
 
