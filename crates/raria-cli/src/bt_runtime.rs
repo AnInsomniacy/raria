@@ -291,8 +291,8 @@ fn should_stop_seeding(
 #[cfg(test)]
 mod tests {
     use super::{
-        bt_service_config, handle_bt_cancellation, map_bt_files, map_bt_peers,
-        reconcile_bt_completion, should_stop_seeding, sync_bt_status_into_job,
+        BtCompletionAction, bt_service_config, handle_bt_cancellation, map_bt_files, map_bt_peers,
+        should_stop_seeding, sync_bt_job_from_status,
     };
     use raria_bt::service::{BtFileInfo, BtPeerInfo, BtStatus};
     use raria_core::config::GlobalConfig;

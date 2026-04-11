@@ -309,6 +309,48 @@ async fn bt_service_downloads_real_torrent_from_seed_peer() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[serial_test::serial]
+async fn bt_service_status_exposes_step2_bt_metadata_fields() {
+    let seed = start_seed_fixture(2 * 1024 * 1024)
+        .await
+        .expect("seed fixture");
+    let download_dir = tempdir().expect("download tempdir");
+    let service = BtService::with_config(
+        download_dir.path().to_path_buf(),
+        BtServiceConfig {
+            disable_dht: true,
+            disable_dht_persistence: true,
+            initial_peers: Some(vec![seed.seed_addr]),
+            ..Default::default()
+        },
+    )
+    .expect("create bt service");
+
+    let handle =
+        wait_for_bt_completion(&service, Gid::from_raw(11), seed.torrent_bytes.clone()).await;
+    let status = service.status(&handle).await.expect("bt status");
+
+    assert_eq!(status.piece_length, 16 * 1024);
+    assert_eq!(
+        status.num_pieces,
+        status.total_size.div_ceil(status.piece_length)
+    );
+    assert_eq!(status.announce_list, None);
+    assert!(
+        status.torrent_name.is_some(),
+        "torrent_name should be available"
+    );
+    assert_eq!(status.info_hash.len(), 40);
+    assert!(
+        status.info_hash.chars().all(|ch| ch.is_ascii_hexdigit()),
+        "info hash should be lowercase hex: {}",
+        status.info_hash
+    );
+
+    service.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[serial_test::serial]
 async fn bt_service_completes_peer_download_through_socks5_proxy() {
     let seed = start_seed_fixture(4 * 1024 * 1024)
         .await

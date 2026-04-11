@@ -50,15 +50,4 @@ mod tests {
         // Impact: Users must choose either HTTP or BT for each download, not both simultaneously.
         panic!("not implemented");
     }
-
-    #[test]
-    #[ignore = "BT-GAP-005: aria2.onBtDownloadComplete notification not yet implemented. \
-                This notification fires when a BT download finishes but seeding continues. \
-                It requires BtService to report the transition from downloading to seeding state."]
-    fn bt_download_complete_notification() {
-        // Requires BtService to distinguish between:
-        // 1. Download complete, still seeding → onBtDownloadComplete
-        // 2. Download complete, seeding finished → onDownloadComplete
-        panic!("not implemented");
-    }
 }
