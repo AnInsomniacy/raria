@@ -470,3 +470,56 @@ async fn bt_service_persists_fastresume_state_and_restores_progress_after_restar
 
     resumed_service.shutdown().await;
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[serial_test::serial]
+async fn bt_service_status_exposes_real_bt_metadata_fields() {
+    let seed = start_seed_fixture(2 * 1024 * 1024)
+        .await
+        .expect("seed fixture");
+    let download_dir = tempdir().expect("download tempdir");
+    let tracker = "http://tracker.example/announce".to_string();
+    let service = BtService::with_config(
+        download_dir.path().to_path_buf(),
+        BtServiceConfig {
+            disable_dht: true,
+            disable_dht_persistence: true,
+            initial_peers: Some(vec![seed.seed_addr]),
+            ..Default::default()
+        },
+    )
+    .expect("create bt service");
+
+    let handle = service
+        .add(
+            BtSource::TorrentBytes(seed.torrent_bytes.clone()),
+            Gid::from_raw(5),
+            None,
+            Some(vec![tracker.clone()]),
+        )
+        .await
+        .expect("add torrent to BtService");
+
+    let status = timeout(Duration::from_secs(30), async {
+        loop {
+            let status = service.status(&handle).await.expect("bt status");
+            if status.total_size > 0 && status.torrent_name.is_some() && status.piece_length.is_some()
+            {
+                return status;
+            }
+            sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await
+    .expect("BT status metadata timeout");
+
+    assert!(!status.info_hash.is_empty());
+    assert!(status.torrent_name.as_deref().is_some_and(|name| !name.is_empty()));
+    assert_eq!(status.announce_list.as_ref(), Some(&vec![tracker]));
+    let piece_length = status.piece_length.expect("piece_length");
+    let num_pieces = status.num_pieces.expect("num_pieces");
+    assert!(piece_length > 0);
+    assert_eq!(num_pieces, status.total_size.div_ceil(piece_length));
+
+    service.shutdown().await;
+}

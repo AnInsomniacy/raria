@@ -185,11 +185,11 @@ fn should_stop_seeding(
 #[cfg(test)]
 mod tests {
     use super::{
-        bt_service_config, handle_bt_cancellation, map_bt_files, map_bt_peers, should_stop_seeding,
-        sync_bt_job_from_status, BtCompletionAction,
+        advance_bt_lifecycle, bt_service_config, handle_bt_cancellation, map_bt_files,
+        map_bt_peers, should_stop_seeding, sync_bt_status_into_job, BtLifecycleAction,
     };
-    use raria_bt::service::{BtFileInfo, BtPeerInfo};
-    use raria_core::config::{GlobalConfig, JobOptions};
+    use raria_bt::service::{BtFileInfo, BtPeerInfo, BtStatus};
+    use raria_core::config::GlobalConfig;
     use raria_core::engine::{AddUriSpec, Engine};
     use raria_core::job::{Job, Status};
     use std::path::PathBuf;
@@ -482,165 +482,125 @@ mod tests {
         assert_eq!(job.status, Status::Active);
     }
 
-    #[test]
-    fn bt_status_sync_caches_reachable_bt_fields_on_job() {
-        let engine = Engine::new(GlobalConfig::default());
-        let handle = engine
-            .add_uri(&AddUriSpec {
-                uris: vec!["magnet:?xt=urn:btih:112233".into()],
-                dir: PathBuf::from("/tmp"),
-                filename: Some("fixture.bin".into()),
-                connections: 1,
-            })
-            .unwrap();
-        engine.activate_job(handle.gid).unwrap();
-
-        let status = raria_bt::service::BtStatus {
+    fn sample_bt_status() -> BtStatus {
+        BtStatus {
             total_size: 4096,
             downloaded: 2048,
             uploaded: 512,
             download_speed: 128,
             upload_speed: 64,
             num_peers: 3,
-            num_seeders: 7,
+            num_seeders: 2,
             is_complete: false,
-            info_hash: "abcdef1234567890".into(),
-            torrent_name: Some("fixture.bin".into()),
-            announce_list: Some(vec!["http://127.0.0.1:9/announce".into()]),
+            info_hash: "0123456789abcdef0123456789abcdef01234567".into(),
+            torrent_name: Some("fixture.iso".into()),
+            announce_list: Some(vec!["http://tracker.example/announce".into()]),
             piece_length: Some(1024),
             num_pieces: Some(4),
-        };
-
-        let bt_files = Some(map_bt_files(vec![BtFileInfo {
-            index: 0,
-            path: PathBuf::from("fixture.bin"),
-            size: 4096,
-            completed_length: 2048,
-            selected: true,
-        }]));
-        let bt_peers = Some(map_bt_peers(vec![BtPeerInfo {
-            addr: "127.0.0.1:6881".into(),
-            ip: "127.0.0.1".into(),
-            port: 6881,
-            download_speed: 128,
-            upload_speed: 64,
-            seeder: true,
-        }]));
-
-        sync_bt_status_into_job(&engine, handle.gid, &status, bt_files.clone(), bt_peers.clone())
-            .expect("sync bt status into job");
-
-        let job = engine.registry.get(handle.gid).expect("job");
-        assert_eq!(job.downloaded, 2048);
-        assert_eq!(job.download_speed, 128);
-        assert_eq!(job.upload_speed, 64);
-        assert_eq!(job.total_size, Some(4096));
-        let synced_files = job.bt_files.expect("bt files");
-        assert_eq!(synced_files.len(), 1);
-        assert_eq!(synced_files[0].index, 0);
-        assert_eq!(synced_files[0].path, PathBuf::from("fixture.bin"));
-        assert_eq!(synced_files[0].length, 4096);
-        assert_eq!(synced_files[0].completed_length, 2048);
-        assert!(synced_files[0].selected);
-
-        let synced_peers = job.bt_peers.expect("bt peers");
-        assert_eq!(synced_peers.len(), 1);
-        assert_eq!(synced_peers[0].addr, "127.0.0.1:6881");
-        assert_eq!(synced_peers[0].ip, "127.0.0.1");
-        assert_eq!(synced_peers[0].port, 6881);
-        assert_eq!(synced_peers[0].download_speed, 128);
-        assert_eq!(synced_peers[0].upload_speed, 64);
-        assert!(synced_peers[0].seeder);
-
-        let bt = job.bt.expect("bt snapshot");
-        assert_eq!(bt.info_hash.as_deref(), Some("abcdef1234567890"));
-        assert_eq!(bt.torrent_name.as_deref(), Some("fixture.bin"));
-        assert_eq!(
-            bt.announce_list,
-            Some(vec!["http://127.0.0.1:9/announce".into()])
-        );
-        assert_eq!(bt.uploaded, Some(512));
-        assert_eq!(bt.num_seeders, Some(7));
-        assert_eq!(bt.piece_length, Some(1024));
-        assert_eq!(bt.num_pieces, Some(4));
-        assert!(!bt.download_complete_emitted);
+        }
     }
 
     #[test]
-    fn bt_completion_enters_seeding_emits_once_and_finishes_after_ratio() {
-        let engine = Engine::new(GlobalConfig::default());
-        let handle = engine
-            .add_uri(&AddUriSpec {
-                uris: vec!["magnet:?xt=urn:btih:445566".into()],
-                dir: PathBuf::from("/tmp"),
-                filename: Some("fixture.bin".into()),
-                connections: 1,
-            })
-            .unwrap();
-        engine.activate_job(handle.gid).unwrap();
+    fn sync_bt_status_into_job_caches_real_bt_fields_and_preserves_best_effort_announce_list() {
+        let mut job = Job::new_bt(
+            vec!["magnet:?xt=urn:btih:sync-fields".into()],
+            PathBuf::from("/tmp/downloads"),
+        );
+        job.bt = Some(raria_core::job::BtSnapshot {
+            announce_list: Some(vec!["http://existing.example/announce".into()]),
+            ..Default::default()
+        });
 
-        let mut rx = engine.event_bus.subscribe();
-        while rx.try_recv().is_ok() {}
+        let mut status = sample_bt_status();
+        status.announce_list = None;
 
+        sync_bt_status_into_job(&mut job, &status, None, None);
+
+        let bt = job.bt.as_ref().expect("bt snapshot");
+        assert_eq!(job.total_size, Some(4096));
+        assert_eq!(job.downloaded, 2048);
+        assert_eq!(job.download_speed, 128);
+        assert_eq!(job.upload_speed, 64);
+        assert_eq!(job.connections, 3);
+        assert_eq!(
+            bt.info_hash.as_deref(),
+            Some("0123456789abcdef0123456789abcdef01234567")
+        );
+        assert_eq!(bt.torrent_name.as_deref(), Some("fixture.iso"));
+        assert_eq!(
+            bt.announce_list.as_ref(),
+            Some(&vec!["http://existing.example/announce".into()])
+        );
+        assert_eq!(bt.uploaded, Some(512));
+        assert_eq!(bt.num_seeders, Some(2));
+        assert_eq!(bt.piece_length, Some(1024));
+        assert_eq!(bt.num_pieces, Some(4));
+    }
+
+    #[test]
+    fn advance_bt_lifecycle_enters_seeding_once_then_completes_after_threshold() {
+        let mut job = Job::new_bt(
+            vec!["magnet:?xt=urn:btih:seed-once".into()],
+            PathBuf::from("/tmp/downloads"),
+        );
+        job.transition(Status::Active).unwrap();
+        job.options.seed_ratio = Some(1.0);
         let mut seeding_started_at = None;
-        let first_status = raria_bt::service::BtStatus {
-            total_size: 4096,
-            downloaded: 4096,
-            uploaded: 1024,
-            download_speed: 0,
-            upload_speed: 32,
-            num_peers: 2,
-            num_seeders: 4,
-            is_complete: true,
-            info_hash: "feedfacefeedface".into(),
-            torrent_name: Some("fixture.bin".into()),
-            announce_list: None,
-            piece_length: Some(1024),
-            num_pieces: Some(4),
-        };
 
-        let completed = reconcile_bt_completion(
-            &engine,
-            handle.gid,
-            &first_status,
-            Some(2.0),
-            None,
+        let mut first_complete = sample_bt_status();
+        first_complete.is_complete = true;
+        let action = advance_bt_lifecycle(
+            &mut job,
+            &first_complete,
             &mut seeding_started_at,
             Instant::now(),
         )
-        .expect("first completion reconciliation");
-        assert!(!completed, "job should remain seeding until ratio threshold is met");
-
-        let job = engine.registry.get(handle.gid).expect("job");
+        .expect("enter seeding");
+        assert_eq!(action, BtLifecycleAction::EmitBtDownloadComplete);
         assert_eq!(job.status, Status::Seeding);
         assert!(job.bt_download_complete_emitted());
-        match rx.try_recv().expect("bt completion event") {
-            DownloadEvent::BtDownloadComplete { gid } => assert_eq!(gid, handle.gid),
-            other => panic!("unexpected event after entering seeding: {other:?}"),
-        }
+        assert!(seeding_started_at.is_some());
 
-        let second_status = raria_bt::service::BtStatus {
-            uploaded: 8192,
-            ..first_status
-        };
-        let completed = reconcile_bt_completion(
-            &engine,
-            handle.gid,
-            &second_status,
-            Some(2.0),
-            None,
+        let second_action = advance_bt_lifecycle(
+            &mut job,
+            &first_complete,
             &mut seeding_started_at,
             Instant::now() + Duration::from_secs(1),
         )
-        .expect("second completion reconciliation");
-        assert!(completed, "job should complete once seeding ratio threshold is met");
+        .expect("one-shot guard");
+        assert_eq!(second_action, BtLifecycleAction::None);
+        assert_eq!(job.status, Status::Seeding);
 
-        let job = engine.registry.get(handle.gid).expect("job");
+        let mut threshold_reached = first_complete;
+        threshold_reached.uploaded = threshold_reached.downloaded;
+        let finish_action = advance_bt_lifecycle(
+            &mut job,
+            &threshold_reached,
+            &mut seeding_started_at,
+            Instant::now() + Duration::from_secs(2),
+        )
+        .expect("finish seeding");
+        assert_eq!(finish_action, BtLifecycleAction::Complete);
         assert_eq!(job.status, Status::Complete);
-        match rx.try_recv().expect("final completion event") {
-            DownloadEvent::Complete { gid } => assert_eq!(gid, handle.gid),
-            other => panic!("unexpected event after finishing seeding: {other:?}"),
-        }
-        assert!(rx.try_recv().is_err(), "BtDownloadComplete must be emitted only once");
+    }
+
+    #[test]
+    fn advance_bt_lifecycle_completes_without_seeding_when_no_seed_thresholds_exist() {
+        let mut job = Job::new_bt(
+            vec!["magnet:?xt=urn:btih:no-seed".into()],
+            PathBuf::from("/tmp/downloads"),
+        );
+        job.transition(Status::Active).unwrap();
+        let mut seeding_started_at = None;
+        let mut status = sample_bt_status();
+        status.is_complete = true;
+
+        let action = advance_bt_lifecycle(&mut job, &status, &mut seeding_started_at, Instant::now())
+            .expect("complete without seeding");
+
+        assert_eq!(action, BtLifecycleAction::Complete);
+        assert_eq!(job.status, Status::Complete);
+        assert!(job.bt_download_complete_emitted());
+        assert!(seeding_started_at.is_none());
     }
 }
