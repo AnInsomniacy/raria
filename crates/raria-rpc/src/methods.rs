@@ -624,7 +624,8 @@ impl Aria2RpcServer for RpcHandler {
     }
 
     async fn tell_active(&self) -> RpcResult<Vec<serde_json::Value>> {
-        let jobs = self.engine.registry.by_status(Status::Active);
+        let mut jobs = self.engine.registry.by_status(Status::Active);
+        jobs.extend(self.engine.registry.by_status(Status::Seeding));
         jobs_to_json(&jobs)
     }
 

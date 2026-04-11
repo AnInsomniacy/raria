@@ -62,6 +62,8 @@ impl fmt::Display for Gid {
 pub enum Status {
     /// Actively downloading.
     Active,
+    /// BT payload is complete and the job is seeding.
+    Seeding,
     /// Queued and waiting for a slot.
     Waiting,
     /// Paused by the user.
@@ -78,6 +80,7 @@ impl fmt::Display for Status {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Active => write!(f, "active"),
+            Self::Seeding => write!(f, "seeding"),
             Self::Waiting => write!(f, "waiting"),
             Self::Paused => write!(f, "paused"),
             Self::Complete => write!(f, "complete"),
@@ -129,6 +132,32 @@ pub struct BtPeer {
     pub seeder: bool,
 }
 
+/// BT metadata snapshot cached on the job for RPC projection.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct BtSnapshot {
+    /// Info hash (hex), when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub info_hash: Option<String>,
+    /// Torrent display name, when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub torrent_name: Option<String>,
+    /// Tracker announce list, when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub announce_list: Option<Vec<String>>,
+    /// Total uploaded bytes while seeding.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub uploaded: Option<u64>,
+    /// Number of seeders, when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub num_seeders: Option<u32>,
+    /// Piece length in bytes, when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub piece_length: Option<u64>,
+    /// Number of pieces, when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub num_pieces: Option<u64>,
+}
+
 /// A download job with all metadata needed for scheduling and persistence.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Job {
@@ -166,6 +195,9 @@ pub struct Job {
     /// BT peer metadata cached for RPC peer-list views when available.
     #[serde(default)]
     pub bt_peers: Option<Vec<BtPeer>>,
+    /// BT metadata snapshot cached for RPC projection when available.
+    #[serde(default)]
+    pub bt: Option<BtSnapshot>,
 }
 
 impl Job {
@@ -196,6 +228,7 @@ impl Job {
             options,
             bt_files: None,
             bt_peers: None,
+            bt: None,
         }
     }
 
@@ -222,6 +255,7 @@ impl Job {
             options,
             bt_files: None,
             bt_peers: None,
+            bt: None,
         }
     }
 
@@ -242,6 +276,7 @@ impl Job {
     pub fn status_str(&self) -> &'static str {
         match self.status {
             Status::Active => "active",
+            Status::Seeding => "seeding",
             Status::Waiting => "waiting",
             Status::Paused => "paused",
             Status::Complete => "complete",
@@ -255,7 +290,8 @@ impl Job {
     /// Valid transitions:
     /// ```text
     /// Waiting  → Active | Paused | Removed
-    /// Active   → Paused | Complete | Error | Removed
+    /// Active   → Seeding | Paused | Complete | Error | Removed
+    /// Seeding  → Paused | Complete | Error | Removed
     /// Paused   → Waiting | Removed
     /// Error    → Waiting | Removed
     /// Complete → Removed
@@ -267,10 +303,15 @@ impl Job {
             (Status::Waiting, Status::Active)
                 | (Status::Waiting, Status::Paused)
                 | (Status::Waiting, Status::Removed)
+                | (Status::Active, Status::Seeding)
                 | (Status::Active, Status::Paused)
                 | (Status::Active, Status::Complete)
                 | (Status::Active, Status::Error)
                 | (Status::Active, Status::Removed)
+                | (Status::Seeding, Status::Paused)
+                | (Status::Seeding, Status::Complete)
+                | (Status::Seeding, Status::Error)
+                | (Status::Seeding, Status::Removed)
                 | (Status::Paused, Status::Waiting)
                 | (Status::Paused, Status::Removed)
                 | (Status::Error, Status::Waiting)

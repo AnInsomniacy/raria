@@ -199,7 +199,8 @@ async fn handle_health(State(state): State<RpcAppState>) -> Response {
     use raria_core::job::Status;
 
     let engine = &state.engine;
-    let num_active = engine.registry.by_status(Status::Active).len();
+    let num_active =
+        engine.registry.by_status(Status::Active).len() + engine.registry.by_status(Status::Seeding).len();
     let num_waiting = engine.registry.by_status(Status::Waiting).len();
     let num_stopped = engine.registry.by_status(Status::Complete).len()
         + engine.registry.by_status(Status::Error).len()

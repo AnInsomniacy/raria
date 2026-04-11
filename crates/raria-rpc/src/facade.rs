@@ -88,7 +88,7 @@ pub struct Aria2GlobalStat {
 /// Convert an internal Job to an aria2-compatible status response.
 pub fn job_to_aria2_status(job: &Job) -> Aria2Status {
     let status_str = match job.status {
-        Status::Active => "active",
+        Status::Active | Status::Seeding => "active",
         Status::Waiting => "waiting",
         Status::Paused => "paused",
         Status::Complete => "complete",
@@ -189,7 +189,7 @@ pub fn compute_global_stat(jobs: &[Job]) -> Aria2GlobalStat {
 
     for job in jobs {
         match job.status {
-            Status::Active => {
+            Status::Active | Status::Seeding => {
                 num_active += 1;
                 dl_speed += job.download_speed;
                 ul_speed += job.upload_speed;

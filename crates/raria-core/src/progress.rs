@@ -31,10 +31,24 @@ pub enum DownloadEvent {
         /// GID of the completed job.
         gid: Gid,
     },
+    /// A BT job finished downloading payload and entered seeding.
+    BtDownloadComplete {
+        /// GID of the BT job.
+        gid: Gid,
+    },
     /// A job encountered an error.
     Error {
         /// GID of the failed job.
         gid: Gid,
+        /// Human-readable error description.
+        message: String,
+    },
+    /// A single source for a job failed but the job may continue with others.
+    SourceFailed {
+        /// GID of the affected job.
+        gid: Gid,
+        /// Source URI that failed.
+        uri: String,
         /// Human-readable error description.
         message: String,
     },
