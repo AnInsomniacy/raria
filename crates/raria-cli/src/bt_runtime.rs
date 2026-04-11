@@ -52,6 +52,7 @@ fn bt_service_config(engine: &Engine) -> BtServiceConfig {
             .all_proxy
             .clone()
             .filter(|proxy| proxy.starts_with("socks5://")),
+        dht_config_filename: engine.config.bt_dht_config_file.clone(),
         ..Default::default()
     }
 }
@@ -252,6 +253,17 @@ mod tests {
         let engine = Engine::new(config);
         let bt_config = bt_service_config(&engine);
         assert!(bt_config.socks_proxy_url.is_none());
+
+        let config = GlobalConfig {
+            bt_dht_config_file: Some(PathBuf::from("/tmp/raria-dht.json")),
+            ..Default::default()
+        };
+        let engine = Engine::new(config);
+        let bt_config = bt_service_config(&engine);
+        assert_eq!(
+            bt_config.dht_config_filename,
+            Some(PathBuf::from("/tmp/raria-dht.json"))
+        );
     }
 
     #[test]

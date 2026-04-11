@@ -282,6 +282,10 @@ enum Commands {
         #[arg(long)]
         ca_certificate: Option<PathBuf>,
 
+        /// Optional BT DHT persistence/config file path for librqbit.
+        #[arg(long = "bt-dht-config-file")]
+        bt_dht_config_file: Option<PathBuf>,
+
         /// Path to client certificate chain for mTLS.
         #[arg(long)]
         certificate: Option<PathBuf>,
@@ -547,6 +551,7 @@ async fn main() -> Result<()> {
             no_proxy,
             check_certificate,
             ca_certificate,
+            bt_dht_config_file,
             certificate,
             private_key,
             user_agent,
@@ -615,6 +620,9 @@ async fn main() -> Result<()> {
             config.check_certificate = check_certificate;
             if ca_certificate.is_some() {
                 config.ca_certificate = ca_certificate;
+            }
+            if bt_dht_config_file.is_some() {
+                config.bt_dht_config_file = bt_dht_config_file;
             }
             if certificate.is_some() {
                 config.certificate = certificate;

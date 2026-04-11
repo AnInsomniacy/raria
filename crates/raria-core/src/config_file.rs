@@ -162,6 +162,13 @@ pub fn apply_config_map(config: &mut GlobalConfig, map: &HashMap<String, String>
                     Some(PathBuf::from(value))
                 };
             }
+            "bt-dht-config-file" => {
+                config.bt_dht_config_file = if value.is_empty() {
+                    None
+                } else {
+                    Some(PathBuf::from(value))
+                };
+            }
             "rpc-secret" => {
                 config.rpc_secret = if value.is_empty() {
                     None
@@ -718,6 +725,18 @@ user-agent=raria/1.0
         assert_eq!(
             config.sftp_private_key_passphrase.as_deref(),
             Some("secret")
+        );
+    }
+
+    #[test]
+    fn apply_config_bt_dht_config_file() {
+        let mut config = GlobalConfig::default();
+        let mut map = HashMap::new();
+        map.insert("bt-dht-config-file".into(), "/tmp/raria-dht.json".into());
+        apply_config_map(&mut config, &map);
+        assert_eq!(
+            config.bt_dht_config_file,
+            Some(PathBuf::from("/tmp/raria-dht.json"))
         );
     }
 

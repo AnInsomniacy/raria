@@ -108,6 +108,8 @@ pub struct GlobalConfig {
     pub sftp_private_key: Option<PathBuf>,
     /// Optional SSH private key passphrase used for SFTP authentication.
     pub sftp_private_key_passphrase: Option<String>,
+    /// Optional BT DHT persistence/config file path used to seed librqbit's persistent DHT state.
+    pub bt_dht_config_file: Option<PathBuf>,
     /// Hook script fired when a download starts.
     pub on_download_start: Option<PathBuf>,
     /// Hook script fired when a download completes.
@@ -165,6 +167,7 @@ impl Default for GlobalConfig {
             sftp_known_hosts: None,
             sftp_private_key: None,
             sftp_private_key_passphrase: None,
+            bt_dht_config_file: None,
             on_download_start: None,
             on_download_complete: None,
             on_download_error: None,

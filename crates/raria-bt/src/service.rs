@@ -57,6 +57,13 @@ fn bt_session_options(output_dir: &Path, config: &BtServiceConfig) -> SessionOpt
     SessionOptions {
         disable_dht: config.disable_dht,
         disable_dht_persistence: config.disable_dht_persistence,
+        dht_config: config
+            .dht_config_filename
+            .as_ref()
+            .map(|path| librqbit::dht::PersistentDhtConfig {
+                dump_interval: None,
+                config_filename: Some(path.clone()),
+            }),
         socks_proxy_url: config.socks_proxy_url.clone(),
         fastresume: true,
         persistence: Some(SessionPersistenceConfig::Json {
@@ -149,6 +156,7 @@ pub struct BtServiceConfig {
     pub socks_proxy_url: Option<String>,
     pub disable_dht: bool,
     pub disable_dht_persistence: bool,
+    pub dht_config_filename: Option<PathBuf>,
     pub initial_peers: Option<Vec<SocketAddr>>,
 }
 
@@ -549,6 +557,7 @@ mod tests {
                 socks_proxy_url: Some("socks5://127.0.0.1:1080".into()),
                 disable_dht: true,
                 disable_dht_persistence: true,
+                dht_config_filename: Some(PathBuf::from("/tmp/raria-bt-dht.json")),
                 initial_peers: None,
             },
         );
@@ -563,6 +572,13 @@ mod tests {
         );
         assert!(options.disable_dht);
         assert!(options.disable_dht_persistence);
+        assert_eq!(
+            options
+                .dht_config
+                .as_ref()
+                .and_then(|cfg| cfg.config_filename.as_ref()),
+            Some(&PathBuf::from("/tmp/raria-bt-dht.json"))
+        );
         match options.persistence {
             Some(SessionPersistenceConfig::Json { folder }) => {
                 assert_eq!(folder, Some(bt_session_persistence_dir(&output_dir)));

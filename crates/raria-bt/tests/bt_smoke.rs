@@ -332,6 +332,7 @@ async fn bt_service_completes_peer_download_through_socks5_proxy() {
             socks_proxy_url: Some(proxy_url),
             disable_dht: true,
             disable_dht_persistence: true,
+            dht_config_filename: None,
             initial_peers: Some(vec![seed.seed_addr]),
         },
     )
@@ -390,6 +391,7 @@ async fn bt_service_persists_fastresume_state_and_restores_progress_after_restar
     let config = BtServiceConfig {
         disable_dht: true,
         disable_dht_persistence: true,
+        dht_config_filename: None,
         initial_peers: Some(vec![seed.seed_addr]),
         ..Default::default()
     };

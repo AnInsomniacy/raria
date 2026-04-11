@@ -9,8 +9,8 @@
 Closing the remaining BT transport tail with a single deterministic proof is not feasible in the
 current `raria + librqbit` stack.
 
-- `DHT`: wired upstream, but raria does not expose the bootstrap or persistence injection needed
-  to force a local deterministic DHT topology.
+- `DHT`: raria now exposes a minimal persistence-file seam, but it still does not expose the
+  bootstrap injection needed to force a local deterministic DHT topology.
 - `PEX`: present in upstream source, but it does not independently close the lane while DHT and
   uTP remain unproven.
 - `uTP`: absent from the current dependency/runtime path, so there is no transport surface to
@@ -18,16 +18,17 @@ current `raria + librqbit` stack.
 
 ## Evidence
 
-### 1. raria only forwards the DHT on/off booleans
+### 1. raria now forwards only the DHT on/off booleans plus a persistence-file seam
 
 In [service.rs](/Users/sekiro/Projects/VSCode/raria/crates/raria-bt/src/service.rs), `BtService`
 builds `SessionOptions` with:
 
 - `disable_dht`
 - `disable_dht_persistence`
+- optional persistent DHT config filename
 - SOCKS proxy and fastresume persistence
 
-It does not expose librqbit's `dht_config` or any local bootstrap override.
+It still does not expose any local bootstrap override.
 
 ### 2. librqbit does not expose deterministic bootstrap control through `SessionOptions`
 
@@ -42,8 +43,9 @@ The deterministic controls that actually matter live in upstream `DhtConfig`:
 - `routing_table`
 
 When `bootstrap_addrs` is not provided, librqbit falls back to public DHT bootstrap nodes.
-Current raria code only forwards `disable_dht` / `disable_dht_persistence`, plus BT persistence and
-fastresume. It still cannot inject `bootstrap_addrs` or a local-only DHT topology.
+Current raria code now forwards `disable_dht` / `disable_dht_persistence`, BT persistence and
+fastresume, plus an optional persistent DHT config filename. It still cannot inject
+`bootstrap_addrs` or a local-only DHT topology.
 
 There is an internal recovery path where `PersistentDht` reloads `listen_addr`, `routing_table`,
 and `peer_store` from its JSON persistence file, but that format is not exposed as a stable public
