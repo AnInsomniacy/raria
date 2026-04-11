@@ -906,6 +906,31 @@ mod tests {
     }
 
     #[test]
+    fn engine_restore_demotes_seeding_to_waiting() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("seeding.redb");
+        let store = Arc::new(Store::open(&db_path).unwrap());
+
+        let engine1 = Engine::with_store(default_config(), Arc::clone(&store));
+        let handle = engine1.add_uri(&default_spec()).unwrap();
+        engine1.activate_job(handle.gid).unwrap();
+        engine1
+            .registry
+            .update(handle.gid, |job| job.status = Status::Seeding)
+            .unwrap();
+        store.put_job(&engine1.registry.get(handle.gid).unwrap()).unwrap();
+        let gid = handle.gid;
+        drop(engine1);
+
+        let engine2 = Engine::with_store(default_config(), Arc::clone(&store));
+        engine2.restore().unwrap();
+
+        let job = engine2.registry.get(gid).unwrap();
+        assert_eq!(job.status, Status::Waiting);
+        assert_eq!(engine2.scheduler.queue_len(), 1);
+    }
+
+    #[test]
     fn engine_restore_keeps_completed_jobs_in_history() {
         let dir = tempfile::tempdir().unwrap();
         let db_path = dir.path().join("history.redb");

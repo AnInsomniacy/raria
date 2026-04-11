@@ -1,9 +1,12 @@
 #[cfg(test)]
 mod tests {
     use raria_core::config::GlobalConfig;
+    use raria_core::engine::AddUriSpec;
     use raria_core::engine::Engine;
+    use raria_core::job::Status;
     use raria_rpc::server::{RpcServerConfig, start_rpc_server};
     use std::net::SocketAddr;
+    use std::path::PathBuf;
     use std::sync::Arc;
     use tokio_util::sync::CancellationToken;
 
@@ -37,7 +40,28 @@ mod tests {
     #[tokio::test]
     async fn health_endpoint_reports_correct_job_counts() {
         let engine = Arc::new(Engine::new(GlobalConfig::default()));
-        // Add a job to the engine so we can verify counts are non-trivially zero.
+        let waiting = engine
+            .add_uri(&AddUriSpec {
+                uris: vec!["https://example.com/waiting.iso".into()],
+                filename: None,
+                dir: PathBuf::from("/tmp"),
+                connections: 1,
+            })
+            .unwrap();
+        let seeding = engine
+            .add_uri(&AddUriSpec {
+                uris: vec!["https://example.com/seeding.iso".into()],
+                filename: None,
+                dir: PathBuf::from("/tmp"),
+                connections: 1,
+            })
+            .unwrap();
+        engine.activate_job(seeding.gid).unwrap();
+        engine
+            .registry
+            .update(seeding.gid, |job| job.status = Status::Seeding)
+            .unwrap();
+
         let addrs = {
             let cancel = CancellationToken::new();
             let config = RpcServerConfig {
@@ -58,8 +82,9 @@ mod tests {
             .await
             .unwrap();
 
-        // No jobs added — all counters should be 0.
-        assert_eq!(body["num_active"], 0);
-        assert_eq!(body["num_waiting"], 0);
+        let waiting_gid = waiting.gid.to_string();
+        assert_eq!(body["num_active"], 1, "seeding job should count as active");
+        assert_eq!(body["num_waiting"], 1, "waiting job {waiting_gid} should stay waiting");
+        assert_eq!(body["num_stopped"], 0);
     }
 }
