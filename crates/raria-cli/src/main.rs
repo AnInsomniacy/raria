@@ -12,7 +12,7 @@ use raria_core::config::GlobalConfig;
 use std::ffi::OsString;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use tracing::{info, warn};
+use tracing::{error, info, warn};
 use tracing_subscriber::EnvFilter;
 
 #[derive(Clone)]
@@ -448,9 +448,23 @@ async fn main() -> Result<()> {
 
     let mut base_config = GlobalConfig::default();
     if let Some(ref conf_path) = cli.conf_path {
-        use raria_core::config_file::load_config_file;
-        match load_config_file(&mut base_config, conf_path) {
+        use raria_core::config_file::{ConfigParseMode, load_config_file_with_mode};
+        // Daemon mode: fail-fast on invalid config values.
+        // Single download: tolerate invalid values for aria2 compatibility.
+        let mode = if matches!(&cli.command, Commands::Daemon { .. }) {
+            ConfigParseMode::Strict
+        } else {
+            ConfigParseMode::Lenient
+        };
+        match load_config_file_with_mode(&mut base_config, conf_path, mode) {
             Ok(()) => info!(path = %conf_path.display(), "loaded configuration file"),
+            Err(e) if mode == ConfigParseMode::Strict => {
+                error!(
+                    path = %conf_path.display(), error = %e,
+                    "invalid configuration — daemon mode requires valid config"
+                );
+                std::process::exit(1);
+            }
             Err(e) => warn!(
                 path = %conf_path.display(), error = %e,
                 "failed to load configuration file"

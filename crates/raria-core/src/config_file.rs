@@ -363,6 +363,26 @@ pub fn load_config_file(config: &mut GlobalConfig, path: &Path) -> std::io::Resu
     Ok(())
 }
 
+/// Load and apply a configuration file with explicit parse-mode control.
+///
+/// - [`ConfigParseMode::Strict`]: returns an I/O error wrapping
+///   any config value that fails validation (fail-fast for daemon mode).
+/// - [`ConfigParseMode::Lenient`]: silently skips invalid values (aria2 compat).
+pub fn load_config_file_with_mode(
+    config: &mut GlobalConfig,
+    path: &Path,
+    mode: ConfigParseMode,
+) -> std::io::Result<()> {
+    if !path.exists() {
+        return Ok(());
+    }
+    let content = std::fs::read_to_string(path)?;
+    let map = parse_config_file(&content);
+    apply_config_map_with_mode(config, &map, mode).map_err(|e| {
+        std::io::Error::new(std::io::ErrorKind::InvalidData, e)
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -838,5 +858,40 @@ user-agent=raria/1.0
         map.insert("file-allocation".into(), "invalid_mode".into());
         let result = apply_config_map_with_mode(&mut config, &map, ConfigParseMode::Strict);
         assert!(result.is_err(), "strict mode must reject invalid file-allocation");
+    }
+
+    #[test]
+    fn load_config_file_strict_rejects_invalid_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("bad.conf");
+        std::fs::write(&path, "max-concurrent-downloads=not_a_number\n").unwrap();
+        let mut config = GlobalConfig::default();
+        let result = load_config_file_with_mode(&mut config, &path, ConfigParseMode::Strict);
+        assert!(result.is_err(), "strict mode must reject file with invalid value");
+        let err = result.unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+    }
+
+    #[test]
+    fn load_config_file_lenient_ignores_invalid_values() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("bad.conf");
+        std::fs::write(&path, "max-concurrent-downloads=not_a_number\ndir=/tmp/ok\n").unwrap();
+        let mut config = GlobalConfig::default();
+        let result = load_config_file_with_mode(&mut config, &path, ConfigParseMode::Lenient);
+        assert!(result.is_ok(), "lenient mode must not error on invalid value");
+        assert_eq!(config.dir, PathBuf::from("/tmp/ok"), "valid keys must still apply");
+    }
+
+    #[test]
+    fn load_config_file_strict_accepts_valid_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("good.conf");
+        std::fs::write(&path, "max-concurrent-downloads=8\ndir=/tmp/dl\n").unwrap();
+        let mut config = GlobalConfig::default();
+        let result = load_config_file_with_mode(&mut config, &path, ConfigParseMode::Strict);
+        assert!(result.is_ok(), "strict mode must accept fully valid file");
+        assert_eq!(config.max_concurrent_downloads, 8);
+        assert_eq!(config.dir, PathBuf::from("/tmp/dl"));
     }
 }
