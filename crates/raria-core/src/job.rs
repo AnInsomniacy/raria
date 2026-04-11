@@ -615,6 +615,34 @@ mod tests {
     }
 
     #[test]
+    fn bt_download_complete_rejects_non_bt_jobs() {
+        let mut job = Job::new_range(vec![], PathBuf::from("/tmp/f"));
+        job.transition(Status::Active).unwrap();
+
+        let err = job
+            .record_bt_download_complete(BtCompletionDisposition::Seed)
+            .unwrap_err();
+        assert_eq!(err, BtSemanticError::NotBt);
+        assert_eq!(job.status, Status::Active);
+    }
+
+    #[test]
+    fn job_serde_roundtrips_bt_download_complete_guard() {
+        let mut job = Job::new_bt(
+            vec!["magnet:?xt=urn:btih:abc123".into()],
+            PathBuf::from("/tmp/downloads"),
+        );
+        job.transition(Status::Active).unwrap();
+        job.record_bt_download_complete(BtCompletionDisposition::Seed)
+            .unwrap();
+
+        let json = serde_json::to_string(&job).unwrap();
+        let recovered: Job = serde_json::from_str(&json).unwrap();
+        assert_eq!(recovered.status, Status::Seeding);
+        assert!(recovered.bt_download_complete_emitted());
+    }
+
+    #[test]
     fn removed_is_terminal() {
         let mut job = Job::new_range(vec![], PathBuf::from("/tmp/f"));
         job.transition(Status::Active).unwrap();
