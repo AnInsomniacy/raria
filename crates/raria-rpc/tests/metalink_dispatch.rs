@@ -316,4 +316,64 @@ mod tests {
 
         cancel.cancel();
     }
+
+    #[tokio::test]
+    async fn add_metalink_links_multifile_jobs_with_lightweight_relations() {
+        let (engine, url, cancel) = spawn_server().await;
+
+        let metalink_xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<metalink version="3.0" xmlns="http://www.metalinker.org/">
+  <files>
+    <file name="file1.bin">
+      <resources>
+        <url type="http">https://cdn.com/file1.bin</url>
+      </resources>
+    </file>
+    <file name="file2.bin">
+      <resources>
+        <url type="http">https://cdn.com/file2.bin</url>
+      </resources>
+    </file>
+    <file name="file3.bin">
+      <resources>
+        <url type="http">https://cdn.com/file3.bin</url>
+      </resources>
+    </file>
+  </files>
+</metalink>"#;
+
+        use base64::Engine as Base64Engine;
+        let encoded = base64::engine::general_purpose::STANDARD.encode(metalink_xml);
+        let resp = rpc_call(&url, "aria2.addMetalink", serde_json::json!([encoded])).await;
+        assert!(resp.get("error").is_none(), "should succeed: {resp}");
+
+        let gids = resp["result"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|value| value.as_str().unwrap().to_string())
+            .collect::<Vec<_>>();
+        assert_eq!(gids.len(), 3);
+
+        let root = raria_core::job::Gid::from_raw(u64::from_str_radix(&gids[0], 16).unwrap());
+        let second = raria_core::job::Gid::from_raw(u64::from_str_radix(&gids[1], 16).unwrap());
+        let third = raria_core::job::Gid::from_raw(u64::from_str_radix(&gids[2], 16).unwrap());
+
+        let root_job = engine.registry.get(root).unwrap();
+        assert_eq!(root_job.followed_by, vec![second]);
+        assert_eq!(root_job.following, None);
+        assert_eq!(root_job.belongs_to, None);
+
+        let second_job = engine.registry.get(second).unwrap();
+        assert_eq!(second_job.following, Some(root));
+        assert_eq!(second_job.followed_by, vec![third]);
+        assert_eq!(second_job.belongs_to, Some(root));
+
+        let third_job = engine.registry.get(third).unwrap();
+        assert_eq!(third_job.following, Some(second));
+        assert!(third_job.followed_by.is_empty());
+        assert_eq!(third_job.belongs_to, Some(root));
+
+        cancel.cancel();
+    }
 }

@@ -52,6 +52,15 @@ pub struct Aria2Status {
     /// BT piece length when known.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub piece_length: Option<String>,
+    /// Jobs automatically followed by this job.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub followed_by: Option<Vec<String>>,
+    /// Predecessor job relation.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub following: Option<String>,
+    /// Parent/group relation.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub belongs_to: Option<String>,
     /// BitTorrent-specific metadata (present only for BT downloads).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub bittorrent: Option<serde_json::Value>,
@@ -230,6 +239,14 @@ pub fn job_to_aria2_status(job: &Job) -> Aria2Status {
         }),
         num_pieces: bt.and_then(|bt| bt.num_pieces.map(|value| value.to_string())),
         piece_length: bt.and_then(|bt| bt.piece_length.map(|value| value.to_string())),
+        followed_by: (!job.followed_by.is_empty()).then(|| {
+            job.followed_by
+                .iter()
+                .map(|gid| gid.to_string())
+                .collect::<Vec<_>>()
+        }),
+        following: job.following.map(|gid| gid.to_string()),
+        belongs_to: job.belongs_to.map(|gid| gid.to_string()),
         bittorrent,
     }
 }
@@ -354,6 +371,25 @@ mod tests {
             bittorrent["announceList"],
             serde_json::json!(["http://tracker.example/announce"])
         );
+    }
+
+    #[test]
+    fn job_to_aria2_status_projects_relation_fields() {
+        let mut job = Job::new_range(
+            vec!["https://example.com/a.bin".into()],
+            PathBuf::from("/tmp/a.bin"),
+        );
+        job.followed_by = vec![Gid::from_raw(2), Gid::from_raw(3)];
+        job.following = Some(Gid::from_raw(1));
+        job.belongs_to = Some(Gid::from_raw(1));
+
+        let status = job_to_aria2_status(&job);
+        assert_eq!(
+            status.followed_by,
+            Some(vec!["0000000000000002".into(), "0000000000000003".into()])
+        );
+        assert_eq!(status.following.as_deref(), Some("0000000000000001"));
+        assert_eq!(status.belongs_to.as_deref(), Some("0000000000000001"));
     }
 
     #[test]

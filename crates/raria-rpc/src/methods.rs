@@ -374,6 +374,7 @@ impl Aria2RpcServer for RpcHandler {
 
         // Create a job for each file in the metalink.
         let mut gids = Vec::new();
+        let mut created = Vec::new();
         for seed in seeds {
             if seed.uris.is_empty() {
                 continue;
@@ -416,10 +417,27 @@ impl Aria2RpcServer for RpcHandler {
                     let gid_str = format!("{:016x}", handle.gid.as_raw());
                     debug!(gid = %gid_str, name = %seed.filename, "metalink: added job");
                     gids.push(gid_str);
+                    created.push(handle.gid);
                 }
                 Err(e) => {
                     warn!(name = %seed.filename, error = %e, "metalink: failed to add job");
                 }
+            }
+        }
+
+        if let Some(root_gid) = created.first().copied() {
+            for (idx, gid) in created.iter().copied().enumerate() {
+                let following = idx.checked_sub(1).and_then(|prev| created.get(prev).copied());
+                let followed_by = created
+                    .get(idx + 1)
+                    .copied()
+                    .map(|gid| vec![gid])
+                    .unwrap_or_default();
+                self.engine.registry.update(gid, |job| {
+                    job.following = following;
+                    job.followed_by = followed_by.clone();
+                    job.belongs_to = if gid == root_gid { None } else { Some(root_gid) };
+                });
             }
         }
 

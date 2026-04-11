@@ -225,6 +225,15 @@ pub struct Job {
     /// Chunk-level checksum metadata carried from Metalink when available.
     #[serde(default)]
     pub piece_checksum: Option<PieceChecksum>,
+    /// Jobs automatically spawned after this one, if any.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub followed_by: Vec<Gid>,
+    /// Predecessor job in a lightweight relation chain, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub following: Option<Gid>,
+    /// Group/root job for lightweight relation sets, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub belongs_to: Option<Gid>,
 }
 
 impl Job {
@@ -257,6 +266,9 @@ impl Job {
             bt_peers: None,
             bt: None,
             piece_checksum: None,
+            followed_by: Vec::new(),
+            following: None,
+            belongs_to: None,
         }
     }
 
@@ -285,6 +297,9 @@ impl Job {
             bt_peers: None,
             bt: None,
             piece_checksum: None,
+            followed_by: Vec::new(),
+            following: None,
+            belongs_to: None,
         }
     }
 
@@ -592,6 +607,23 @@ mod tests {
                 hashes: vec!["aa".into(), "bb".into()],
             })
         );
+    }
+
+    #[test]
+    fn job_serde_roundtrips_relation_fields() {
+        let mut job = Job::new_range(
+            vec!["https://example.com/a.bin".into()],
+            PathBuf::from("/tmp/downloads/a.bin"),
+        );
+        job.followed_by = vec![Gid::from_raw(2), Gid::from_raw(3)];
+        job.following = Some(Gid::from_raw(1));
+        job.belongs_to = Some(Gid::from_raw(1));
+
+        let json = serde_json::to_string(&job).unwrap();
+        let recovered: Job = serde_json::from_str(&json).unwrap();
+        assert_eq!(recovered.followed_by, vec![Gid::from_raw(2), Gid::from_raw(3)]);
+        assert_eq!(recovered.following, Some(Gid::from_raw(1)));
+        assert_eq!(recovered.belongs_to, Some(Gid::from_raw(1)));
     }
 
     #[test]
