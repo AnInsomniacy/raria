@@ -52,6 +52,17 @@ and `peer_store` from its JSON persistence file, but that format is not exposed 
 test seam from raria. In practice, that still leaves us without a straightforward deterministic
 local DHT harness on the current product path.
 
+I also attempted a stronger local proof by adding a product-path seam for the persistent DHT
+config filename and seeding a handcrafted persistence file containing:
+
+- a local listen address
+- a routing table with a self-referential node entry
+- a peer store entry for the torrent's info-hash
+
+Even with that seam, the BT client still timed out before peer visibility on the product path.
+That makes the blocker stricter than "missing config plumb-through": the current stack still lacks
+a reliable deterministic local DHT proof recipe.
+
 ### 3. That makes a real local DHT proof non-deterministic from raria
 
 Because `BtServiceConfig` cannot inject `dht_config`, a raria test cannot point the BT session at
