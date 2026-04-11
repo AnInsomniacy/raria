@@ -73,7 +73,11 @@ pub fn apply_config_map_with_mode(
             match $value.parse() {
                 Ok(n) => $field = n,
                 Err(_) if $mode == ConfigParseMode::Strict => {
-                    anyhow::bail!("invalid value for '{}': expected integer, got '{}'", $key, $value);
+                    anyhow::bail!(
+                        "invalid value for '{}': expected integer, got '{}'",
+                        $key,
+                        $value
+                    );
                 }
                 Err(_) => {} // lenient: skip
             }
@@ -205,15 +209,17 @@ pub fn apply_config_map_with_mode(
                     Some(value.clone())
                 };
             }
-            "save-session-interval" => {
-                match value.parse::<u64>() {
-                    Ok(n) => config.save_session_interval = Some(n),
-                    Err(_) if mode == ConfigParseMode::Strict => {
-                        anyhow::bail!("invalid value for '{}': expected integer, got '{}'", key, value);
-                    }
-                    Err(_) => config.save_session_interval = None,
+            "save-session-interval" => match value.parse::<u64>() {
+                Ok(n) => config.save_session_interval = Some(n),
+                Err(_) if mode == ConfigParseMode::Strict => {
+                    anyhow::bail!(
+                        "invalid value for '{}': expected integer, got '{}'",
+                        key,
+                        value
+                    );
                 }
-            }
+                Err(_) => config.save_session_interval = None,
+            },
             "rpc-allow-origin-all" => {
                 config.rpc_allow_origin_all = value == "true" || value == "1";
             }
@@ -250,15 +256,17 @@ pub fn apply_config_map_with_mode(
             "retry-wait" => {
                 parse_int!(key, value, config.retry_wait, mode);
             }
-            "max-redirect" => {
-                match value.parse::<usize>() {
-                    Ok(n) => config.max_redirects = Some(n),
-                    Err(_) if mode == ConfigParseMode::Strict => {
-                        anyhow::bail!("invalid value for '{}': expected integer, got '{}'", key, value);
-                    }
-                    Err(_) => config.max_redirects = None,
+            "max-redirect" => match value.parse::<usize>() {
+                Ok(n) => config.max_redirects = Some(n),
+                Err(_) if mode == ConfigParseMode::Strict => {
+                    anyhow::bail!(
+                        "invalid value for '{}': expected integer, got '{}'",
+                        key,
+                        value
+                    );
                 }
-            }
+                Err(_) => config.max_redirects = None,
+            },
             "netrc-path" => {
                 config.netrc_path = if value.is_empty() {
                     None
@@ -269,24 +277,28 @@ pub fn apply_config_map_with_mode(
             "no-netrc" => {
                 config.no_netrc = value == "true" || value == "1";
             }
-            "timeout" => {
-                match value.parse::<u64>() {
-                    Ok(n) => config.timeout = Some(n),
-                    Err(_) if mode == ConfigParseMode::Strict => {
-                        anyhow::bail!("invalid value for '{}': expected integer, got '{}'", key, value);
-                    }
-                    Err(_) => config.timeout = None,
+            "timeout" => match value.parse::<u64>() {
+                Ok(n) => config.timeout = Some(n),
+                Err(_) if mode == ConfigParseMode::Strict => {
+                    anyhow::bail!(
+                        "invalid value for '{}': expected integer, got '{}'",
+                        key,
+                        value
+                    );
                 }
-            }
-            "connect-timeout" => {
-                match value.parse::<u64>() {
-                    Ok(n) => config.connect_timeout = Some(n),
-                    Err(_) if mode == ConfigParseMode::Strict => {
-                        anyhow::bail!("invalid value for '{}': expected integer, got '{}'", key, value);
-                    }
-                    Err(_) => config.connect_timeout = None,
+                Err(_) => config.timeout = None,
+            },
+            "connect-timeout" => match value.parse::<u64>() {
+                Ok(n) => config.connect_timeout = Some(n),
+                Err(_) if mode == ConfigParseMode::Strict => {
+                    anyhow::bail!(
+                        "invalid value for '{}': expected integer, got '{}'",
+                        key,
+                        value
+                    );
                 }
-            }
+                Err(_) => config.connect_timeout = None,
+            },
             "conditional-get" => {
                 config.conditional_get = value == "true" || value == "1";
             }
@@ -378,9 +390,8 @@ pub fn load_config_file_with_mode(
     }
     let content = std::fs::read_to_string(path)?;
     let map = parse_config_file(&content);
-    apply_config_map_with_mode(config, &map, mode).map_err(|e| {
-        std::io::Error::new(std::io::ErrorKind::InvalidData, e)
-    })
+    apply_config_map_with_mode(config, &map, mode)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
 }
 
 #[cfg(test)]
@@ -818,7 +829,10 @@ user-agent=raria/1.0
         let mut map = HashMap::new();
         map.insert("max-concurrent-downloads".into(), "not_a_number".into());
         let result = apply_config_map_with_mode(&mut config, &map, ConfigParseMode::Strict);
-        assert!(result.is_err(), "strict mode must reject unparseable integer");
+        assert!(
+            result.is_err(),
+            "strict mode must reject unparseable integer"
+        );
         let err_msg = format!("{}", result.unwrap_err());
         assert!(
             err_msg.contains("max-concurrent-downloads"),
@@ -857,7 +871,10 @@ user-agent=raria/1.0
         let mut map = HashMap::new();
         map.insert("file-allocation".into(), "invalid_mode".into());
         let result = apply_config_map_with_mode(&mut config, &map, ConfigParseMode::Strict);
-        assert!(result.is_err(), "strict mode must reject invalid file-allocation");
+        assert!(
+            result.is_err(),
+            "strict mode must reject invalid file-allocation"
+        );
     }
 
     #[test]
@@ -867,7 +884,10 @@ user-agent=raria/1.0
         std::fs::write(&path, "max-concurrent-downloads=not_a_number\n").unwrap();
         let mut config = GlobalConfig::default();
         let result = load_config_file_with_mode(&mut config, &path, ConfigParseMode::Strict);
-        assert!(result.is_err(), "strict mode must reject file with invalid value");
+        assert!(
+            result.is_err(),
+            "strict mode must reject file with invalid value"
+        );
         let err = result.unwrap_err();
         assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
     }
@@ -876,11 +896,22 @@ user-agent=raria/1.0
     fn load_config_file_lenient_ignores_invalid_values() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("bad.conf");
-        std::fs::write(&path, "max-concurrent-downloads=not_a_number\ndir=/tmp/ok\n").unwrap();
+        std::fs::write(
+            &path,
+            "max-concurrent-downloads=not_a_number\ndir=/tmp/ok\n",
+        )
+        .unwrap();
         let mut config = GlobalConfig::default();
         let result = load_config_file_with_mode(&mut config, &path, ConfigParseMode::Lenient);
-        assert!(result.is_ok(), "lenient mode must not error on invalid value");
-        assert_eq!(config.dir, PathBuf::from("/tmp/ok"), "valid keys must still apply");
+        assert!(
+            result.is_ok(),
+            "lenient mode must not error on invalid value"
+        );
+        assert_eq!(
+            config.dir,
+            PathBuf::from("/tmp/ok"),
+            "valid keys must still apply"
+        );
     }
 
     #[test]

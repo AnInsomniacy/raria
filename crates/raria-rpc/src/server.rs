@@ -199,8 +199,8 @@ async fn handle_health(State(state): State<RpcAppState>) -> Response {
     use raria_core::job::Status;
 
     let engine = &state.engine;
-    let num_active =
-        engine.registry.by_status(Status::Active).len() + engine.registry.by_status(Status::Seeding).len();
+    let num_active = engine.registry.by_status(Status::Active).len()
+        + engine.registry.by_status(Status::Seeding).len();
     let num_waiting = engine.registry.by_status(Status::Waiting).len();
     let num_stopped = engine.registry.by_status(Status::Complete).len()
         + engine.registry.by_status(Status::Error).len()
@@ -377,9 +377,9 @@ fn request_value_contains_valid_token(value: &serde_json::Value, secret: &str) -
 /// unbounded `Box::leak`. Method names are a finite, small set (~30 entries)
 /// so this pool never grows beyond startup registration.
 fn intern_method_name(name: &str) -> &'static str {
+    use parking_lot::Mutex;
     use std::collections::HashSet;
     use std::sync::OnceLock;
-    use parking_lot::Mutex;
 
     static POOL: OnceLock<Mutex<HashSet<&'static str>>> = OnceLock::new();
     let pool = POOL.get_or_init(|| Mutex::new(HashSet::new()));
@@ -832,7 +832,10 @@ mod tests {
         let a = intern_method_name("aria2.tellStatus");
         let b = intern_method_name("aria2.tellStatus");
         // Same pointer means no duplicate allocation.
-        assert!(std::ptr::eq(a, b), "interned strings must share the same pointer");
+        assert!(
+            std::ptr::eq(a, b),
+            "interned strings must share the same pointer"
+        );
     }
 
     #[test]

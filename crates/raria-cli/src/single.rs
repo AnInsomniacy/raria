@@ -1,8 +1,8 @@
 use crate::backend_factory::create_backend_with_config;
+use crate::conditional_get::build_conditional_get_probe_headers;
 use crate::executor_config::apply_global_retry_policy;
 use crate::util::{format_bytes, parse_header_args};
 use anyhow::{Context, Result};
-use chrono::{DateTime, Utc};
 use raria_core::checksum;
 use raria_core::config::GlobalConfig;
 use raria_core::engine::{AddUriSpec, Engine};
@@ -140,22 +140,13 @@ pub(crate) async fn run_download(options: SingleDownloadOptions) -> Result<()> {
     );
     let control_file_path = std::path::PathBuf::from(format!("{}.aria2", candidate_path.display()));
 
-    let mut probe_headers = headers.clone();
-    if config.conditional_get
-        && config.allow_overwrite
-        && matches!(parsed_url.scheme(), "http" | "https")
-        && candidate_path.is_file()
-        && !control_file_path.exists()
-    {
-        let modified = std::fs::metadata(&candidate_path)
-            .and_then(|meta| meta.modified())
-            .context("failed to read local file mtime for conditional-get")?;
-        let modified: DateTime<Utc> = modified.into();
-        probe_headers.push((
-            "If-Modified-Since".into(),
-            modified.format("%a, %d %b %Y %H:%M:%S GMT").to_string(),
-        ));
-    }
+    let probe_headers = build_conditional_get_probe_headers(
+        &headers,
+        &config,
+        &parsed_url,
+        &candidate_path,
+        &control_file_path,
+    )?;
 
     let probe = backend
         .probe(

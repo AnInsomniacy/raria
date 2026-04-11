@@ -1,18 +1,18 @@
 use anyhow::{Context, Result};
 use librqbit::{
-    create_torrent, AddTorrent, AddTorrentOptions, CreateTorrentOptions, Session, SessionOptions,
+    AddTorrent, AddTorrentOptions, CreateTorrentOptions, Session, SessionOptions, create_torrent,
 };
 use raria_bt::service::{BtService, BtServiceConfig, BtSource};
 use raria_core::job::Gid;
 use std::fs;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener as StdTcpListener};
 use std::path::Path;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use tempfile::tempdir;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::time::{sleep, timeout, Duration};
+use tokio::time::{Duration, sleep, timeout};
 
 fn make_payload(size: usize) -> Vec<u8> {
     (0..size).map(|idx| ((idx * 31) % 251) as u8).collect()
@@ -555,7 +555,9 @@ async fn bt_service_status_exposes_real_bt_metadata_fields() {
     let status = timeout(Duration::from_secs(30), async {
         loop {
             let status = service.status(&handle).await.expect("bt status");
-            if status.total_size > 0 && status.torrent_name.is_some() && status.piece_length.is_some()
+            if status.total_size > 0
+                && status.torrent_name.is_some()
+                && status.piece_length.is_some()
             {
                 return status;
             }
@@ -566,7 +568,12 @@ async fn bt_service_status_exposes_real_bt_metadata_fields() {
     .expect("BT status metadata timeout");
 
     assert!(!status.info_hash.is_empty());
-    assert!(status.torrent_name.as_deref().is_some_and(|name| !name.is_empty()));
+    assert!(
+        status
+            .torrent_name
+            .as_deref()
+            .is_some_and(|name| !name.is_empty())
+    );
     assert_eq!(status.announce_list.as_ref(), Some(&vec![tracker]));
     let piece_length = status.piece_length.expect("piece_length");
     let num_pieces = status.num_pieces.expect("num_pieces");

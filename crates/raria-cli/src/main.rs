@@ -1,5 +1,6 @@
 mod backend_factory;
 mod bt_runtime;
+mod conditional_get;
 mod daemon;
 mod executor_config;
 mod hooks;
@@ -696,18 +697,24 @@ async fn main() -> Result<()> {
             config.file_allocation =
                 raria_core::file_alloc::FileAllocation::parse(&file_allocation)?;
 
-            let input_uris = if let Some(ref path) = input_file {
-                let uris = raria_core::input_file::load_input_file(path)?;
-                info!(count = uris.len(), path = %path.display(), "loaded URIs from input file");
-                uris
+            let input_entries = if let Some(ref path) = input_file {
+                let entries = raria_core::input_file::load_input_file_entries(path)?;
+                info!(count = entries.len(), path = %path.display(), "loaded URIs from input file");
+                entries
             } else {
                 Vec::new()
             };
 
             let _ = daemonize;
 
-            daemon::run_daemon_with_config(config, &session_file, input_uris, dir.clone(), header)
-                .await?;
+            daemon::run_daemon_with_config(
+                config,
+                &session_file,
+                input_entries,
+                dir.clone(),
+                header,
+            )
+            .await?;
         }
     }
 

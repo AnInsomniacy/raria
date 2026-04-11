@@ -4,9 +4,9 @@
 // and supports filtering by status.
 
 use crate::job::{Gid, Job, Status};
+use parking_lot::RwLock;
 use std::collections::HashMap;
 use std::sync::Arc;
-use parking_lot::RwLock;
 
 /// Thread-safe registry of all download jobs.
 #[derive(Debug, Clone)]

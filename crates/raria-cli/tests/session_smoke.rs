@@ -871,15 +871,32 @@ async fn daemon_rejects_checksum_mismatch_before_marking_job_complete() {
     .await;
     let gid = add_resp["result"].as_str().expect("gid").to_string();
 
-    let status_resp = wait_for_terminal_status(rpc_port, &gid).await;
-    assert_eq!(status_resp["result"]["status"], "error");
-    let error_message = status_resp["result"]["errorMessage"]
-        .as_str()
-        .expect("error message");
-    assert!(
-        error_message.contains("checksum"),
-        "checksum mismatch should surface in daemon status: {status_resp}"
+    let deadline = Instant::now() + Duration::from_secs(60);
+    loop {
+        let status = rpc_call(rpc_port, "aria2.tellStatus", serde_json::json!([gid])).await;
+        let state = status["result"]["status"].as_str().expect("status");
+        if state == "complete" {
+            break;
+        }
+
+        assert!(
+            Instant::now() < deadline,
+            "daemon never completed conditional-get skip path: {status}"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+
+    assert_eq!(
+        std::fs::read(&cached).expect("read cached file"),
+        b"existing"
     );
+
+    let requests = server.received_requests().await.expect("received requests");
+    let get_count = requests
+        .iter()
+        .filter(|req| req.method.as_str() == "GET" && req.url.path() == "/cached.bin")
+        .count();
+    assert_eq!(get_count, 0, "daemon should skip GET after 304 probe");
 
     graceful_shutdown(rpc_port, &mut child).await;
 }

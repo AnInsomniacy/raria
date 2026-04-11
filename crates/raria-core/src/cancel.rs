@@ -4,9 +4,9 @@
 // can be gracefully cancelled from the scheduler, RPC layer, or CLI.
 
 use crate::job::Gid;
+use parking_lot::RwLock;
 use std::collections::HashMap;
 use std::sync::Arc;
-use parking_lot::RwLock;
 use tokio_util::sync::CancellationToken;
 
 /// Manages cancellation tokens keyed by job GID.

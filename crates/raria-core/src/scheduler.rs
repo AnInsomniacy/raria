@@ -5,10 +5,10 @@
 
 use crate::job::{Gid, Status};
 use crate::registry::JobRegistry;
-use std::collections::VecDeque;
-use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::Arc;
 use parking_lot::RwLock;
+use std::collections::VecDeque;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
 
 /// Controls the execution queue for download jobs.
 #[derive(Debug)]
@@ -117,9 +117,8 @@ impl Scheduler {
     /// and returns GIDs from the front of the queue that can be activated.
     pub fn jobs_to_activate(&self, registry: &JobRegistry) -> Vec<Gid> {
         let max = self.max_concurrent.load(Ordering::Relaxed);
-        let active_count =
-            (registry.by_status(Status::Active).len() + registry.by_status(Status::Seeding).len())
-                as u32;
+        let active_count = (registry.by_status(Status::Active).len()
+            + registry.by_status(Status::Seeding).len()) as u32;
         if active_count >= max {
             return Vec::new();
         }

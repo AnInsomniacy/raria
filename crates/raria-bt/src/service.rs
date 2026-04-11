@@ -342,30 +342,13 @@ impl BtService {
         } else {
             (0, 0)
         };
-        let (num_peers, num_seeders) = self
-            .live_peer_counts(handle)
-            .await
-            .unwrap_or_else(|_| {
-                stats.live
-                    .as_ref()
-                    .map(|live| (live.snapshot.peer_stats.live as u32, 0))
-                    .unwrap_or((0, 0))
-            });
-        let torrent_name = managed.name();
-        let announce_list = tracker_urls(managed.shared())
-            .filter(|trackers| !trackers.is_empty());
-        let (piece_length, num_pieces) = managed
-            .metadata
-            .load()
-            .as_ref()
-            .map(|metadata| {
-                (
-                    Some(u64::from(metadata.info.piece_length)),
-                    Some(u64::from(metadata.lengths.total_pieces())),
-                )
-            })
-            .unwrap_or((None, None));
-
+        let (num_peers, num_seeders) = self.live_peer_counts(handle).await.unwrap_or_else(|_| {
+            stats
+                .live
+                .as_ref()
+                .map(|live| (live.snapshot.peer_stats.live as u32, 0))
+                .unwrap_or((0, 0))
+        });
         // Id20 is [u8; 20] — format as hex.
         let info_hash_bytes = managed.info_hash();
         let info_hash = hex::encode(info_hash_bytes.0);
@@ -403,8 +386,8 @@ impl BtService {
             info_hash,
             torrent_name,
             announce_list,
-            piece_length,
-            num_pieces,
+            piece_length: Some(piece_length),
+            num_pieces: Some(num_pieces),
         })
     }
 
@@ -512,19 +495,6 @@ impl BtService {
             .count() as u32;
         Ok((num_peers, num_seeders))
     }
-}
-
-fn tracker_urls(shared: &librqbit::ManagedTorrentShared) -> Option<Vec<String>> {
-    let mut trackers: Vec<String> = shared
-        .trackers
-        .iter()
-        .map(|tracker| tracker.to_string())
-        .collect();
-    if trackers.is_empty() {
-        return None;
-    }
-    trackers.sort();
-    Some(trackers)
 }
 
 #[cfg(test)]
