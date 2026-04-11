@@ -230,18 +230,23 @@ pub(crate) async fn run_daemon_with_config(
     Ok(())
 }
 
-async fn run_job_download(
-    engine: Arc<Engine>,
-    gid: Gid,
-    cancel: CancellationToken,
-    rate_limiter: Option<Arc<raria_core::limiter::SharedRateLimiter>>,
-    default_headers: Vec<(String, String)>,
-) -> Result<()> {
-    let job = engine
-        .registry
-        .get(gid)
-        .context("job not found in registry")?;
-    let mut request_headers = default_headers;
+/// Configuration context built from engine globals for a single download job.
+struct DownloadContext {
+    http_cfg: raria_http::backend::HttpBackendConfig,
+    ftp_cfg: raria_ftp::backend::FtpBackendConfig,
+    sftp_cfg: raria_sftp::backend::SftpBackendConfig,
+    probe_ctx: ProbeContext,
+    request_headers: Vec<(String, String)>,
+    request_auth: Option<Credentials>,
+}
+
+/// Build protocol-specific backend configs and probe context from engine globals.
+fn build_download_context(
+    engine: &Engine,
+    job: &raria_core::job::Job,
+    default_headers: &[(String, String)],
+) -> DownloadContext {
+    let mut request_headers: Vec<(String, String)> = default_headers.to_vec();
     request_headers.extend(job.options.headers.clone());
     let request_auth = job
         .options
@@ -299,14 +304,185 @@ async fn run_job_download(
         timeout: std::time::Duration::from_secs(engine.config.timeout.unwrap_or(30)),
     };
 
+    DownloadContext {
+        http_cfg,
+        ftp_cfg,
+        sftp_cfg,
+        probe_ctx,
+        request_headers,
+        request_auth,
+    }
+}
+
+/// Resolve the output file path, applying server-suggested filename if the user
+/// did not explicitly set one via `--out`.
+fn resolve_output_path(
+    engine: &Engine,
+    gid: Gid,
+    job: &raria_core::job::Job,
+    probe: &raria_range::backend::FileProbe,
+) -> std::path::PathBuf {
+    if job.options.out.is_none() {
+        if let Some(filename) = probe.suggested_filename.clone() {
+            let path = job
+                .out_path
+                .parent()
+                .unwrap_or_else(|| std::path::Path::new("."))
+                .join(filename);
+            engine.registry.update(gid, |job| {
+                job.out_path = path.clone();
+            });
+            return path;
+        }
+    }
+    job.out_path.clone()
+}
+
+/// Callback invoked after each segment completes a checkpoint.
+type CheckpointFn = Arc<dyn Fn(u32, u64) + Send + Sync>;
+
+/// Plan download segments and restore checkpoint progress from persistent store.
+///
+/// Returns `(connections, segments, checkpoint_callback)`.
+fn plan_download_segments(
+    engine: &Engine,
+    gid: Gid,
+    job: &raria_core::job::Job,
+    probe: &raria_range::backend::FileProbe,
+) -> (u32, Vec<raria_core::segment::SegmentState>, Option<CheckpointFn>) {
+    let file_size = probe.size.unwrap_or(0);
+    let max_conn = job.options.max_connections;
+    let mut resolved_connections = if probe.supports_range && file_size > 0 {
+        max_conn.min((file_size / 1024).max(1) as u32)
+    } else {
+        1
+    };
+    if probe.supports_range && file_size > 0 && engine.config.min_split_size > 0 {
+        let max_by_min = (file_size / engine.config.min_split_size).max(1) as u32;
+        resolved_connections = resolved_connections.min(max_by_min);
+    }
+
+    engine.registry.update(gid, |job| {
+        job.total_size = Some(file_size);
+        job.connections = resolved_connections;
+    });
+
+    let ranges = if file_size > 0 {
+        plan_segments(file_size, resolved_connections)
+    } else {
+        vec![(0u64, u64::MAX)]
+    };
+    let mut resolved_segments = init_segment_states(&ranges);
+
+    // Restore checkpoint progress from persistent store.
+    if let Some(store) = engine.store() {
+        match store.list_segments(gid) {
+            Ok(persisted) if !persisted.is_empty() => {
+                for (seg_id, persisted_state) in &persisted {
+                    if let Some(seg) = resolved_segments.get_mut(*seg_id as usize) {
+                        if persisted_state.downloaded > 0
+                            && persisted_state.downloaded <= seg.size()
+                        {
+                            seg.downloaded = persisted_state.downloaded;
+                            seg.status = SegmentStatus::Pending;
+                            info!(
+                                %gid, seg_id, resumed = persisted_state.downloaded,
+                                "resumed segment from checkpoint"
+                            );
+                        }
+                    }
+                }
+            }
+            Ok(_) => {}
+            Err(e) => {
+                warn!(%gid, error = %e, "failed to load persisted segments, starting fresh");
+            }
+        }
+    }
+
+    let on_checkpoint: Option<CheckpointFn> =
+        engine.store().map(|store| {
+            let store = Arc::clone(store);
+            let seg_ranges: Vec<(u64, u64)> =
+                resolved_segments.iter().map(|s| (s.start, s.end)).collect();
+            Arc::new(move |seg_id: u32, bytes_downloaded: u64| {
+                let (start, end) = seg_ranges.get(seg_id as usize).copied().unwrap_or((0, 0));
+                let seg = raria_core::segment::SegmentState {
+                    start,
+                    end,
+                    downloaded: bytes_downloaded,
+                    etag: None,
+                    status: raria_core::segment::SegmentStatus::Active,
+                };
+                if let Err(e) = store.put_segment(gid, seg_id, &seg) {
+                    tracing::warn!(%gid, seg_id, error = %e, "failed to checkpoint segment progress");
+                }
+            }) as CheckpointFn
+        });
+
+    (resolved_connections, resolved_segments, on_checkpoint)
+}
+
+/// Finalize a completed download: update registry, clean up checkpoints, log.
+fn finalize_complete(engine: &Engine, gid: Gid, downloaded: u64) -> Result<()> {
+    engine.registry.update(gid, |job| {
+        job.downloaded = downloaded;
+        job.connections = 0;
+    });
+    engine.complete_job(gid)?;
+    if let Some(store) = engine.store() {
+        if let Err(e) = store.remove_segments(gid) {
+            tracing::warn!(%gid, error = %e, "failed to clean up segment checkpoints");
+        }
+    }
+    info!(%gid, bytes = downloaded, "daemon: download complete");
+    Ok(())
+}
+
+/// Persist interrupted segment state for future resumption.
+fn persist_interrupted_segments(
+    engine: &Engine,
+    gid: Gid,
+    segments: &[raria_core::segment::SegmentState],
+    downloaded: u64,
+) {
+    engine.registry.update(gid, |job| {
+        job.downloaded = downloaded;
+        job.connections = 0;
+    });
+    if let Some(store) = engine.store() {
+        for (seg_id, seg) in segments.iter().enumerate() {
+            if let Err(e) = store.put_segment(gid, seg_id as u32, seg) {
+                tracing::warn!(%gid, seg_id, error = %e, "failed to persist interrupted segment state");
+            }
+        }
+    }
+    info!(%gid, downloaded, "daemon: download interrupted");
+}
+
+async fn run_job_download(
+    engine: Arc<Engine>,
+    gid: Gid,
+    cancel: CancellationToken,
+    rate_limiter: Option<Arc<raria_core::limiter::SharedRateLimiter>>,
+    default_headers: Vec<(String, String)>,
+) -> Result<()> {
+    let job = engine
+        .registry
+        .get(gid)
+        .context("job not found in registry")?;
+
+    let ctx = build_download_context(&engine, &job, &default_headers);
+
     let engine_ref = Arc::clone(&engine);
     let on_progress: Arc<dyn Fn(u32, u64) + Send + Sync> = Arc::new(move |_seg_id, bytes| {
         engine_ref.update_progress(gid, bytes);
     });
+
     let mut out_path: Option<std::path::PathBuf> = None;
     let mut effective_connections: Option<u32> = None;
     let mut segments: Option<Vec<raria_core::segment::SegmentState>> = None;
-    let mut on_checkpoint: Option<Arc<dyn Fn(u32, u64) + Send + Sync>> = None;
+    let mut on_checkpoint: Option<CheckpointFn> = None;
     let mut last_error: Option<String> = None;
 
     for (uri_index, uri_str) in job.uris.iter().enumerate() {
@@ -315,9 +491,9 @@ async fn run_job_download(
 
         let backend = match create_backend_with_config(
             uri_str,
-            Some(&http_cfg),
-            Some(&ftp_cfg),
-            Some(&sftp_cfg),
+            Some(&ctx.http_cfg),
+            Some(&ctx.ftp_cfg),
+            Some(&ctx.sftp_cfg),
         ) {
             Ok(backend) => backend,
             Err(error) => {
@@ -327,7 +503,7 @@ async fn run_job_download(
             }
         };
 
-        let probe = match backend.probe(&parsed_url, &probe_ctx).await {
+        let probe = match backend.probe(&parsed_url, &ctx.probe_ctx).await {
             Ok(probe) => probe,
             Err(error) => {
                 warn!(%gid, uri = %parsed_url, error = %error, "failed to probe mirror");
@@ -337,96 +513,14 @@ async fn run_job_download(
         };
 
         if out_path.is_none() {
-            let resolved = if job.options.out.is_none() {
-                if let Some(filename) = probe.suggested_filename.clone() {
-                    let path = job
-                        .out_path
-                        .parent()
-                        .unwrap_or_else(|| std::path::Path::new("."))
-                        .join(filename);
-                    engine.registry.update(gid, |job| {
-                        job.out_path = path.clone();
-                    });
-                    path
-                } else {
-                    job.out_path.clone()
-                }
-            } else {
-                job.out_path.clone()
-            };
-            out_path = Some(resolved);
+            out_path = Some(resolve_output_path(&engine, gid, &job, &probe));
         }
 
         if segments.is_none() {
-            let file_size = probe.size.unwrap_or(0);
-            let max_conn = job.options.max_connections;
-            let mut resolved_connections = if probe.supports_range && file_size > 0 {
-                max_conn.min((file_size / 1024).max(1) as u32)
-            } else {
-                1
-            };
-            if probe.supports_range && file_size > 0 && engine.config.min_split_size > 0 {
-                let max_by_min = (file_size / engine.config.min_split_size).max(1) as u32;
-                resolved_connections = resolved_connections.min(max_by_min);
-            }
-
-            engine.registry.update(gid, |job| {
-                job.total_size = Some(file_size);
-                job.connections = resolved_connections;
-            });
-
-            let ranges = if file_size > 0 {
-                plan_segments(file_size, resolved_connections)
-            } else {
-                vec![(0u64, u64::MAX)]
-            };
-            let mut resolved_segments = init_segment_states(&ranges);
-
-            if let Some(store) = engine.store() {
-                match store.list_segments(gid) {
-                    Ok(persisted) if !persisted.is_empty() => {
-                        for (seg_id, persisted_state) in &persisted {
-                            if let Some(seg) = resolved_segments.get_mut(*seg_id as usize) {
-                                if persisted_state.downloaded > 0
-                                    && persisted_state.downloaded <= seg.size()
-                                {
-                                    seg.downloaded = persisted_state.downloaded;
-                                    seg.status = SegmentStatus::Pending;
-                                    info!(
-                                        %gid, seg_id, resumed = persisted_state.downloaded,
-                                        "resumed segment from checkpoint"
-                                    );
-                                }
-                            }
-                        }
-                    }
-                    Ok(_) => {}
-                    Err(e) => {
-                        warn!(%gid, error = %e, "failed to load persisted segments, starting fresh");
-                    }
-                }
-            }
-
-            on_checkpoint = engine.store().map(|store| {
-                let store = Arc::clone(store);
-                let seg_ranges: Vec<(u64, u64)> =
-                    resolved_segments.iter().map(|s| (s.start, s.end)).collect();
-                Arc::new(move |seg_id: u32, bytes_downloaded: u64| {
-                    let (start, end) = seg_ranges.get(seg_id as usize).copied().unwrap_or((0, 0));
-                    let seg = raria_core::segment::SegmentState {
-                        start,
-                        end,
-                        downloaded: bytes_downloaded,
-                        etag: None,
-                        status: raria_core::segment::SegmentStatus::Active,
-                    };
-                    if let Err(e) = store.put_segment(gid, seg_id, &seg) {
-                        tracing::warn!(%gid, seg_id, error = %e, "failed to checkpoint segment progress");
-                    }
-                }) as Arc<dyn Fn(u32, u64) + Send + Sync>
-            });
-            effective_connections = Some(resolved_connections);
-            segments = Some(resolved_segments);
+            let (conns, segs, ckpt) = plan_download_segments(&engine, gid, &job, &probe);
+            effective_connections = Some(conns);
+            segments = Some(segs);
+            on_checkpoint = ckpt;
         }
 
         let executor_cfg = apply_global_retry_policy(
@@ -438,8 +532,8 @@ async fn run_job_download(
                 request_timeout: std::time::Duration::from_secs(
                     engine.config.timeout.unwrap_or(60),
                 ),
-                request_headers: request_headers.clone(),
-                request_auth: request_auth.clone(),
+                request_headers: ctx.request_headers.clone(),
+                request_auth: ctx.request_auth.clone(),
                 request_etag: probe.etag.clone(),
                 ..Default::default()
             },
@@ -468,18 +562,7 @@ async fn run_job_download(
             .collect();
 
         if all_done {
-            engine.registry.update(gid, |job| {
-                job.downloaded = downloaded_total;
-                job.connections = 0;
-            });
-            engine.complete_job(gid)?;
-            if let Some(store) = engine.store() {
-                if let Err(e) = store.remove_segments(gid) {
-                    tracing::warn!(%gid, error = %e, "failed to clean up segment checkpoints");
-                }
-            }
-            info!(%gid, bytes = downloaded_total, "daemon: download complete");
-            return Ok(());
+            return finalize_complete(&engine, gid, downloaded_total);
         }
 
         if !failed.is_empty() {
@@ -507,18 +590,7 @@ async fn run_job_download(
             return Ok(());
         }
 
-        engine.registry.update(gid, |job| {
-            job.downloaded = downloaded_total;
-            job.connections = 0;
-        });
-        if let Some(store) = engine.store() {
-            for (seg_id, seg) in segments_mut.iter().enumerate() {
-                if let Err(e) = store.put_segment(gid, seg_id as u32, seg) {
-                    tracing::warn!(%gid, seg_id, error = %e, "failed to persist interrupted segment state");
-                }
-            }
-        }
-        info!(%gid, downloaded = downloaded_total, "daemon: download interrupted");
+        persist_interrupted_segments(&engine, gid, segments_mut, downloaded_total);
         return Ok(());
     }
 
