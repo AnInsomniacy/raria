@@ -489,6 +489,53 @@ mod tests {
     }
 
     #[test]
+    fn range_jobs_cannot_transition_to_seeding() {
+        let mut job = Job::new_range(vec![], PathBuf::from("/tmp/f"));
+        job.transition(Status::Active).unwrap();
+
+        let err = job.transition(Status::Seeding).unwrap_err();
+        assert_eq!(err.from, Status::Active);
+        assert_eq!(err.to, Status::Seeding);
+        assert_eq!(job.status, Status::Active);
+    }
+
+    #[test]
+    fn bt_download_complete_can_transition_to_seeding_once() {
+        let mut job = Job::new_bt(
+            vec!["magnet:?xt=urn:btih:abc123".into()],
+            PathBuf::from("/tmp/downloads"),
+        );
+        job.transition(Status::Active).unwrap();
+
+        job.record_bt_download_complete(BtCompletionDisposition::Seed)
+            .unwrap();
+
+        assert_eq!(job.status, Status::Seeding);
+        assert!(job.bt_download_complete_emitted());
+
+        let err = job
+            .record_bt_download_complete(BtCompletionDisposition::Seed)
+            .unwrap_err();
+        assert_eq!(err, BtSemanticError::AlreadyEmitted);
+        assert_eq!(job.status, Status::Seeding);
+    }
+
+    #[test]
+    fn bt_download_complete_can_finish_without_seeding() {
+        let mut job = Job::new_bt(
+            vec!["magnet:?xt=urn:btih:abc123".into()],
+            PathBuf::from("/tmp/downloads"),
+        );
+        job.transition(Status::Active).unwrap();
+
+        job.record_bt_download_complete(BtCompletionDisposition::Complete)
+            .unwrap();
+
+        assert_eq!(job.status, Status::Complete);
+        assert!(job.bt_download_complete_emitted());
+    }
+
+    #[test]
     fn removed_is_terminal() {
         let mut job = Job::new_range(vec![], PathBuf::from("/tmp/f"));
         job.transition(Status::Active).unwrap();
