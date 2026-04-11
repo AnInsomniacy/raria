@@ -406,7 +406,7 @@ async fn bt_service_status_exposes_reachable_bt_metadata_fields() {
     assert_eq!(status.piece_length, Some(16 * 1024));
     assert_eq!(
         status.num_pieces,
-        Some((seed.payload.len() as u64).div_ceil((16 * 1024) as u64))
+        Some(status.total_size.div_ceil((16 * 1024) as u64))
     );
 
     service.shutdown().await;
