@@ -342,15 +342,13 @@ impl BtService {
         } else {
             (0, 0)
         };
-        let (num_peers, num_seeders) = self
-            .live_peer_counts(handle)
-            .await
-            .unwrap_or_else(|_| {
-                stats.live
-                    .as_ref()
-                    .map(|live| (live.snapshot.peer_stats.live as u32, 0))
-                    .unwrap_or((0, 0))
-            });
+        let (num_peers, num_seeders) = self.live_peer_counts(handle).await.unwrap_or_else(|_| {
+            stats
+                .live
+                .as_ref()
+                .map(|live| (live.snapshot.peer_stats.live as u32, 0))
+                .unwrap_or((0, 0))
+        });
 
         // Id20 is [u8; 20] — format as hex.
         let info_hash_bytes = managed.info_hash();
@@ -611,6 +609,8 @@ mod tests {
             PathBuf::from("/tmp"),
             BtServiceConfig {
                 socks_proxy_url: Some("http://127.0.0.1:8080".into()),
+                disable_dht: true,
+                disable_dht_persistence: true,
                 ..Default::default()
             },
         )

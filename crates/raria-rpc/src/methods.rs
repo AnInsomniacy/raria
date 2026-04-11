@@ -240,6 +240,7 @@ impl Aria2RpcServer for RpcHandler {
         let opts = options.unwrap_or_default();
         let dir = opts
             .dir
+            .clone()
             .map(PathBuf::from)
             .unwrap_or_else(|| self.engine.config.dir.clone());
         let connections = opts
@@ -251,7 +252,7 @@ impl Aria2RpcServer for RpcHandler {
         let spec = AddUriSpec {
             uris,
             dir,
-            filename: opts.filename,
+            filename: opts.filename.clone(),
             connections,
         };
 
@@ -263,54 +264,7 @@ impl Aria2RpcServer for RpcHandler {
         // Apply per-job options from RPC request.
         let gid = handle.gid;
         self.engine.registry.update(gid, |job| {
-            if let Some(ref conns) = opts.connections {
-                if let Ok(n) = conns.parse::<u32>() {
-                    job.options.max_connections = n;
-                }
-            }
-            if let Some(ref limit) = opts.max_download_limit {
-                if let Ok(bps) = limit.parse::<u64>() {
-                    job.options.max_download_limit = bps;
-                }
-            }
-            if let Some(ref headers) = opts.header {
-                for h in headers {
-                    if let Some((key, value)) = h.split_once(':') {
-                        job.options
-                            .headers
-                            .push((key.trim().to_string(), value.trim().to_string()));
-                    }
-                }
-            }
-            if let Some(ref cksum) = opts.checksum {
-                job.options.checksum = Some(cksum.clone());
-            }
-            if let Some(ref user) = opts.http_user {
-                job.options.http_user = Some(user.clone());
-            }
-            if let Some(ref passwd) = opts.http_passwd {
-                job.options.http_passwd = Some(passwd.clone());
-            }
-            if let Some(ref select_file) = opts.select_file {
-                if let Ok(files) = parse_select_file_spec(select_file) {
-                    job.options.bt_selected_files = Some(files);
-                }
-            }
-            if let Some(ref trackers) = opts.bt_tracker {
-                if let Ok(trackers) = parse_bt_tracker_spec(trackers) {
-                    job.options.bt_trackers = Some(trackers);
-                }
-            }
-            if let Some(ref ratio) = opts.seed_ratio {
-                if let Ok(ratio) = ratio.parse::<f64>() {
-                    job.options.seed_ratio = Some(ratio);
-                }
-            }
-            if let Some(ref minutes) = opts.seed_time {
-                if let Ok(minutes) = minutes.parse::<u64>() {
-                    job.options.seed_time = Some(minutes);
-                }
-            }
+            apply_common_rpc_job_options(job, &opts);
         });
 
         debug!(gid = %handle.gid, "RPC addUri succeeded");
@@ -392,12 +346,13 @@ impl Aria2RpcServer for RpcHandler {
     async fn add_metalink(
         &self,
         metalink_base64: String,
-        _options: Option<RpcOptions>,
+        options: Option<RpcOptions>,
     ) -> RpcResult<Vec<String>> {
         use base64::Engine as Base64Engine;
         use raria_core::engine::AddUriSpec;
         use raria_metalink::normalizer::{NormalizeOptions, normalize};
         use raria_metalink::parser::parse_metalink;
+        let opts = options.unwrap_or_default();
 
         // Decode base64 → XML bytes.
         let xml_bytes = base64::engine::general_purpose::STANDARD
@@ -424,31 +379,39 @@ impl Aria2RpcServer for RpcHandler {
                 continue;
             }
 
+            let dir = opts
+                .dir
+                .as_ref()
+                .map(PathBuf::from)
+                .unwrap_or_else(|| self.engine.config.dir.clone());
+            let connections = opts
+                .connections
+                .as_ref()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(16);
             let spec = AddUriSpec {
                 uris: seed.uris.clone(),
                 filename: Some(seed.filename.clone()),
-                dir: self.engine.config.dir.clone(),
-                connections: 16,
+                dir,
+                connections,
             };
 
             match self.engine.add_uri(&spec) {
                 Ok(handle) => {
-                    if let Some(checksum) = seed.checksum.as_ref() {
-                        let checksum_spec = format!("{}={}", checksum.algo, checksum.value);
-                        self.engine.registry.update(handle.gid, |job| {
-                            job.options.checksum = Some(checksum_spec.clone());
-                        });
-                    }
                     self.engine.registry.update(handle.gid, |job| {
+                        apply_common_rpc_job_options(job, &opts);
+                        if let Some(checksum) = seed.checksum.as_ref() {
+                            job.options.checksum =
+                                Some(format!("{}={}", checksum.algo, checksum.value));
+                        }
                         job.total_size = seed.expected_size;
-                        job.piece_checksum =
-                            seed.piece_checksum.as_ref().map(|piece_checksum| {
-                                raria_core::job::PieceChecksum {
-                                    algo: piece_checksum.algo.clone(),
-                                    length: piece_checksum.length,
-                                    hashes: piece_checksum.hashes.clone(),
-                                }
-                            });
+                        job.piece_checksum = seed.piece_checksum.as_ref().map(|piece_checksum| {
+                            raria_core::job::PieceChecksum {
+                                algo: piece_checksum.algo.clone(),
+                                length: piece_checksum.length,
+                                hashes: piece_checksum.hashes.clone(),
+                            }
+                        });
                     });
                     let gid_str = format!("{:016x}", handle.gid.as_raw());
                     debug!(gid = %gid_str, name = %seed.filename, "metalink: added job");
@@ -947,6 +910,57 @@ fn parse_select_file_spec(spec: &str) -> anyhow::Result<Vec<usize>> {
         "select-file must contain at least one index"
     );
     Ok(result)
+}
+
+fn apply_common_rpc_job_options(job: &mut raria_core::job::Job, opts: &RpcOptions) {
+    if let Some(ref conns) = opts.connections {
+        if let Ok(n) = conns.parse::<u32>() {
+            job.options.max_connections = n;
+        }
+    }
+    if let Some(ref limit) = opts.max_download_limit {
+        if let Ok(bps) = limit.parse::<u64>() {
+            job.options.max_download_limit = bps;
+        }
+    }
+    if let Some(ref headers) = opts.header {
+        for h in headers {
+            if let Some((key, value)) = h.split_once(':') {
+                job.options
+                    .headers
+                    .push((key.trim().to_string(), value.trim().to_string()));
+            }
+        }
+    }
+    if let Some(ref cksum) = opts.checksum {
+        job.options.checksum = Some(cksum.clone());
+    }
+    if let Some(ref user) = opts.http_user {
+        job.options.http_user = Some(user.clone());
+    }
+    if let Some(ref passwd) = opts.http_passwd {
+        job.options.http_passwd = Some(passwd.clone());
+    }
+    if let Some(ref select_file) = opts.select_file {
+        if let Ok(files) = parse_select_file_spec(select_file) {
+            job.options.bt_selected_files = Some(files);
+        }
+    }
+    if let Some(ref trackers) = opts.bt_tracker {
+        if let Ok(trackers) = parse_bt_tracker_spec(trackers) {
+            job.options.bt_trackers = Some(trackers);
+        }
+    }
+    if let Some(ref ratio) = opts.seed_ratio {
+        if let Ok(ratio) = ratio.parse::<f64>() {
+            job.options.seed_ratio = Some(ratio);
+        }
+    }
+    if let Some(ref minutes) = opts.seed_time {
+        if let Ok(minutes) = minutes.parse::<u64>() {
+            job.options.seed_time = Some(minutes);
+        }
+    }
 }
 
 fn parse_bt_tracker_spec(spec: &str) -> anyhow::Result<Vec<String>> {

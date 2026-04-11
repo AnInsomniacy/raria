@@ -249,4 +249,71 @@ mod tests {
 
         cancel.cancel();
     }
+
+    #[tokio::test]
+    async fn add_metalink_propagates_common_rpc_options_to_each_job() {
+        let (engine, url, cancel) = spawn_server().await;
+
+        let output_dir = std::env::temp_dir().join(format!(
+            "rpc_test_metalink_opts_{}",
+            std::process::id()
+        ));
+
+        let metalink_xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<metalink version="3.0" xmlns="http://www.metalinker.org/">
+  <files>
+    <file name="file1.bin">
+      <resources>
+        <url type="http">https://cdn.com/file1.bin</url>
+      </resources>
+    </file>
+    <file name="file2.bin">
+      <resources>
+        <url type="http">https://cdn.com/file2.bin</url>
+      </resources>
+    </file>
+  </files>
+</metalink>"#;
+
+        use base64::Engine as Base64Engine;
+        let encoded = base64::engine::general_purpose::STANDARD.encode(metalink_xml);
+
+        let resp = rpc_call(
+            &url,
+            "aria2.addMetalink",
+            serde_json::json!([
+                encoded,
+                {
+                    "dir": output_dir,
+                    "split": "4",
+                    "max-download-limit": "102400",
+                    "header": ["X-Metalink-Header: from-rpc"],
+                    "http-user": "rpc-user",
+                    "http-passwd": "rpc-pass"
+                }
+            ]),
+        )
+        .await;
+
+        assert!(resp.get("error").is_none(), "should succeed: {resp}");
+        let result = resp["result"].as_array().unwrap();
+        assert_eq!(result.len(), 2, "two files = two GIDs");
+
+        for gid_str in result {
+            let gid_str = gid_str.as_str().unwrap();
+            let gid = raria_core::job::Gid::from_raw(u64::from_str_radix(gid_str, 16).unwrap());
+            let job = engine.registry.get(gid).unwrap();
+            assert_eq!(job.out_path.parent(), Some(output_dir.as_path()));
+            assert_eq!(job.options.max_connections, 4);
+            assert_eq!(job.options.max_download_limit, 102400);
+            assert_eq!(
+                job.options.headers,
+                vec![("X-Metalink-Header".into(), "from-rpc".into())]
+            );
+            assert_eq!(job.options.http_user.as_deref(), Some("rpc-user"));
+            assert_eq!(job.options.http_passwd.as_deref(), Some("rpc-pass"));
+        }
+
+        cancel.cancel();
+    }
 }
