@@ -45,6 +45,11 @@ When `bootstrap_addrs` is not provided, librqbit falls back to public DHT bootst
 Current raria code only forwards `disable_dht` / `disable_dht_persistence`, plus BT persistence and
 fastresume. It still cannot inject `bootstrap_addrs` or a local-only DHT topology.
 
+There is an internal recovery path where `PersistentDht` reloads `listen_addr`, `routing_table`,
+and `peer_store` from its JSON persistence file, but that format is not exposed as a stable public
+test seam from raria. In practice, that still leaves us without a straightforward deterministic
+local DHT harness on the current product path.
+
 ### 3. That makes a real local DHT proof non-deterministic from raria
 
 Because `BtServiceConfig` cannot inject `dht_config`, a raria test cannot point the BT session at
