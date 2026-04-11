@@ -1,3 +1,4 @@
+#![deny(unsafe_code)]
 //! # raria-http
 //!
 //! HTTP/HTTPS download backend for raria.

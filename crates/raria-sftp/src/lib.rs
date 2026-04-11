@@ -1,3 +1,4 @@
+#![deny(unsafe_code)]
 //! # raria-sftp
 //!
 //! SFTP download backend for raria.

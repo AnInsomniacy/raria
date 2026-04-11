@@ -1,3 +1,4 @@
+#![deny(unsafe_code)]
 //! # raria-rpc
 //!
 //! aria2-compatible JSON-RPC/WebSocket server for raria.

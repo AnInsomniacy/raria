@@ -1,3 +1,4 @@
+#![deny(unsafe_code)]
 //! # raria-bt
 //!
 //! BitTorrent download service for raria, powered by `librqbit`.

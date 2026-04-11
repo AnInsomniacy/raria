@@ -1,3 +1,4 @@
+#![deny(unsafe_code)]
 //! # raria-range
 //!
 //! Protocol-agnostic byte-range download executor.

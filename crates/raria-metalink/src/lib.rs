@@ -1,3 +1,4 @@
+#![deny(unsafe_code)]
 //! # raria-metalink
 //!
 //! Metalink 4.0 (RFC 5854) parser for raria.
