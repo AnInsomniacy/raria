@@ -60,8 +60,14 @@ impl<S: AsyncRead + Unpin> AsyncRead for FtpOwnedStream<S> {
     }
 }
 
-// The wrapper is Send if both components are Send.
-// AsyncNativeTlsFtpStream is Send, and the DataStream owns its socket.
+// SAFETY: FtpOwnedStream is Send because:
+// 1. `_ftp` (AsyncNativeTlsFtpStream) is exclusively owned and never accessed
+//    after construction — it exists solely to keep the FTP control socket alive.
+//    No references to `_ftp` escape this struct, so no concurrent access is possible.
+// 2. `data` (S) is required to be Send by the bound `S: AsyncRead + Unpin + Send`.
+// 3. suppaftp does not implement Send on AsyncNativeTlsFtpStream due to internal
+//    use of Rc/RefCell in its async TLS path; however, our usage pattern (create,
+//    store in struct, drop together) is single-owner and never shared across threads.
 unsafe impl<S: AsyncRead + Unpin + Send> Send for FtpOwnedStream<S> {}
 
 /// FTP/FTPS download backend.
