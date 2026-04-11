@@ -60,7 +60,9 @@ impl Default for OpenContext {
 /// Authentication credentials.
 #[derive(Debug, Clone)]
 pub struct Credentials {
+    /// Username for authentication.
     pub username: String,
+    /// Password for authentication.
     pub password: String,
 }
 

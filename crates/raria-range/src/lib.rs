@@ -1,4 +1,5 @@
 #![deny(unsafe_code)]
+#![warn(missing_docs)]
 //! # raria-range
 //!
 //! Protocol-agnostic byte-range download executor.
@@ -13,5 +14,7 @@
 //! - [`backend::ByteSourceBackend`] — trait for fetching byte ranges
 //! - [`executor::SegmentExecutor`] — parallel segment download orchestrator
 
+/// Protocol-agnostic download backend trait and shared types.
 pub mod backend;
+/// Parallel segment download executor with retry and checkpointing.
 pub mod executor;

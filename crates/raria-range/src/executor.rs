@@ -107,10 +107,15 @@ impl Default for ExecutorConfig {
 /// Per-segment result collected after all tasks complete.
 #[derive(Debug, Clone)]
 pub struct SegmentResult {
+    /// Zero-based segment index.
     pub segment_id: u32,
+    /// Bytes successfully downloaded in this segment.
     pub bytes_downloaded: u64,
+    /// Final status of this segment (Done, Failed, Pending).
     pub status: SegmentStatus,
+    /// Error message if the segment failed.
     pub error: Option<String>,
+    /// Number of retry attempts consumed.
     pub retries_used: u32,
 }
 
