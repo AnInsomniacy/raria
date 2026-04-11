@@ -82,36 +82,45 @@ https://example.com/file2.zip
     }
 
     #[test]
-    fn richer_api_parses_per_uri_options_without_breaking_legacy_api() {
+    fn richer_entries_capture_supported_per_uri_options_while_legacy_api_stays_flat() {
         let content = "\
-https://mirror1.com/file.zip\thttps://mirror2.com/file.zip
+https://mirror1.com/f.zip\thttps://mirror2.com/f.zip
   dir=/tmp/downloads
-  out=custom_name.zip
-  checksum=sha-256=abcdef
+  out=custom.bin
+  checksum=sha-256=abc123
+  header=X-Test: from-input
+  http-user=alice
+  http-passwd=secret
+  max-download-limit=1024
 ";
 
-        let entries = parse_input_file_entries(content);
-        assert_eq!(entries.len(), 1);
-        assert_eq!(
-            entries[0].uris,
-            vec![
-                "https://mirror1.com/file.zip".to_string(),
-                "https://mirror2.com/file.zip".to_string()
-            ]
-        );
-        assert_eq!(
-            entries[0].options,
-            vec![
-                ("dir".to_string(), "/tmp/downloads".to_string()),
-                ("out".to_string(), "custom_name.zip".to_string()),
-                ("checksum".to_string(), "sha-256=abcdef".to_string()),
-            ]
-        );
+        let legacy = parse_input_file(content);
+        assert_eq!(legacy, vec!["https://mirror1.com/f.zip\thttps://mirror2.com/f.zip"]);
 
-        let legacy_uris = parse_input_file(content);
+        let entries = raria_core::input_file::parse_input_file_entries(content)
+            .expect("parse richer input-file entries");
+        assert_eq!(entries.len(), 1);
+
+        let entry = &entries[0];
         assert_eq!(
-            legacy_uris,
-            vec!["https://mirror1.com/file.zip\thttps://mirror2.com/file.zip".to_string()]
+            entry.uris,
+            vec![
+                "https://mirror1.com/f.zip".to_string(),
+                "https://mirror2.com/f.zip".to_string()
+            ]
+        );
+        assert_eq!(
+            entry.options.dir.as_deref(),
+            Some(std::path::Path::new("/tmp/downloads"))
+        );
+        assert_eq!(entry.options.out.as_deref(), Some("custom.bin"));
+        assert_eq!(entry.options.checksum.as_deref(), Some("sha-256=abc123"));
+        assert_eq!(entry.options.headers, vec!["X-Test: from-input"]);
+        assert_eq!(entry.options.http_user.as_deref(), Some("alice"));
+        assert_eq!(entry.options.http_passwd.as_deref(), Some("secret"));
+        assert_eq!(
+            entry.options.extra.get("max-download-limit").map(String::as_str),
+            Some("1024")
         );
     }
 

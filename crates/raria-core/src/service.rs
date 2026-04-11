@@ -124,4 +124,24 @@ mod tests {
         assert_eq!(detect_scheme("not-a-url"), None);
         assert_eq!(detect_scheme(""), None);
     }
+
+    #[test]
+    fn classify_download_error_heuristics_cover_transient_and_permanent_cases() {
+        assert_eq!(
+            classify_download_error("http status 404 not found"),
+            DownloadErrorClass::Permanent
+        );
+        assert_eq!(
+            classify_download_error("checksum mismatch for file.bin"),
+            DownloadErrorClass::Permanent
+        );
+        assert_eq!(
+            classify_download_error("timeout while reading response body"),
+            DownloadErrorClass::Transient
+        );
+        assert_eq!(
+            classify_download_error("connection reset by peer"),
+            DownloadErrorClass::Transient
+        );
+    }
 }
