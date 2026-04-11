@@ -211,7 +211,7 @@ async fn wait_for_bt_download(
         .await
         .expect("add torrent to BtService");
 
-    let first_peer = timeout(Duration::from_secs(60), async {
+    let first_peer = timeout(Duration::from_secs(120), async {
         loop {
             let peers = service.peer_list(&handle).await.unwrap_or_default();
             if let Some(peer) = peers.into_iter().next() {
@@ -274,6 +274,7 @@ fn persistence_dir_has_state(path: &Path) -> bool {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[serial_test::serial]
 async fn bt_service_downloads_real_torrent_from_seed_peer_and_exposes_peer_details() {
     let seed = start_seed_fixture(8 * 1024 * 1024)
         .await
@@ -318,6 +319,7 @@ async fn bt_service_downloads_real_torrent_from_seed_peer_and_exposes_peer_detai
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[serial_test::serial]
 async fn bt_service_completes_peer_download_through_socks5_proxy() {
     let seed = start_seed_fixture(4 * 1024 * 1024)
         .await
@@ -383,6 +385,7 @@ async fn bt_service_completes_peer_download_through_socks5_proxy() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[serial_test::serial]
 async fn bt_service_persists_fastresume_state_and_restores_progress_after_restart() {
     let seed = start_seed_fixture(64 * 1024 * 1024)
         .await
