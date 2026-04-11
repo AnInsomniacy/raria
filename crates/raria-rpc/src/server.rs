@@ -20,7 +20,7 @@ use axum::extract::State;
 use axum::extract::ws::{Message as WsMessage, WebSocket, WebSocketUpgrade};
 use axum::http::{HeaderMap, HeaderValue, Method, StatusCode};
 use axum::response::{IntoResponse, Response};
-use axum::routing::post;
+use axum::routing::{get, post};
 use futures::{SinkExt, StreamExt};
 use raria_core::engine::Engine;
 use std::net::SocketAddr;
@@ -63,6 +63,7 @@ struct RpcAppState {
     notify_tx: tokio::sync::broadcast::Sender<String>,
     max_request_size: usize,
     transport_policy: RpcTransportPolicy,
+    engine: Arc<Engine>,
 }
 
 #[derive(Clone, Debug)]
@@ -152,10 +153,12 @@ pub async fn start_rpc_server(
         notify_tx: notify_tx.clone(),
         max_request_size: 10 * 1024 * 1024,
         transport_policy: RpcTransportPolicy::new(rpc_secret, engine.config.rpc_allow_origin_all),
+        engine: Arc::clone(&engine),
     };
     let mut app = Router::new()
         .route("/", post(handle_http_rpc).get(handle_ws_rpc))
         .route("/jsonrpc", post(handle_http_rpc).get(handle_ws_rpc))
+        .route("/health", get(handle_health))
         .with_state(app_state);
     if engine.config.rpc_allow_origin_all {
         let cors = CorsLayer::new()
@@ -187,6 +190,36 @@ pub async fn start_rpc_server(
         rpc: addr,
         ws_notify: addr,
     })
+}
+
+/// Health check endpoint — returns server status as JSON.
+///
+/// No authentication required. Intended for monitoring / load balancers.
+async fn handle_health(State(state): State<RpcAppState>) -> Response {
+    use raria_core::job::Status;
+
+    let engine = &state.engine;
+    let num_active = engine.registry.by_status(Status::Active).len();
+    let num_waiting = engine.registry.by_status(Status::Waiting).len();
+    let num_stopped = engine.registry.by_status(Status::Complete).len()
+        + engine.registry.by_status(Status::Error).len()
+        + engine.registry.by_status(Status::Removed).len();
+
+    let body = serde_json::json!({
+        "status": "ok",
+        "version": env!("CARGO_PKG_VERSION"),
+        "uptime_seconds": engine.uptime_seconds(),
+        "num_active": num_active,
+        "num_waiting": num_waiting,
+        "num_stopped": num_stopped,
+    });
+
+    let mut resp = axum::Json(body).into_response();
+    resp.headers_mut().insert(
+        axum::http::header::CONTENT_TYPE,
+        HeaderValue::from_static("application/json"),
+    );
+    resp
 }
 
 async fn handle_http_rpc(State(state): State<RpcAppState>, body: Bytes) -> Response {

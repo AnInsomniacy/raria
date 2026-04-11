@@ -25,6 +25,7 @@ use crate::scheduler::Scheduler;
 use anyhow::{Context, Result};
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Instant;
 use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
@@ -61,6 +62,8 @@ pub struct Engine {
     store: Option<Arc<Store>>,
     shutdown: CancellationToken,
     work_notify: Arc<Notify>,
+    /// Monotonic timestamp of engine creation (for uptime tracking).
+    started_at: Instant,
 }
 
 impl Engine {
@@ -80,6 +83,7 @@ impl Engine {
             store: None,
             shutdown: CancellationToken::new(),
             work_notify: Arc::new(Notify::new()),
+            started_at: Instant::now(),
         }
     }
 
@@ -99,12 +103,18 @@ impl Engine {
             store: Some(store),
             shutdown: CancellationToken::new(),
             work_notify: Arc::new(Notify::new()),
+            started_at: Instant::now(),
         }
     }
 
     /// Get a reference to the persistent store, if configured.
     pub fn store(&self) -> Option<&Arc<Store>> {
         self.store.as_ref()
+    }
+
+    /// Returns the number of seconds since this engine was created.
+    pub fn uptime_seconds(&self) -> u64 {
+        self.started_at.elapsed().as_secs()
     }
 
     /// Restore jobs from the persistent store into the in-memory registry.
@@ -1166,5 +1176,15 @@ mod tests {
     fn save_session_without_store_fails() {
         let engine = Engine::new(default_config());
         assert!(engine.save_session().is_err());
+    }
+    #[test]
+    fn uptime_seconds_increases_over_time() {
+        let engine = Engine::new(default_config());
+        let t0 = engine.uptime_seconds();
+        // uptime should be at least 0 (just created).
+        assert!(t0 < 2, "fresh engine uptime should be near zero, got {t0}");
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        let t1 = engine.uptime_seconds();
+        assert!(t1 >= t0, "uptime must not decrease");
     }
 }
