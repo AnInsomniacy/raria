@@ -70,39 +70,61 @@ fn sync_bt_status_into_job(
     status: &raria_bt::service::BtStatus,
     bt_files: Option<Vec<BtFile>>,
     bt_peers: Option<Vec<BtPeer>>,
-) {
-    job.downloaded = status.downloaded;
-    job.download_speed = status.download_speed;
-    job.upload_speed = status.upload_speed;
-    job.connections = status.num_peers;
-    if status.total_size > 0 {
-        job.total_size = Some(status.total_size);
-    }
-    if let Some(bt_files) = bt_files {
-        job.bt_files = Some(bt_files);
-    }
-    if let Some(bt_peers) = bt_peers {
-        job.bt_peers = Some(bt_peers);
-    }
+) -> Result<BtStatusSyncOutcome> {
+    engine
+        .registry
+        .update(gid, |job| -> Result<BtStatusSyncOutcome> {
+            job.downloaded = status.downloaded;
+            job.download_speed = status.download_speed;
+            job.upload_speed = status.upload_speed;
+            job.connections = status.num_peers;
+            if status.total_size > 0 {
+                job.total_size = Some(status.total_size);
+            }
+            if let Some(bt_files) = bt_files {
+                job.bt_files = Some(bt_files);
+            }
+            if let Some(bt_peers) = bt_peers {
+                job.bt_peers = Some(bt_peers);
+            }
 
-    let bt = job.bt.get_or_insert_with(Default::default);
-    if !status.info_hash.is_empty() {
-        bt.info_hash = Some(status.info_hash.clone());
-    }
-    if let Some(torrent_name) = &status.torrent_name {
-        bt.torrent_name = Some(torrent_name.clone());
-    }
-    if let Some(announce_list) = &status.announce_list {
-        bt.announce_list = Some(announce_list.clone());
-    }
-    bt.uploaded = Some(status.uploaded);
-    bt.num_seeders = Some(status.num_seeders);
-    if let Some(piece_length) = status.piece_length {
-        bt.piece_length = Some(piece_length);
-    }
-    if let Some(num_pieces) = status.num_pieces {
-        bt.num_pieces = Some(num_pieces);
-    }
+            let bt = job.bt.get_or_insert_with(Default::default);
+            if !status.info_hash.is_empty() {
+                bt.info_hash = Some(status.info_hash.clone());
+            }
+            if let Some(torrent_name) = status.torrent_name.as_ref() {
+                bt.torrent_name = Some(torrent_name.clone());
+            }
+            if let Some(announce_list) = status.announce_list.as_ref() {
+                bt.announce_list = Some(announce_list.clone());
+            }
+            bt.uploaded = Some(status.uploaded);
+            bt.num_seeders = Some(status.num_seeders);
+            if status.piece_length > 0 {
+                bt.piece_length = Some(status.piece_length);
+            }
+            if status.num_pieces > 0 {
+                bt.num_pieces = Some(status.num_pieces);
+            }
+
+            let completion_action = if status.is_complete && job.status == Status::Active {
+                if job.options.seed_ratio.is_some() || job.options.seed_time.is_some() {
+                    job.record_bt_download_complete(BtCompletionDisposition::Seed)?;
+                    BtCompletionAction::EnterSeeding
+                } else {
+                    BtCompletionAction::Complete
+                }
+            } else {
+                BtCompletionAction::None
+            };
+
+            Ok(BtStatusSyncOutcome {
+                completion_action,
+                seed_ratio: job.options.seed_ratio,
+                seed_time: job.options.seed_time,
+            })
+        })
+        .context("BT job not found in registry")?
 }
 
 fn advance_bt_lifecycle(
