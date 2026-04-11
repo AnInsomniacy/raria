@@ -2,8 +2,8 @@ use anyhow::{Context, Result};
 use base64::Engine as Base64Engine;
 use raria_bt::service::{BtService, BtServiceConfig, BtSource};
 use raria_core::engine::Engine;
-use raria_core::job::{BtCompletionDisposition, Gid, Status};
-use raria_core::job::{BtFile, BtPeer};
+use raria_core::job::Gid;
+use raria_core::job::{BtCompletionDisposition, BtFile, BtPeer, Status};
 use raria_core::progress::DownloadEvent;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -58,113 +58,93 @@ fn bt_service_config(engine: &Engine) -> BtServiceConfig {
     }
 }
 
-fn sync_bt_status_into_job(
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BtCompletionAction {
+    None,
+    EnterSeeding,
+    Complete,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct BtStatusSyncOutcome {
+    completion_action: BtCompletionAction,
+    seed_ratio: Option<f64>,
+    seed_time: Option<u64>,
+}
+
+fn sync_bt_job_from_status(
     engine: &Engine,
     gid: Gid,
     status: &raria_bt::service::BtStatus,
     bt_files: Option<Vec<BtFile>>,
     bt_peers: Option<Vec<BtPeer>>,
-) -> Result<()> {
+) -> Result<BtStatusSyncOutcome> {
     engine
         .registry
-        .update(gid, |job| {
+        .update(gid, |job| -> Result<BtStatusSyncOutcome> {
             job.downloaded = status.downloaded;
             job.download_speed = status.download_speed;
             job.upload_speed = status.upload_speed;
-            if job.total_size.is_none() && status.total_size > 0 {
+            job.connections = status.num_peers;
+            if status.total_size > 0 {
                 job.total_size = Some(status.total_size);
             }
-            if bt_files.is_some() {
-                job.bt_files = bt_files.clone();
+            if let Some(bt_files) = bt_files {
+                job.bt_files = Some(bt_files);
             }
-            if bt_peers.is_some() {
-                job.bt_peers = bt_peers.clone();
+            if let Some(bt_peers) = bt_peers {
+                job.bt_peers = Some(bt_peers);
             }
+
             let bt = job.bt.get_or_insert_with(Default::default);
-            bt.info_hash = Some(status.info_hash.clone());
-            bt.torrent_name = status.torrent_name.clone();
-            bt.announce_list = status.announce_list.clone();
+            if !status.info_hash.is_empty() {
+                bt.info_hash = Some(status.info_hash.clone());
+            }
+            if let Some(torrent_name) = status.torrent_name.as_ref() {
+                bt.torrent_name = Some(torrent_name.clone());
+            }
+            if let Some(announce_list) = status.announce_list.as_ref() {
+                bt.announce_list = Some(announce_list.clone());
+            }
             bt.uploaded = Some(status.uploaded);
             bt.num_seeders = Some(status.num_seeders);
-            bt.piece_length = status.piece_length;
-            bt.num_pieces = status.num_pieces;
-        })
-        .context("job not found while syncing bt status")?;
-    Ok(())
-}
+            if status.piece_length > 0 {
+                bt.piece_length = Some(status.piece_length);
+            }
+            if status.num_pieces > 0 {
+                bt.num_pieces = Some(status.num_pieces);
+            }
 
-fn persist_bt_job_if_possible(engine: &Engine, gid: Gid) -> Result<()> {
-    if let Some(store) = engine.store() {
-        if let Some(job) = engine.registry.get(gid) {
-            store.put_job(&job)?;
-        }
-    }
-    Ok(())
-}
+            let completion_action = if status.is_complete && job.status == Status::Active {
+                if job.options.seed_ratio.is_some() || job.options.seed_time.is_some() {
+                    job.record_bt_download_complete(BtCompletionDisposition::Seed)?;
+                    BtCompletionAction::EnterSeeding
+                } else {
+                    BtCompletionAction::Complete
+                }
+            } else {
+                BtCompletionAction::None
+            };
 
-fn reconcile_bt_completion(
-    engine: &Engine,
-    gid: Gid,
-    status: &raria_bt::service::BtStatus,
-    seed_ratio: Option<f64>,
-    seed_time_minutes: Option<u64>,
-    seeding_started_at: &mut Option<Instant>,
-    now: Instant,
-) -> Result<bool> {
-    if !status.is_complete {
-        return Ok(false);
-    }
-
-    let job = engine
-        .registry
-        .get(gid)
-        .context("BT job not found while reconciling completion")?;
-    if job.status == Status::Active && !job.bt_download_complete_emitted() {
-        drop(job);
-        engine
-            .registry
-            .update(gid, |job| {
-                job.record_bt_download_complete(BtCompletionDisposition::Seed)
-                    .map_err(|error| anyhow::anyhow!(error))
+            Ok(BtStatusSyncOutcome {
+                completion_action,
+                seed_ratio: job.options.seed_ratio,
+                seed_time: job.options.seed_time,
             })
-            .context("BT job disappeared while entering seeding")?
-            .context("failed to record bt payload completion")?;
-        persist_bt_job_if_possible(engine, gid)?;
-        engine
-            .event_bus
-            .publish(DownloadEvent::BtDownloadComplete { gid });
-        seeding_started_at.get_or_insert(now);
-    }
+        })
+        .context("BT job not found in registry")?
+}
 
-    let job = engine
-        .registry
-        .get(gid)
-        .context("BT job missing after completion reconciliation")?;
-    if job.status != Status::Seeding {
-        return Ok(job.status == Status::Complete);
-    }
-    drop(job);
-
-    let started = seeding_started_at.get_or_insert(now);
-    let should_finish = if seed_ratio.is_none() && seed_time_minutes.is_none() {
-        true
-    } else {
-        should_stop_seeding(
-            status.downloaded,
-            status.uploaded,
-            seed_ratio,
-            seed_time_minutes,
-            *started,
-            now,
-        )
+fn persist_bt_runtime_job(engine: &Engine, gid: Gid) {
+    let Some(store) = engine.store() else {
+        return;
     };
-
-    if should_finish {
-        engine.complete_job(gid)?;
-        return Ok(true);
+    let Some(job) = engine.registry.get(gid) else {
+        return;
+    };
+    if let Err(error) = store.put_job(&job) {
+        warn!(%gid, error = %error, "failed to persist BT runtime state");
     }
-
-    Ok(false)
 }
 
 pub(crate) async fn run_bt_download(
@@ -220,7 +200,7 @@ pub(crate) async fn run_bt_download(
                     Ok(status) => {
                         let bt_files = bt_service.file_list(&handle).await.ok().map(map_bt_files);
                         let bt_peers = bt_service.peer_list(&handle).await.ok().map(map_bt_peers);
-                        sync_bt_status_into_job(
+                        let outcome = sync_bt_job_from_status(
                             engine.as_ref(),
                             gid,
                             &status,
@@ -228,17 +208,36 @@ pub(crate) async fn run_bt_download(
                             bt_peers,
                         )?;
 
-                        if reconcile_bt_completion(
-                            engine.as_ref(),
-                            gid,
-                            &status,
-                            job.options.seed_ratio,
-                            job.options.seed_time,
-                            &mut seeding_started_at,
-                            Instant::now(),
-                        )? {
-                            info!(%gid, "BT lifecycle complete");
-                            return Ok(());
+                        match outcome.completion_action {
+                            BtCompletionAction::Complete => {
+                                info!(%gid, "BT download complete");
+                                let _ = engine.complete_job(gid);
+                                return Ok(());
+                            }
+                            BtCompletionAction::EnterSeeding => {
+                                info!(%gid, "BT payload complete; entering seeding");
+                                persist_bt_runtime_job(engine.as_ref(), gid);
+                                engine
+                                    .event_bus
+                                    .publish(DownloadEvent::BtDownloadComplete { gid });
+                            }
+                            BtCompletionAction::None => {}
+                        }
+
+                        if status.is_complete && (outcome.seed_ratio.is_some() || outcome.seed_time.is_some()) {
+                            let started = seeding_started_at.get_or_insert_with(Instant::now);
+                            if should_stop_seeding(
+                                status.downloaded,
+                                status.uploaded,
+                                outcome.seed_ratio,
+                                outcome.seed_time,
+                                *started,
+                                Instant::now(),
+                            ) {
+                                info!(%gid, "BT seeding thresholds reached");
+                                let _ = engine.complete_job(gid);
+                                return Ok(());
+                            }
                         }
                     }
                     Err(e) => {
