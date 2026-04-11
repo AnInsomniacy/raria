@@ -613,6 +613,7 @@ fn event_to_aria2_method(event: &raria_core::progress::DownloadEvent) -> Option<
         DownloadEvent::Paused { .. } => Some("aria2.onDownloadPause"),
         DownloadEvent::Stopped { .. } => Some("aria2.onDownloadStop"),
         DownloadEvent::Complete { .. } => Some("aria2.onDownloadComplete"),
+        DownloadEvent::BtDownloadComplete { .. } => Some("aria2.onBtDownloadComplete"),
         DownloadEvent::Error { .. } => Some("aria2.onDownloadError"),
         // StatusChanged and Progress are internal events, not sent as aria2 notifications.
         _ => None,
@@ -677,9 +678,11 @@ fn event_gid(event: &raria_core::progress::DownloadEvent) -> raria_core::job::Gi
         DownloadEvent::Paused { gid } => *gid,
         DownloadEvent::Stopped { gid } => *gid,
         DownloadEvent::Complete { gid } => *gid,
+        DownloadEvent::BtDownloadComplete { gid } => *gid,
         DownloadEvent::Error { gid, .. } => *gid,
         DownloadEvent::Progress { gid, .. } => *gid,
         DownloadEvent::StatusChanged { gid, .. } => *gid,
+        DownloadEvent::SourceFailed { gid, .. } => *gid,
     }
 }
 
@@ -782,6 +785,12 @@ mod tests {
                 message: "err".into()
             }),
             Some("aria2.onDownloadError")
+        );
+        assert_eq!(
+            event_to_aria2_method(&DownloadEvent::BtDownloadComplete {
+                gid: Gid::from_raw(1)
+            }),
+            Some("aria2.onBtDownloadComplete")
         );
     }
 

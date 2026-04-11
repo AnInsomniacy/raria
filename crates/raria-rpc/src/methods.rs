@@ -1060,6 +1060,26 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn tell_active_includes_seeding_jobs() {
+        let engine = test_engine();
+        let handler = RpcHandler::new(Arc::clone(&engine));
+        let gid = handler
+            .add_torrent("bWFnbmV0Oj94dD11cm46YnRpaDphYmM=".into(), None, None)
+            .await
+            .expect("add_torrent should create bt job");
+        let parsed_gid = parse_gid(&gid).unwrap();
+        engine
+            .registry
+            .update(parsed_gid, |job| job.status = Status::Seeding)
+            .expect("job should exist");
+
+        let active = handler.tell_active().await.unwrap();
+        assert_eq!(active.len(), 1);
+        assert_eq!(active[0]["gid"], gid);
+        assert_eq!(active[0]["status"], "active");
+    }
+
+    #[tokio::test]
     async fn get_version_returns_info() {
         let engine = test_engine();
         let handler = RpcHandler::new(engine);

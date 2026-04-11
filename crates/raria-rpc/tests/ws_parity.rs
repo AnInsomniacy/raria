@@ -140,6 +140,12 @@ mod tests {
                 "aria2.onDownloadComplete",
             ),
             (
+                DownloadEvent::BtDownloadComplete {
+                    gid: Gid::from_raw(6),
+                },
+                "aria2.onBtDownloadComplete",
+            ),
+            (
                 DownloadEvent::Error {
                     gid: Gid::from_raw(5),
                     message: "connection refused".into(),

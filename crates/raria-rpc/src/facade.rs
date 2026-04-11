@@ -262,6 +262,18 @@ mod tests {
     }
 
     #[test]
+    fn job_to_aria2_status_seeding_projects_to_active() {
+        let mut job = Job::new_bt(
+            vec!["magnet:?xt=urn:btih:abc".into()],
+            PathBuf::from("/tmp/dl"),
+        );
+        job.status = Status::Seeding;
+
+        let status = job_to_aria2_status(&job);
+        assert_eq!(status.status, "active");
+    }
+
+    #[test]
     fn job_to_aria2_status_gid_format() {
         let mut job = Job::new_range(vec![], PathBuf::from("/tmp/f"));
         job.gid = Gid::from_raw(255);
@@ -316,6 +328,24 @@ mod tests {
         assert_eq!(stat.num_active, "2");
         assert_eq!(stat.num_waiting, "1");
         assert_eq!(stat.num_stopped, "1");
+    }
+
+    #[test]
+    fn compute_global_stat_counts_seeding_as_active() {
+        let jobs = vec![{
+            let mut j = Job::new_bt(vec![], PathBuf::from("/seed"));
+            j.status = Status::Seeding;
+            j.download_speed = 200;
+            j.upload_speed = 300;
+            j
+        }];
+
+        let stat = compute_global_stat(&jobs);
+        assert_eq!(stat.download_speed, "200");
+        assert_eq!(stat.upload_speed, "300");
+        assert_eq!(stat.num_active, "1");
+        assert_eq!(stat.num_waiting, "0");
+        assert_eq!(stat.num_stopped, "0");
     }
 
     #[test]

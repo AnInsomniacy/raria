@@ -336,6 +336,7 @@ mod tests {
     #[test]
     fn status_display_matches_serde_name() {
         assert_eq!(format!("{}", Status::Active), "active");
+        assert_eq!(format!("{}", Status::Seeding), "seeding");
         assert_eq!(format!("{}", Status::Waiting), "waiting");
         assert_eq!(format!("{}", Status::Paused), "paused");
         assert_eq!(format!("{}", Status::Complete), "complete");
@@ -383,7 +384,11 @@ mod tests {
         assert!(job.transition(Status::Active).is_ok());
         assert_eq!(job.status, Status::Active);
 
-        // Active → Paused
+        // Active → Seeding
+        assert!(job.transition(Status::Seeding).is_ok());
+        assert_eq!(job.status, Status::Seeding);
+
+        // Seeding → Paused
         assert!(job.transition(Status::Paused).is_ok());
         assert_eq!(job.status, Status::Paused);
 
@@ -399,6 +404,34 @@ mod tests {
         // Complete → Removed
         assert!(job.transition(Status::Removed).is_ok());
         assert_eq!(job.status, Status::Removed);
+    }
+
+    #[test]
+    fn bt_snapshot_defaults_to_absent_on_new_bt_job() {
+        let job = Job::new_bt(
+            vec!["magnet:?xt=urn:btih:abc123".into()],
+            PathBuf::from("/tmp/downloads"),
+        );
+        assert!(job.bt.is_none());
+    }
+
+    #[test]
+    fn job_serde_roundtrips_bt_snapshot() {
+        let mut job = Job::new_bt(
+            vec!["magnet:?xt=urn:btih:abc123".into()],
+            PathBuf::from("/tmp/downloads"),
+        );
+        job.bt = Some(BtSnapshot {
+            info_hash: Some("abcdef1234567890".into()),
+            uploaded: Some(2048),
+            ..BtSnapshot::default()
+        });
+
+        let json = serde_json::to_string(&job).unwrap();
+        let recovered: Job = serde_json::from_str(&json).unwrap();
+        let bt = recovered.bt.expect("bt snapshot should roundtrip");
+        assert_eq!(bt.info_hash.as_deref(), Some("abcdef1234567890"));
+        assert_eq!(bt.uploaded, Some(2048));
     }
 
     #[test]

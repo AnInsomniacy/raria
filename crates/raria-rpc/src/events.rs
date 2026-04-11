@@ -70,11 +70,16 @@ pub fn event_to_notification(event: &DownloadEvent) -> Option<Aria2Notification>
         DownloadEvent::Complete { gid } => {
             Some(Aria2Notification::new("aria2.onDownloadComplete", *gid))
         }
+        DownloadEvent::BtDownloadComplete { gid } => {
+            Some(Aria2Notification::new("aria2.onBtDownloadComplete", *gid))
+        }
         DownloadEvent::Error { gid, .. } => {
             Some(Aria2Notification::new("aria2.onDownloadError", *gid))
         }
         // StatusChanged and Progress don't map to aria2 notifications.
-        DownloadEvent::StatusChanged { .. } | DownloadEvent::Progress { .. } => None,
+        DownloadEvent::StatusChanged { .. }
+        | DownloadEvent::Progress { .. }
+        | DownloadEvent::SourceFailed { .. } => None,
     }
 }
 
@@ -120,6 +125,15 @@ mod tests {
         };
         let notif = event_to_notification(&event).unwrap();
         assert_eq!(notif.method, "aria2.onDownloadComplete");
+    }
+
+    #[test]
+    fn bt_download_complete_event_maps_to_on_bt_download_complete() {
+        let event = DownloadEvent::BtDownloadComplete {
+            gid: Gid::from_raw(14),
+        };
+        let notif = event_to_notification(&event).unwrap();
+        assert_eq!(notif.method, "aria2.onBtDownloadComplete");
     }
 
     #[test]
