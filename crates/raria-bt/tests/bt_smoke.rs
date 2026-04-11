@@ -332,7 +332,11 @@ async fn bt_service_status_exposes_step2_bt_metadata_fields() {
     assert_eq!(status.piece_length, Some(16 * 1024));
     assert_eq!(
         status.num_pieces,
-        Some(status.total_size.div_ceil(status.piece_length.expect("piece length")))
+        Some(
+            status
+                .total_size
+                .div_ceil(status.piece_length.expect("piece length"))
+        )
     );
     assert_eq!(status.announce_list, None);
     assert!(

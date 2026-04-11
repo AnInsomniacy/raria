@@ -2,39 +2,41 @@
 
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/rust-1.85%2B-orange.svg)](https://www.rust-lang.org/)
-[![Tests](https://img.shields.io/badge/tests-workspace%20verified-brightgreen.svg)](#testing)
 
 A Rust download engine with a practical, capability-first maturity model.
 
-> The active execution contract is **light governance + progressive capability maturity**. Public-facing guidance lives in [`docs/practical-maturity.md`](docs/practical-maturity.md). The detailed planning source of truth remains `.omx/plans/2026-04-11-raria-practical-maturity-plan.md`.
+> The active repository-facing contract is no longer the old six-step future roadmap. The source-of-truth plan is `.omx/plans/2026-04-11-raria-progress-adjusted-maturity-plan.md`, with the public companion docs in [`docs/practical-maturity.md`](docs/practical-maturity.md), [`docs/bt-stop-lines.md`](docs/bt-stop-lines.md), and [`docs/verification-contract.md`](docs/verification-contract.md).
 
 ## Current Capability Snapshot
 
-| Capability | Status | Notes |
+| Capability area | Current state | Evidence anchor |
 | --- | --- | --- |
-| HTTP/HTTPS segmented downloads | ✅ Verified | `reqwest` backend with range support, retries, cookies, proxy support, and checksum hooks |
-| FTP/FTPS downloads | ✅ Verified | `suppaftp` backend with smoke coverage in CLI/backend tests |
-| SFTP downloads | ✅ Verified | `russh`/`russh-sftp` backend with smoke coverage |
-| Metalink parsing | ✅ Verified | v3/v4 parser and normalizer are in-tree |
-| aria2-style JSON-RPC daemon | ✅ Verified | HTTP + WebSocket server, queue/status/global-stat flow, daemon lifecycle tests |
-| Session persistence / restore | ✅ Verified | redb-backed store and daemon/session smoke coverage |
-| BitTorrent service integration | ⚠️ In progress | `raria-bt` and daemon BT flow exist, but seeding semantics, honest facade projection, and some stop-line gaps are still being closed |
-| XML-RPC | ❌ Not supported | Permanently out of scope |
+| HTTP/HTTPS segmented downloads | Baseline with automated coverage | `crates/raria-cli/tests/session_smoke.rs` |
+| FTP/FTPS downloads | Baseline with automated coverage | backend and CLI workspace tests |
+| SFTP downloads | Baseline with automated coverage | backend and CLI workspace tests |
+| aria2-style JSON-RPC daemon | Baseline with automated coverage | `crates/raria-cli/tests/rpc_smoke.rs`, `crates/raria-rpc/tests/` |
+| Session persistence and restart restore | Baseline with automated coverage | `crates/raria-cli/tests/session_smoke.rs` |
+| Conditional GET and checksum enforcement | Baseline with automated coverage | `crates/raria-cli/tests/session_smoke.rs` |
+| Metalink parsing, normalization, checksum wiring, relation projection, and mirror failover | Baseline with automated coverage | `crates/raria-rpc/tests/metalink_dispatch.rs`, `crates/raria-cli/tests/session_smoke.rs` |
+| BitTorrent lifecycle semantics and facade projection | Baseline with explicit limits | `crates/raria-core/src/job.rs`, `crates/raria-cli/src/bt_runtime.rs`, `crates/raria-rpc/src/facade.rs` |
+| BitTorrent parity beyond the current baseline | Explicit stop-line gaps remain | `crates/raria-bt/tests/bt_gap_ledger.rs` |
+| XML-RPC | Out of scope | permanently unsupported |
 
-## Practical Maturity Model
+## Current Stage
 
-raria is intentionally not following a "rebuild the foundation first" plan. The current execution model is:
+The old Step 1 through Step 4 work should now be treated as baseline, not as pending roadmap:
 
-1. **Keep the target unchanged** — raria becomes a mature Rust download engine, with download-core and BitTorrent as the top priorities.
-2. **Prefer real capability output** — each step should land user-visible or testable behavior, not just internal reshuffling.
-3. **Keep governance light but real** — only three hard gates remain:
-   - stop-line grading
-   - dependency viability audit
-   - write-scope / crate-boundary discipline
-4. **Do local refactors only when blocked** — internal cleanup is allowed only when the current structure clearly prevents the next capability from landing honestly.
-5. **Treat aria2 compatibility as a migration facade** — it must project internal truth, not redefine it.
+- core BT semantics already include a distinct `Seeding` state and a one-shot BT completion guard
+- the daemon and RPC surface already cover session restore, conditional GET, checksum failure reporting, and aria2-style status/global-stat flows
+- Metalink already parses, normalizes, stores checksum and relation data, and projects that data through RPC
+- the BitTorrent path is already real in the daemon, runtime, and facade layers, but it still carries explicit parity stop-lines that must stay documented honestly
 
-See [`docs/practical-maturity.md`](docs/practical-maturity.md) for the English companion document that translates the active execution plan into repo-facing guidance.
+The active closeout work is narrower:
+
+1. keep repo-facing docs aligned with the implemented baseline
+2. keep BitTorrent stop-lines, RPC behavior, and docs synchronized
+3. keep Metalink runtime claims aligned with the daemon-path evidence now present in the test suite
+4. require fresh verification evidence before any late-stage closure claim
 
 ## Quick Start
 
@@ -103,51 +105,37 @@ raria/
 │   ├── raria-rpc       # aria2-style JSON-RPC server / facade
 │   └── raria-cli       # CLI + daemon integration layer
 ├── docs/
-│   └── practical-maturity.md
+│   ├── practical-maturity.md
+│   └── verification-contract.md
 ├── Cargo.toml
 └── README.md
 ```
 
 ## Architecture Notes
 
-- **Library-first:** protocol/runtime logic lives in library crates; `raria-cli` wires the CLI and daemon.
-- **Protocol split:** HTTP/FTP/SFTP share the range-download path; BitTorrent is session/piece driven and intentionally separate.
-- **Persistence-first engine state:** job state is stored in redb and restored through the core engine.
-- **Facade honesty:** aria2-style responses should project internal truth instead of forcing the core model to imitate aria2 internals.
-- **Capability-first delivery:** roadmap steps are evaluated by shipped behavior and tests, not abstract architecture completeness.
+- Library-first: protocol and runtime logic live in library crates; `raria-cli` wires the CLI and daemon.
+- Protocol split: HTTP, FTP, and SFTP share the range-download path; BitTorrent stays session and piece driven.
+- Persistence-first engine state: job state is stored in redb and restored through the core engine.
+- Facade honesty: aria2-style responses project internal truth instead of forcing the core model to imitate aria2 internals.
+- Capability-first delivery: remaining work is judged by shipped behavior, explicit stop-lines, and versioned verification assets.
 
-## Current Maturity Sequence
+## Verification
 
-The active plan advances in this order:
+The repository keeps a versioned verification contract instead of a static "everything is green" claim. See [`docs/verification-contract.md`](docs/verification-contract.md) for:
 
-1. Minimal core semantics for BT seeding and shared events
-2. BT field synchronization and one-shot download-complete semantics
-3. Daemon checksum / conditional-get capability closure
-4. Honest RPC / facade projection of real BT fields
-5. Metalink execution-path upgrades
-6. Full verification closure plus docs that describe only real capabilities
+- the required verification matrix
+- the critical path to test-file mapping
+- which claims are durable repository facts versus fresh-run claims
+- the remaining evidence gaps for late-stage closure
 
-Each step has an explicit primary write scope, allowed support crates, and forbidden write zones. See [`docs/practical-maturity.md`](docs/practical-maturity.md) for the condensed contract.
-
-## Testing
-
-```bash
-# Full workspace tests
-cargo test --workspace
-
-# Full type-check without producing release artifacts
-cargo check --workspace
-
-# Lint with warnings denied
-cargo clippy --workspace --all-targets -- -D warnings
-```
+BitTorrent parity limits are tracked separately in [`docs/bt-stop-lines.md`](docs/bt-stop-lines.md).
 
 ## Related Projects
 
-- [Motrix Next](https://github.com/AnInsomniacy/motrix-next) — a Tauri/Vue download manager that can consume aria2-style control surfaces
-- [aria2-builder](https://github.com/AnInsomniacy/aria2-builder) — cross-platform aria2 builds
-- [aria2](https://github.com/aria2/aria2) — the original C++ download utility
+- [Motrix Next](https://github.com/AnInsomniacy/motrix-next) - a Tauri/Vue download manager that can consume aria2-style control surfaces
+- [aria2-builder](https://github.com/AnInsomniacy/aria2-builder) - cross-platform aria2 builds
+- [aria2](https://github.com/aria2/aria2) - the original C++ download utility
 
 ## License
 
-Apache 2.0 — see [LICENSE](LICENSE).
+Apache 2.0. See [LICENSE](LICENSE).

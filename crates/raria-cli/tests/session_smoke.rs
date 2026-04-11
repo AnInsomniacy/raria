@@ -1744,3 +1744,172 @@ async fn daemon_fails_over_to_next_mirror_when_first_mirror_fails() {
     );
     graceful_shutdown(rpc_port, &mut child).await;
 }
+
+#[tokio::test]
+async fn daemon_add_metalink_consumes_sorted_mirrors_and_fails_over_to_next_source() {
+    let primary = MockServer::start().await;
+    let fallback = MockServer::start().await;
+
+    Mock::given(method("HEAD"))
+        .and(path("/metalink-mirror.bin"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-length", "4")
+                .insert_header("accept-ranges", "bytes"),
+        )
+        .mount(&primary)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/metalink-mirror.bin"))
+        .respond_with(ResponseTemplate::new(503))
+        .mount(&primary)
+        .await;
+
+    Mock::given(method("HEAD"))
+        .and(path("/metalink-mirror.bin"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-length", "4")
+                .insert_header("accept-ranges", "bytes"),
+        )
+        .mount(&fallback)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/metalink-mirror.bin"))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(b"pass"))
+        .mount(&fallback)
+        .await;
+
+    let temp = tempdir().expect("tempdir");
+    let session_file = temp.path().join("metalink-mirror.session.redb");
+    let (mut child, rpc_port) = spawn_ready_daemon(temp.path(), &session_file, None).await;
+
+    let metalink_xml = format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<metalink xmlns="urn:ietf:params:xml:ns:metalink">
+  <file name="metalink-mirror.bin">
+    <size>4</size>
+    <url priority="1">{}/metalink-mirror.bin</url>
+    <url priority="2">{}/metalink-mirror.bin</url>
+  </file>
+</metalink>"#,
+        primary.uri(),
+        fallback.uri()
+    );
+
+    use base64::Engine as Base64Engine;
+    let encoded = base64::engine::general_purpose::STANDARD.encode(metalink_xml);
+
+    let add_resp = rpc_call(rpc_port, "aria2.addMetalink", serde_json::json!([encoded])).await;
+    let gid = add_resp["result"].as_array().unwrap()[0]
+        .as_str()
+        .expect("gid")
+        .to_string();
+
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        let status_resp = rpc_call(
+            rpc_port,
+            "aria2.tellStatus",
+            serde_json::json!([gid.clone()]),
+        )
+        .await;
+        let status = status_resp["result"]["status"].as_str().expect("status");
+        if status == "complete" {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "daemon never completed metalink mirror failover job: {status_resp}"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+
+    assert_eq!(
+        std::fs::read(temp.path().join("metalink-mirror.bin")).unwrap(),
+        b"pass"
+    );
+
+    assert!(
+        primary.received_requests().await.unwrap().len() >= 2,
+        "expected primary mirror to be attempted first"
+    );
+    assert!(
+        fallback.received_requests().await.unwrap().len() >= 2,
+        "expected fallback mirror to be attempted after primary failure"
+    );
+
+    graceful_shutdown(rpc_port, &mut child).await;
+}
+
+#[tokio::test]
+async fn daemon_fails_over_to_next_metalink_mirror_after_checksum_mismatch() {
+    let primary = MockServer::start().await;
+    let fallback = MockServer::start().await;
+
+    Mock::given(method("HEAD"))
+        .and(path("/mirror.bin"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-length", "4")
+                .insert_header("accept-ranges", "bytes"),
+        )
+        .mount(&primary)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/mirror.bin"))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(b"bad!"))
+        .mount(&primary)
+        .await;
+
+    Mock::given(method("HEAD"))
+        .and(path("/mirror.bin"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-length", "4")
+                .insert_header("accept-ranges", "bytes"),
+        )
+        .mount(&fallback)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/mirror.bin"))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(b"pass"))
+        .mount(&fallback)
+        .await;
+
+    let temp = tempdir().expect("tempdir");
+    let session_file = temp.path().join("metalink-mirror.session.redb");
+    let (mut child, rpc_port) = spawn_ready_daemon(temp.path(), &session_file, None).await;
+
+    let metalink_xml = format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<metalink xmlns="urn:ietf:params:xml:ns:metalink">
+  <file name="mirror.bin">
+    <size>4</size>
+    <hash type="sha-256">d74ff0ee8da3b9806b18c877dbf29bbde50b5bd8e4dad7a3a725000feb82e8f1</hash>
+    <url priority="1">{}/mirror.bin</url>
+    <url priority="2">{}/mirror.bin</url>
+  </file>
+</metalink>"#,
+        primary.uri(),
+        fallback.uri()
+    );
+
+    use base64::Engine as Base64Engine;
+    let encoded = base64::engine::general_purpose::STANDARD.encode(metalink_xml);
+
+    let add_resp = rpc_call(rpc_port, "aria2.addMetalink", serde_json::json!([encoded])).await;
+    let gid = add_resp["result"].as_array().unwrap()[0]
+        .as_str()
+        .expect("gid")
+        .to_string();
+
+    let status_resp = wait_for_terminal_status(rpc_port, &gid).await;
+    assert_eq!(status_resp["result"]["status"], "complete");
+    assert_eq!(
+        std::fs::read(temp.path().join("mirror.bin")).unwrap(),
+        b"pass"
+    );
+
+    graceful_shutdown(rpc_port, &mut child).await;
+}

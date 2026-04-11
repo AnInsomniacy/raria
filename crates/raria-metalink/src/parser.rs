@@ -320,7 +320,10 @@ mod tests {
         assert_eq!(file.hashes[0].value, "abc123def456");
         assert_eq!(file.pieces[0].algo, "sha-256");
         assert_eq!(file.pieces[0].length, 262144);
-        assert_eq!(file.pieces[0].hashes, vec!["piece0", "piece1", "piece2", "piece3"]);
+        assert_eq!(
+            file.pieces[0].hashes,
+            vec!["piece0", "piece1", "piece2", "piece3"]
+        );
         assert_eq!(file.urls.len(), 3);
 
         assert_eq!(file.urls[0].priority, 1);

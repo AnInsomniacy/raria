@@ -182,9 +182,16 @@ pub fn job_to_aria2_status(job: &Job) -> Aria2Status {
     };
 
     let bt = job.bt.as_ref();
-    let announce_list = bt.and_then(|bt| bt.announce_list.clone()).unwrap_or_default();
+    let announce_list = bt
+        .and_then(|bt| bt.announce_list.clone())
+        .unwrap_or_default();
     let bittorrent = if job.kind == JobKind::Bt {
-        let mode = if job.bt_files.as_ref().map(|files| files.len() > 1).unwrap_or(false) {
+        let mode = if job
+            .bt_files
+            .as_ref()
+            .map(|files| files.len() > 1)
+            .unwrap_or(false)
+        {
             "multi"
         } else {
             "single"
@@ -215,10 +222,7 @@ pub fn job_to_aria2_status(job: &Job) -> Aria2Status {
         completed_length: job.downloaded.to_string(),
         download_speed: job.download_speed.to_string(),
         upload_speed: job.upload_speed.to_string(),
-        upload_length: bt
-            .and_then(|bt| bt.uploaded)
-            .unwrap_or(0)
-            .to_string(),
+        upload_length: bt.and_then(|bt| bt.uploaded).unwrap_or(0).to_string(),
         connections: job.connections.to_string(),
         dir: job
             .out_path

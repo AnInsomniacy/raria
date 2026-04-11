@@ -139,7 +139,9 @@ fn sync_bt_job_from_status(
 ) -> Result<BtStatusSyncOutcome> {
     engine
         .registry
-        .update(gid, |job| sync_bt_status_into_job(job, status, bt_files, bt_peers))
+        .update(gid, |job| {
+            sync_bt_status_into_job(job, status, bt_files, bt_peers)
+        })
         .context("BT job not found in registry")?
 }
 
@@ -455,8 +457,8 @@ mod tests {
         status.is_complete = true;
         status.downloaded = status.total_size;
 
-        let outcome = sync_bt_job_from_status(&engine, gid, &status, None, None)
-            .expect("sync bt status");
+        let outcome =
+            sync_bt_job_from_status(&engine, gid, &status, None, None).expect("sync bt status");
         assert_eq!(outcome.completion_action, BtCompletionAction::Complete);
 
         let job = engine.registry.get(gid).expect("job in registry");
@@ -478,8 +480,8 @@ mod tests {
         let mut status = sample_bt_status();
         status.announce_list = None;
 
-        let outcome = sync_bt_status_into_job(&mut job, &status, None, None)
-            .expect("sync into raw job");
+        let outcome =
+            sync_bt_status_into_job(&mut job, &status, None, None).expect("sync into raw job");
         assert_eq!(outcome.completion_action, BtCompletionAction::None);
 
         let bt = job.bt.as_ref().expect("bt snapshot");

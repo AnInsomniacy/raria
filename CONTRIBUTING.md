@@ -1,6 +1,6 @@
 # Contributing to raria
 
-Thanks for helping improve raria.
+Thanks for improving raria.
 
 ## Development Setup
 
@@ -14,25 +14,32 @@ cargo clippy --workspace --all-targets -- -D warnings
 
 ## Working Rules
 
-raria currently follows the practical maturity contract described in [`docs/practical-maturity.md`](docs/practical-maturity.md). Contributions should preserve these rules:
+raria follows the progress-adjusted practical maturity contract described in [`docs/practical-maturity.md`](docs/practical-maturity.md). The verification standard for completion claims lives in [`docs/verification-contract.md`](docs/verification-contract.md), and the public BitTorrent parity limits live in [`docs/bt-stop-lines.md`](docs/bt-stop-lines.md).
 
-1. **Capability-first delivery** — each change should land real behavior, better verification, or an honest documentation update.
-2. **TDD is required** — add or tighten tests first when changing behavior.
-3. **No fake green** — do not weaken tests, hide regressions, or claim unsupported capability.
-4. **Write-scope discipline** — stay inside the step's allowed crates/files unless correctness clearly forces a broader change.
-5. **Facade honesty** — aria2-style responses may default or omit unstable fields, but must not distort internal truth.
+Contributions should preserve these rules:
+
+1. Capability-first delivery: land real behavior, stronger verification, or an honest documentation correction.
+2. TDD is required when behavior changes.
+3. No fake green: do not weaken tests, hide regressions, or advertise unsupported capability.
+4. Write-scope discipline: keep the diff inside the intended lane unless correctness forces a wider change.
+5. Facade honesty: aria2-style responses may default or omit unstable fields, but they must not distort internal truth.
+6. Do not relabel already-landed baseline work as future roadmap just because the docs are stale.
 
 ## Hard Governance Gates
 
-Every meaningful change should respect the three active hard gates:
+Every meaningful change should respect the three active hard gates.
 
 ### 1. Stop-line grading
 
-If a dependency or architectural limit prevents parity, record it honestly instead of papering it over. Use these grades:
+If dependency limits or architecture boundaries block parity, record the gap honestly instead of papering it over.
+
+Use these grades:
 
 - `core-blocking`
 - `advanced-but-acceptable`
 - `migration-only`
+
+The current BitTorrent stop-line ledger lives in `crates/raria-bt/tests/bt_gap_ledger.rs`.
 
 ### 2. Dependency viability audit
 
@@ -45,15 +52,26 @@ Before leaning on dependency behavior, confirm the dependency can actually suppo
 - `redb`
 - `jsonrpsee`
 
-### 3. Write-scope / crate-boundary discipline
+### 3. Write-scope and crate-boundary discipline
 
-Each roadmap step has:
+Each plan step should declare:
 
-- a **primary write** crate
-- optional **supporting write** crates
-- explicit **forbidden** crates
+- a primary write area
+- optional supporting write areas
+- explicit forbidden areas
 
 If you need to cross those boundaries, document why the wider change is unavoidable.
+
+## Current Closeout Areas
+
+The active repo-facing closeout work is:
+
+1. baseline and docs alignment
+2. BitTorrent stop-line and docs or RPC sync
+3. Metalink daemon-path runtime evidence
+4. verification-contract and closure-evidence maintenance
+
+Old Step 1 through Step 4 implementation work is baseline now. Do not reopen it as if it were still the roadmap.
 
 ## Workspace Overview
 
@@ -64,30 +82,27 @@ If you need to cross those boundaries, document why the wider change is unavoida
 | `raria-http` | HTTP/HTTPS backend |
 | `raria-ftp` | FTP/FTPS backend |
 | `raria-sftp` | SFTP backend |
-| `raria-metalink` | Metalink parser / normalizer |
+| `raria-metalink` | Metalink parser and normalizer |
 | `raria-bt` | BitTorrent service integration |
-| `raria-rpc` | aria2-style JSON-RPC server / facade |
+| `raria-rpc` | aria2-style JSON-RPC server and facade |
 | `raria-cli` | CLI and daemon integration |
 
 ## Pull Request Expectations
 
-1. Identify which practical-maturity step, stop-line, or documentation correction your change addresses.
-2. Add tests first when behavior changes.
+1. Say which closeout lane, stop-line, or documentation correction the change addresses.
+2. Add or tighten tests first when behavior changes.
 3. Keep the diff inside the declared write scope whenever possible.
-4. Run the relevant verification commands before opening the PR.
-5. Update docs when capability claims or operational guidance change.
+4. Run the verification commands that match the scope and report the actual result.
+5. Update docs whenever capability claims, stop-lines, or operational guidance change.
 
-## Verification Checklist
+## Verification Expectations
 
-Before submitting a change, run the checks that match your scope:
+Use [`docs/verification-contract.md`](docs/verification-contract.md) as the durable repository standard.
 
-```bash
-cargo test --workspace
-cargo check --workspace
-cargo clippy --workspace --all-targets -- -D warnings
-```
-
-For narrower changes, include focused crate/test evidence as well.
+- Do not claim tests pass without fresh command output.
+- Do not claim late-stage closure from documentation alone.
+- If a path is only covered at unit or RPC level, say so.
+- If a gap is blocked upstream or by design, keep it explicit in the stop-line ledger.
 
 ## License
 

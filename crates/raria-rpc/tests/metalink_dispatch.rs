@@ -254,10 +254,8 @@ mod tests {
     async fn add_metalink_propagates_common_rpc_options_to_each_job() {
         let (engine, url, cancel) = spawn_server().await;
 
-        let output_dir = std::env::temp_dir().join(format!(
-            "rpc_test_metalink_opts_{}",
-            std::process::id()
-        ));
+        let output_dir =
+            std::env::temp_dir().join(format!("rpc_test_metalink_opts_{}", std::process::id()));
 
         let metalink_xml = r#"<?xml version="1.0" encoding="UTF-8"?>
 <metalink version="3.0" xmlns="http://www.metalinker.org/">

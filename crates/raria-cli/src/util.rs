@@ -106,9 +106,11 @@ mod tests {
         let file = temp.path().join("cached.bin");
         std::fs::write(&file, b"cached").unwrap();
 
-        let mut config = GlobalConfig::default();
-        config.conditional_get = true;
-        config.allow_overwrite = true;
+        let config = GlobalConfig {
+            conditional_get: true,
+            allow_overwrite: true,
+            ..GlobalConfig::default()
+        };
 
         let headers = build_conditional_get_probe_headers(
             &config,

@@ -427,7 +427,9 @@ impl Aria2RpcServer for RpcHandler {
 
         if let Some(root_gid) = created.first().copied() {
             for (idx, gid) in created.iter().copied().enumerate() {
-                let following = idx.checked_sub(1).and_then(|prev| created.get(prev).copied());
+                let following = idx
+                    .checked_sub(1)
+                    .and_then(|prev| created.get(prev).copied());
                 let followed_by = created
                     .get(idx + 1)
                     .copied()
@@ -436,7 +438,11 @@ impl Aria2RpcServer for RpcHandler {
                 self.engine.registry.update(gid, |job| {
                     job.following = following;
                     job.followed_by = followed_by.clone();
-                    job.belongs_to = if gid == root_gid { None } else { Some(root_gid) };
+                    job.belongs_to = if gid == root_gid {
+                        None
+                    } else {
+                        Some(root_gid)
+                    };
                 });
             }
         }

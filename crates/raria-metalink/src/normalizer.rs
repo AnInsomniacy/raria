@@ -119,7 +119,9 @@ fn select_best_piece_hashes(
     preferred: &[String],
 ) -> Option<NormalizedPieceChecksum> {
     for algo in preferred {
-        if let Some(piece_set) = pieces.iter().find(|pieces| pieces.algo.eq_ignore_ascii_case(algo))
+        if let Some(piece_set) = pieces
+            .iter()
+            .find(|pieces| pieces.algo.eq_ignore_ascii_case(algo))
         {
             return Some(NormalizedPieceChecksum {
                 algo: piece_set.algo.to_lowercase(),
@@ -338,10 +340,7 @@ mod tests {
         };
 
         let seeds = normalize(&ml, &NormalizeOptions::default());
-        let piece_checksum = seeds[0]
-            .piece_checksum
-            .as_ref()
-            .expect("piece checksum");
+        let piece_checksum = seeds[0].piece_checksum.as_ref().expect("piece checksum");
         assert_eq!(piece_checksum.algo, "sha-256");
         assert_eq!(piece_checksum.length, 1024);
         assert_eq!(piece_checksum.hashes, vec!["aa", "bb"]);

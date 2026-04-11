@@ -76,7 +76,10 @@ pub fn classify_download_error(message: &str) -> DownloadErrorClass {
         "failed to parse",
         "malformed",
     ];
-    if permanent_markers.iter().any(|marker| normalized.contains(marker)) {
+    if permanent_markers
+        .iter()
+        .any(|marker| normalized.contains(marker))
+    {
         return DownloadErrorClass::Permanent;
     }
 

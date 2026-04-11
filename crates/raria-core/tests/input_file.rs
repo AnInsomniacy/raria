@@ -90,7 +90,10 @@ https://mirror1.com/f.zip\thttps://mirror2.com/f.zip
 ";
 
         let legacy = parse_input_file(content);
-        assert_eq!(legacy, vec!["https://mirror1.com/f.zip\thttps://mirror2.com/f.zip"]);
+        assert_eq!(
+            legacy,
+            vec!["https://mirror1.com/f.zip\thttps://mirror2.com/f.zip"]
+        );
 
         let entries = raria_core::input_file::parse_input_file_entries(content)
             .expect("parse richer input-file entries");
@@ -114,7 +117,11 @@ https://mirror1.com/f.zip\thttps://mirror2.com/f.zip
         assert_eq!(entry.options.http_user.as_deref(), Some("alice"));
         assert_eq!(entry.options.http_passwd.as_deref(), Some("secret"));
         assert_eq!(
-            entry.options.extra.get("max-download-limit").map(String::as_str),
+            entry
+                .options
+                .extra
+                .get("max-download-limit")
+                .map(String::as_str),
             Some("1024")
         );
     }

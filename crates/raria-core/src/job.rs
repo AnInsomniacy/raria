@@ -621,7 +621,10 @@ mod tests {
 
         let json = serde_json::to_string(&job).unwrap();
         let recovered: Job = serde_json::from_str(&json).unwrap();
-        assert_eq!(recovered.followed_by, vec![Gid::from_raw(2), Gid::from_raw(3)]);
+        assert_eq!(
+            recovered.followed_by,
+            vec![Gid::from_raw(2), Gid::from_raw(3)]
+        );
         assert_eq!(recovered.following, Some(Gid::from_raw(1)));
         assert_eq!(recovered.belongs_to, Some(Gid::from_raw(1)));
     }

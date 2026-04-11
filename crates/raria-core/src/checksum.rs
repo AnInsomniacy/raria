@@ -3,11 +3,11 @@
 // Computes digests of downloaded files for integrity verification.
 // Supports SHA-256 (primary), SHA-1, and MD5 (legacy).
 
+use crate::job::PieceChecksum;
 use anyhow::{Context, Result};
 use md5::Md5;
 use sha1::Sha1;
 use sha2::{Digest, Sha256};
-use crate::job::PieceChecksum;
 use std::path::Path;
 use tokio::fs::File;
 use tokio::io::AsyncReadExt;
@@ -121,14 +121,21 @@ pub async fn verify_checksum(path: &Path, spec: &str) -> Result<()> {
 
 /// Verify a file against chunk-level piece hashes.
 pub async fn verify_piece_checksums(path: &Path, piece_checksum: &PieceChecksum) -> Result<()> {
-    anyhow::ensure!(piece_checksum.length > 0, "piece checksum length must be > 0");
+    anyhow::ensure!(
+        piece_checksum.length > 0,
+        "piece checksum length must be > 0"
+    );
     anyhow::ensure!(
         !piece_checksum.hashes.is_empty(),
         "piece checksum list must not be empty"
     );
 
-    let algo = ChecksumAlgo::from_str_lenient(&piece_checksum.algo)
-        .with_context(|| format!("unsupported piece checksum algorithm: {}", piece_checksum.algo))?;
+    let algo = ChecksumAlgo::from_str_lenient(&piece_checksum.algo).with_context(|| {
+        format!(
+            "unsupported piece checksum algorithm: {}",
+            piece_checksum.algo
+        )
+    })?;
 
     let chunk_len: usize = piece_checksum
         .length
@@ -352,7 +359,10 @@ mod tests {
         let result = verify_piece_checksums(&path, &piece_checksum).await;
         assert!(result.is_err());
         let error = result.unwrap_err().to_string();
-        assert!(error.contains("piece checksum mismatch"), "error was: {error}");
+        assert!(
+            error.contains("piece checksum mismatch"),
+            "error was: {error}"
+        );
     }
 
     #[tokio::test]

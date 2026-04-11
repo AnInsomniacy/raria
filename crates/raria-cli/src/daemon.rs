@@ -537,46 +537,77 @@ fn plan_download_segments(
     (resolved_connections, resolved_segments, on_checkpoint)
 }
 
-/// Finalize a completed download: verify integrity, update registry, clean up checkpoints, log.
-async fn finalize_complete(
-    engine: &Engine,
+fn verification_failure_message(
+    piece_checksum: Option<&raria_core::job::PieceChecksum>,
+    error: &anyhow::Error,
+) -> String {
+    if piece_checksum.is_some() {
+        format!("piece checksum verification failed: {error}")
+    } else {
+        format!("checksum verification failed: {error}")
+    }
+}
+
+/// Verify integrity for a fully downloaded file before marking it complete.
+async fn verify_download_integrity(
     gid: Gid,
     out_path: &std::path::Path,
-    downloaded: u64,
     piece_checksum: Option<&raria_core::job::PieceChecksum>,
     checksum_spec: Option<&str>,
 ) -> Result<()> {
-    engine.registry.update(gid, |job| {
-        job.downloaded = downloaded;
-        job.connections = 0;
-    });
     if let Some(piece_checksum) = piece_checksum {
         info!(%gid, "verifying piece checksums...");
-        if let Err(error) = checksum::verify_piece_checksums(out_path, piece_checksum).await {
-            cleanup_segment_checkpoints(engine, gid);
-            let message =
-                classified_error_message(&format!("piece checksum verification failed: {error}"));
-            engine.fail_job(gid, &message)?;
-            return Ok(());
-        }
+        checksum::verify_piece_checksums(out_path, piece_checksum)
+            .await
+            .map_err(|error| {
+                anyhow::anyhow!(verification_failure_message(Some(piece_checksum), &error))
+            })?;
         info!(%gid, "piece checksums verified successfully");
     }
     if let Some(spec) = checksum_spec {
         info!(%gid, "verifying checksum...");
-        if let Err(error) = checksum::verify_checksum(out_path, spec).await {
-            cleanup_segment_checkpoints(engine, gid);
-            let message =
-                classified_error_message(&format!("checksum verification failed: {error}"));
-            engine.fail_job(gid, &message)?;
-            return Ok(());
-        }
+        checksum::verify_checksum(out_path, spec)
+            .await
+            .map_err(|error| anyhow::anyhow!(verification_failure_message(None, &error)))?;
         info!(%gid, "checksum verified successfully");
     }
+    Ok(())
+}
 
+/// Finalize a completed download: update registry, clean up checkpoints, log.
+async fn finalize_complete(engine: &Engine, gid: Gid, downloaded: u64) -> Result<()> {
+    engine.registry.update(gid, |job| {
+        job.downloaded = downloaded;
+        job.connections = 0;
+    });
     engine.complete_job(gid)?;
     cleanup_segment_checkpoints(engine, gid);
     info!(%gid, bytes = downloaded, "daemon: download complete");
     Ok(())
+}
+
+fn reset_for_next_mirror(
+    engine: &Engine,
+    gid: Gid,
+    out_path: &std::path::Path,
+    segments: Option<&mut Vec<raria_core::segment::SegmentState>>,
+) {
+    cleanup_segment_checkpoints(engine, gid);
+    engine.registry.update(gid, |job| {
+        job.downloaded = 0;
+        job.connections = 0;
+    });
+    if let Some(segments) = segments {
+        for segment in segments.iter_mut() {
+            segment.downloaded = 0;
+            segment.status = SegmentStatus::Pending;
+        }
+    }
+    if let Err(error) = std::fs::remove_file(out_path) {
+        if error.kind() != std::io::ErrorKind::NotFound {
+            warn!(%gid, path = %out_path.display(), error = %error, "failed to remove corrupt mirror output before retry");
+        }
+    }
 }
 
 /// Persist interrupted segment state for future resumption.
@@ -643,9 +674,7 @@ async fn run_job_download(
             }
         };
 
-        let candidate_path = out_path
-            .clone()
-            .unwrap_or_else(|| job.out_path.clone());
+        let candidate_path = out_path.clone().unwrap_or_else(|| job.out_path.clone());
         let control_file_path =
             std::path::PathBuf::from(format!("{}.aria2", candidate_path.display()));
         let probe_headers = build_conditional_get_probe_headers(
@@ -678,15 +707,23 @@ async fn run_job_download(
             let existing_len = std::fs::metadata(out_path_ref)
                 .map(|meta| meta.len())
                 .unwrap_or(0);
-            return finalize_complete(
-                &engine,
+            if let Err(error) = verify_download_integrity(
                 gid,
                 out_path_ref,
-                existing_len,
                 job.piece_checksum.as_ref(),
                 job.options.checksum.as_deref(),
             )
-            .await;
+            .await
+            {
+                last_error = Some(classified_error_message(&error.to_string()));
+                if uri_index + 1 < job.uris.len() {
+                    warn!(%gid, uri = %parsed_url, error = %error, "cached mirror output failed verification, trying next mirror");
+                    reset_for_next_mirror(&engine, gid, out_path_ref, None);
+                    continue;
+                }
+                break;
+            }
+            return finalize_complete(&engine, gid, existing_len).await;
         }
 
         if segments.is_none() {
@@ -735,15 +772,24 @@ async fn run_job_download(
             .collect();
 
         if all_done {
-            return finalize_complete(
-                &engine,
+            let out_path_ref = out_path.as_ref().expect("out_path initialized");
+            if let Err(error) = verify_download_integrity(
                 gid,
-                out_path.as_ref().expect("out_path initialized"),
-                downloaded_total,
+                out_path_ref,
                 job.piece_checksum.as_ref(),
                 job.options.checksum.as_deref(),
             )
-            .await;
+            .await
+            {
+                last_error = Some(classified_error_message(&error.to_string()));
+                if uri_index + 1 < job.uris.len() {
+                    warn!(%gid, uri = %parsed_url, error = %error, "mirror payload failed verification, trying next mirror");
+                    reset_for_next_mirror(&engine, gid, out_path_ref, Some(segments_mut));
+                    continue;
+                }
+                break;
+            }
+            return finalize_complete(&engine, gid, downloaded_total).await;
         }
 
         if !failed.is_empty() {
