@@ -25,6 +25,7 @@ use jsonrpsee::core::RpcResult;
 use jsonrpsee::proc_macros::rpc;
 use raria_core::engine::{AddUriSpec, Engine, PositionHow};
 use raria_core::job::Status;
+use raria_core::logging::emit_structured_log;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -268,6 +269,12 @@ impl Aria2RpcServer for RpcHandler {
         });
 
         debug!(gid = %handle.gid, "RPC addUri succeeded");
+        emit_structured_log(
+            "INFO",
+            "raria::rpc",
+            "RPC addUri succeeded",
+            [("gid", handle.gid.to_string())],
+        );
         Ok(format!("{}", handle.gid))
     }
 
@@ -698,13 +705,16 @@ impl Aria2RpcServer for RpcHandler {
                     .collect::<Vec<_>>()
             });
 
+        let requested_rate_limit = options
+            .get("max-download-limit")
+            .and_then(|v| v.as_str())
+            .and_then(|limit| limit.parse::<u64>().ok());
+
         // Apply supported per-job options.
         self.engine.registry.update(parsed_gid, |job| {
-            if let Some(limit) = options.get("max-download-limit").and_then(|v| v.as_str()) {
-                if let Ok(bps) = limit.parse::<u64>() {
-                    job.options.max_download_limit = bps;
-                    debug!(%gid, bps, "changed max-download-limit");
-                }
+            if let Some(bps) = requested_rate_limit {
+                job.options.max_download_limit = bps;
+                debug!(%gid, bps, "changed max-download-limit");
             }
             if let Some(limit) = options.get("max-upload-limit").and_then(|v| v.as_str()) {
                 if let Ok(bps) = limit.parse::<u64>() {
@@ -766,6 +776,11 @@ impl Aria2RpcServer for RpcHandler {
                 }
             }
         });
+        if let Some(bps) = requested_rate_limit {
+            self.engine
+                .update_job_rate_limit(parsed_gid, bps)
+                .map_err(|e| rpc_err(1, &e.to_string()))?;
+        }
         Ok("OK".into())
     }
 
@@ -825,6 +840,12 @@ impl Aria2RpcServer for RpcHandler {
                 self.engine.scheduler.set_max_concurrent(n);
                 self.engine.work_notify().notify_one();
                 debug!(max = n, "changed max concurrent downloads");
+                emit_structured_log(
+                    "INFO",
+                    "raria::rpc",
+                    "changed max concurrent downloads",
+                    [("max_concurrent_downloads", n.to_string())],
+                );
             }
         }
         Ok("OK".into())
@@ -885,12 +906,14 @@ impl Aria2RpcServer for RpcHandler {
 
     async fn shutdown(&self) -> RpcResult<String> {
         info!("RPC shutdown requested");
+        emit_structured_log("INFO", "raria::rpc", "RPC shutdown requested", []);
         self.engine.shutdown();
         Ok("OK".into())
     }
 
     async fn force_shutdown(&self) -> RpcResult<String> {
         info!("RPC force shutdown requested");
+        emit_structured_log("INFO", "raria::rpc", "RPC force shutdown requested", []);
         self.engine.shutdown();
         Ok("OK".into())
     }

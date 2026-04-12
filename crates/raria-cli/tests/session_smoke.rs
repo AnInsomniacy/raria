@@ -882,9 +882,9 @@ async fn daemon_rejects_checksum_mismatch_before_marking_job_complete() {
     );
 
     let output_path = temp.path().join("checksum.bin");
-    assert_eq!(
-        std::fs::read(&output_path).expect("read checksum output file"),
-        b"good"
+    assert!(
+        !output_path.exists(),
+        "checksum mismatch should remove the invalid output file"
     );
 
     graceful_shutdown(rpc_port, &mut child).await;
@@ -948,6 +948,12 @@ async fn daemon_rejects_metalink_piece_checksum_mismatch_before_marking_job_comp
     assert!(
         error_message.contains("piece checksum"),
         "piece checksum mismatch should surface in daemon status: {status_resp}"
+    );
+
+    let output_path = temp.path().join("piece.bin");
+    assert!(
+        !output_path.exists(),
+        "piece checksum mismatch should remove the invalid output file"
     );
 
     graceful_shutdown(rpc_port, &mut child).await;
@@ -1197,6 +1203,100 @@ async fn daemon_saves_session_when_sigusr1_is_received() {
     }
 
     graceful_shutdown(rpc_port, &mut child).await;
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn daemon_sigterm_shuts_down_promptly_while_throttled() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("HEAD"))
+        .and(path("/sigterm-throttled.bin"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-length", "524288")
+                .insert_header("accept-ranges", "bytes"),
+        )
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/sigterm-throttled.bin"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_delay(Duration::from_millis(500))
+                .set_body_bytes(vec![b't'; 512 * 1024]),
+        )
+        .mount(&server)
+        .await;
+
+    let temp = tempdir().expect("tempdir");
+    let session_file = temp.path().join("sigterm-throttled.session.redb");
+    let (mut child, rpc_port) = spawn_ready_daemon_with_args(
+        temp.path(),
+        &session_file,
+        None,
+        &["--max-download-limit", "16384"],
+    )
+    .await;
+
+    let add_resp = rpc_call(
+        rpc_port,
+        "aria2.addUri",
+        serde_json::json!([[format!("{}/sigterm-throttled.bin", server.uri())]]),
+    )
+    .await;
+    let gid = add_resp["result"].as_str().expect("gid").to_string();
+
+    let active_deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        let status_resp = rpc_call(
+            rpc_port,
+            "aria2.tellStatus",
+            serde_json::json!([gid.clone()]),
+        )
+        .await;
+        let status = status_resp["result"]["status"].as_str().expect("status");
+        let completed = status_resp["result"]["completedLength"]
+            .as_str()
+            .expect("completedLength")
+            .parse::<u64>()
+            .expect("completedLength should parse");
+        if status == "active" && completed > 0 {
+            break;
+        }
+        assert!(
+            Instant::now() < active_deadline,
+            "job never reached an actively throttled state before SIGTERM: {status_resp}"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+
+    nix::sys::signal::kill(
+        nix::unistd::Pid::from_raw(child.child.id() as i32),
+        nix::sys::signal::Signal::SIGTERM,
+    )
+    .expect("send SIGTERM");
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        match child.child.try_wait() {
+            Ok(Some(status)) => {
+                assert!(
+                    status.success(),
+                    "daemon exited unsuccessfully after SIGTERM: {status}"
+                );
+                break;
+            }
+            Ok(None) => {
+                assert!(
+                    Instant::now() < deadline,
+                    "daemon did not exit promptly after SIGTERM while throttled"
+                );
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            Err(error) => panic!("failed waiting for SIGTERM shutdown: {error}"),
+        }
+    }
 }
 
 #[tokio::test]

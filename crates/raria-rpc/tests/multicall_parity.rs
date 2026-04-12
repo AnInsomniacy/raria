@@ -201,6 +201,7 @@ mod tests {
         assert!(names.contains(&"aria2.onDownloadStart"));
         assert!(names.contains(&"aria2.onDownloadComplete"));
         assert!(names.contains(&"aria2.onDownloadError"));
+        assert!(names.contains(&"aria2.onSourceFailed"));
 
         cancel.cancel();
     }

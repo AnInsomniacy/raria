@@ -7,9 +7,12 @@
 // - params is an array containing a single struct: [{"gid": "..."}]
 // - Method names: aria2.onDownloadStart, aria2.onDownloadPause,
 //   aria2.onDownloadStop, aria2.onDownloadComplete, aria2.onDownloadError,
-//   aria2.onBtDownloadComplete
+//   aria2.onSourceFailed, aria2.onBtDownloadComplete
 //
 // Reference: https://aria2.github.io/manual/en/html/aria2c.html#notifications
+//
+// raria additionally exposes aria2.onSourceFailed for non-terminal mirror/source
+// failures that still allow the overall job to complete.
 
 #[cfg(test)]
 mod tests {
@@ -111,7 +114,7 @@ mod tests {
         );
     }
 
-    /// All six aria2 notification methods must be supported.
+    /// All supported aria2-style notification methods must be mapped.
     #[test]
     fn all_aria2_notification_methods_are_mapped() {
         let test_cases = vec![
@@ -151,6 +154,14 @@ mod tests {
                     message: "connection refused".into(),
                 },
                 "aria2.onDownloadError",
+            ),
+            (
+                DownloadEvent::SourceFailed {
+                    gid: Gid::from_raw(7),
+                    uri: "https://mirror.example/file.iso".into(),
+                    message: "checksum mismatch".into(),
+                },
+                "aria2.onSourceFailed",
             ),
         ];
 

@@ -63,9 +63,23 @@ pub(crate) fn build_conditional_get_probe_headers(
     Ok(probe_headers)
 }
 
+pub(crate) fn redact_url_for_logs(raw: &str) -> String {
+    let Ok(mut parsed) = url::Url::parse(raw) else {
+        return raw.to_string();
+    };
+
+    let _ = parsed.set_username("");
+    let _ = parsed.set_password(None);
+    parsed.set_query(None);
+    parsed.set_fragment(None);
+    parsed.to_string()
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{build_conditional_get_probe_headers, format_bytes, parse_header_args};
+    use super::{
+        build_conditional_get_probe_headers, format_bytes, parse_header_args, redact_url_for_logs,
+    };
     use raria_core::config::GlobalConfig;
     use tempfile::tempdir;
 
@@ -126,5 +140,24 @@ mod tests {
                 .iter()
                 .any(|(name, _)| name.eq_ignore_ascii_case("if-modified-since"))
         );
+    }
+
+    #[test]
+    fn redact_url_for_logs_strips_basic_auth_and_query() {
+        let redacted =
+            redact_url_for_logs("https://alice:secret@example.com/file.bin?token=abc#frag");
+        assert_eq!(redacted, "https://example.com/file.bin");
+    }
+
+    #[test]
+    fn redact_url_for_logs_preserves_plain_url() {
+        let redacted = redact_url_for_logs("https://example.com/file.bin");
+        assert_eq!(redacted, "https://example.com/file.bin");
+    }
+
+    #[test]
+    fn redact_url_for_logs_returns_original_for_non_url_input() {
+        let raw = "not-a-url";
+        assert_eq!(redact_url_for_logs(raw), raw);
     }
 }

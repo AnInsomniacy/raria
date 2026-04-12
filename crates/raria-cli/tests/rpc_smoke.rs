@@ -4,6 +4,7 @@ use std::process::{Child, Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use futures::{SinkExt, StreamExt};
 use tempfile::tempdir;
 use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
@@ -569,20 +570,24 @@ async fn daemon_respects_min_split_size_when_calculating_effective_connections()
     let gid = add_resp["result"].as_str().expect("gid").to_string();
     let deadline = Instant::now() + Duration::from_secs(20);
     loop {
-        let status_resp: serde_json::Value = client
-            .post(format!("http://127.0.0.1:{rpc_port}"))
-            .json(&serde_json::json!({
-                "jsonrpc": "2.0",
-                "id": 2,
-                "method": "aria2.tellStatus",
-                "params": [gid.clone()],
-            }))
-            .send()
-            .await
-            .expect("send tellStatus")
-            .json()
-            .await
-            .expect("parse tellStatus");
+        let status_resp: serde_json::Value = tokio::time::timeout(
+            Duration::from_secs(5),
+            client
+                .post(format!("http://127.0.0.1:{rpc_port}"))
+                .json(&serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": 2,
+                    "method": "aria2.tellStatus",
+                    "params": [gid.clone()],
+                }))
+                .send(),
+        )
+        .await
+        .expect("tellStatus should not hang before enabling per-job limit")
+        .expect("send tellStatus")
+        .json()
+        .await
+        .expect("parse tellStatus");
 
         let status = status_resp["result"]["status"].as_str().expect("status");
         let connections = status_resp["result"]["connections"]
@@ -1202,6 +1207,26 @@ async fn daemon_writes_logs_to_requested_file() {
     loop {
         let log = std::fs::read_to_string(&log_path).expect("read log file");
         if !log.trim().is_empty() {
+            let parsed_lines = log
+                .lines()
+                .filter(|line| !line.trim().is_empty())
+                .map(|line| {
+                    serde_json::from_str::<serde_json::Value>(line)
+                        .expect("daemon log lines should be valid JSON")
+                })
+                .collect::<Vec<_>>();
+            assert!(
+                parsed_lines
+                    .iter()
+                    .any(|value| value.get("level").is_some()),
+                "structured log lines should expose a level field"
+            );
+            assert!(
+                parsed_lines
+                    .iter()
+                    .all(|value| !value.to_string().contains("topsecret")),
+                "structured logs must not leak rpc secrets"
+            );
             break;
         }
 
@@ -1211,6 +1236,932 @@ async fn daemon_writes_logs_to_requested_file() {
         );
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
+}
+
+#[tokio::test]
+async fn daemon_log_file_redacts_credentials_in_download_urls() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("HEAD"))
+        .and(path("/secret.bin"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-length", "4")
+                .insert_header("accept-ranges", "bytes"),
+        )
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/secret.bin"))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(b"pass"))
+        .mount(&server)
+        .await;
+
+    let temp = tempdir().expect("tempdir");
+    let session_file = temp.path().join("redact-log.session.redb");
+    let log_path = temp.path().join("redact.log");
+    let (mut child, rpc_port) = spawn_ready_daemon_with_args(
+        temp.path(),
+        &session_file,
+        &["--log", log_path.to_str().unwrap()],
+    )
+    .await;
+
+    let credentialed = format!(
+        "http://alice:supersecret@127.0.0.1:{}/secret.bin?token=abc",
+        server.address().port()
+    );
+    let add_resp: serde_json::Value = reqwest::Client::new()
+        .post(format!("http://127.0.0.1:{rpc_port}"))
+        .json(&serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 60,
+            "method": "aria2.addUri",
+            "params": [[credentialed]],
+        }))
+        .send()
+        .await
+        .expect("send addUri")
+        .json()
+        .await
+        .expect("parse addUri response");
+    let gid = add_resp["result"].as_str().expect("gid").to_string();
+
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        let status_resp: serde_json::Value = reqwest::Client::new()
+            .post(format!("http://127.0.0.1:{rpc_port}"))
+            .json(&serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 61,
+                "method": "aria2.tellStatus",
+                "params": [gid.clone()],
+            }))
+            .send()
+            .await
+            .expect("send tellStatus")
+            .json()
+            .await
+            .expect("parse tellStatus response");
+        let status = status_resp["result"]["status"].as_str().expect("status");
+        if matches!(status, "complete" | "error") {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "daemon did not reach terminal status in time: {status_resp}"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+
+    let shutdown_resp: serde_json::Value = reqwest::Client::new()
+        .post(format!("http://127.0.0.1:{rpc_port}"))
+        .json(&serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 51,
+            "method": "aria2.shutdown",
+            "params": [],
+        }))
+        .send()
+        .await
+        .expect("send shutdown")
+        .json()
+        .await
+        .expect("parse shutdown response");
+    assert_eq!(shutdown_resp["result"], "OK");
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        match child.child.try_wait() {
+            Ok(Some(status)) => {
+                assert!(status.success(), "daemon exited unsuccessfully: {status}");
+                break;
+            }
+            Ok(None) => {
+                assert!(
+                    Instant::now() < deadline,
+                    "daemon did not exit after shutdown RPC"
+                );
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            Err(error) => panic!("failed waiting for daemon exit: {error}"),
+        }
+    }
+
+    let log = std::fs::read_to_string(&log_path).expect("read log file");
+    assert!(
+        !log.contains("supersecret"),
+        "log file must not leak URL passwords"
+    );
+    assert!(
+        !log.contains("token=abc"),
+        "log file must not leak credential-like query parameters"
+    );
+    assert!(
+        log.contains("/secret.bin"),
+        "redacted URL should still preserve useful path context"
+    );
+}
+
+#[tokio::test]
+async fn daemon_log_file_contains_structured_rpc_control_events() {
+    let temp = tempdir().expect("tempdir");
+    let session_file = temp.path().join("rpc-log.session.redb");
+    let log_path = temp.path().join("rpc.log");
+    let (mut child, rpc_port) = spawn_ready_daemon_with_args(
+        temp.path(),
+        &session_file,
+        &["--log", log_path.to_str().unwrap()],
+    )
+    .await;
+
+    let add_resp: serde_json::Value = reqwest::Client::new()
+        .post(format!("http://127.0.0.1:{rpc_port}"))
+        .json(&serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 70,
+            "method": "aria2.addUri",
+            "params": [["https://example.com/file.bin"]],
+        }))
+        .send()
+        .await
+        .expect("send addUri")
+        .json()
+        .await
+        .expect("parse addUri response");
+    let gid = add_resp["result"].as_str().expect("gid").to_string();
+
+    let shutdown_resp: serde_json::Value = reqwest::Client::new()
+        .post(format!("http://127.0.0.1:{rpc_port}"))
+        .json(&serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 71,
+            "method": "aria2.shutdown",
+            "params": [],
+        }))
+        .send()
+        .await
+        .expect("send shutdown")
+        .json()
+        .await
+        .expect("parse shutdown response");
+    assert_eq!(shutdown_resp["result"], "OK");
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        match child.child.try_wait() {
+            Ok(Some(status)) => {
+                assert!(status.success(), "daemon exited unsuccessfully: {status}");
+                break;
+            }
+            Ok(None) => {
+                assert!(
+                    Instant::now() < deadline,
+                    "daemon did not exit after shutdown RPC"
+                );
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            Err(error) => panic!("failed waiting for daemon exit: {error}"),
+        }
+    }
+
+    let log = std::fs::read_to_string(&log_path).expect("read log file");
+    let entries = log
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("valid JSON line"))
+        .collect::<Vec<_>>();
+
+    assert!(
+        entries.iter().any(|entry| {
+            entry["target"] == "raria::rpc"
+                && entry["message"] == "RPC addUri succeeded"
+                && entry["fields"]["gid"] == gid
+                && entry["fields"]["session_id"]
+                    .as_str()
+                    .is_some_and(|value| !value.is_empty())
+        }),
+        "structured log should capture RPC addUri success with gid and session correlation"
+    );
+    assert!(
+        entries.iter().any(|entry| {
+            entry["target"] == "raria::rpc" && entry["message"] == "RPC shutdown requested"
+        }),
+        "structured log should capture RPC shutdown requests"
+    );
+}
+
+#[tokio::test]
+async fn daemon_log_file_contains_structured_mirror_failover_events() {
+    let primary = MockServer::start().await;
+    let fallback = MockServer::start().await;
+
+    Mock::given(method("HEAD"))
+        .and(path("/mirror-log.bin"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-length", "4")
+                .insert_header("accept-ranges", "bytes"),
+        )
+        .mount(&primary)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/mirror-log.bin"))
+        .respond_with(ResponseTemplate::new(503))
+        .mount(&primary)
+        .await;
+
+    Mock::given(method("HEAD"))
+        .and(path("/mirror-log.bin"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-length", "4")
+                .insert_header("accept-ranges", "bytes"),
+        )
+        .mount(&fallback)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/mirror-log.bin"))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(b"pass"))
+        .mount(&fallback)
+        .await;
+
+    let temp = tempdir().expect("tempdir");
+    let session_file = temp.path().join("mirror-log.session.redb");
+    let log_path = temp.path().join("mirror.log");
+    let (mut child, rpc_port) = spawn_ready_daemon_with_args(
+        temp.path(),
+        &session_file,
+        &["--log", log_path.to_str().unwrap()],
+    )
+    .await;
+
+    let add_resp: serde_json::Value = reqwest::Client::new()
+        .post(format!("http://127.0.0.1:{rpc_port}"))
+        .json(&serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 80,
+            "method": "aria2.addUri",
+            "params": [[
+                format!("{}/mirror-log.bin", primary.uri()),
+                format!("{}/mirror-log.bin", fallback.uri())
+            ]],
+        }))
+        .send()
+        .await
+        .expect("send addUri")
+        .json()
+        .await
+        .expect("parse addUri response");
+    let gid = add_resp["result"].as_str().expect("gid").to_string();
+
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        let status_resp: serde_json::Value = reqwest::Client::new()
+            .post(format!("http://127.0.0.1:{rpc_port}"))
+            .json(&serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 81,
+                "method": "aria2.tellStatus",
+                "params": [gid.clone()],
+            }))
+            .send()
+            .await
+            .expect("send tellStatus")
+            .json()
+            .await
+            .expect("parse tellStatus response");
+        let status = status_resp["result"]["status"].as_str().expect("status");
+        if matches!(status, "complete" | "error") {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "daemon did not reach terminal status in time: {status_resp}"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+
+    let shutdown_resp: serde_json::Value = reqwest::Client::new()
+        .post(format!("http://127.0.0.1:{rpc_port}"))
+        .json(&serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 82,
+            "method": "aria2.shutdown",
+            "params": [],
+        }))
+        .send()
+        .await
+        .expect("send shutdown")
+        .json()
+        .await
+        .expect("parse shutdown response");
+    assert_eq!(shutdown_resp["result"], "OK");
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        match child.child.try_wait() {
+            Ok(Some(status)) => {
+                assert!(status.success(), "daemon exited unsuccessfully: {status}");
+                break;
+            }
+            Ok(None) => {
+                assert!(
+                    Instant::now() < deadline,
+                    "daemon did not exit after shutdown RPC"
+                );
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            Err(error) => panic!("failed waiting for daemon exit: {error}"),
+        }
+    }
+
+    let entries = std::fs::read_to_string(&log_path)
+        .expect("read log file")
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("valid JSON line"))
+        .collect::<Vec<_>>();
+
+    assert!(
+        entries.iter().any(|entry| {
+            entry["target"] == "raria::daemon"
+                && entry["message"] == "mirror failed, trying next mirror"
+                && entry["fields"]["gid"] == gid
+        }),
+        "structured log should capture daemon mirror failover events"
+    );
+    assert!(
+        entries.iter().any(|entry| {
+            entry["target"] == "raria::engine"
+                && entry["message"] == "job source failed"
+                && entry["fields"]["gid"] == gid
+        }),
+        "structured log should capture source-failed lifecycle events"
+    );
+}
+
+#[tokio::test]
+async fn daemon_ws_emits_on_source_failed_before_completion() {
+    let fallback = MockServer::start().await;
+
+    Mock::given(method("HEAD"))
+        .and(path("/source-failed.bin"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-length", "4")
+                .insert_header("accept-ranges", "bytes"),
+        )
+        .mount(&fallback)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/source-failed.bin"))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(b"pass"))
+        .mount(&fallback)
+        .await;
+
+    let temp = tempdir().expect("tempdir");
+    let session_file = temp.path().join("source-failed-ws.session.redb");
+    let (mut child, rpc_port) = spawn_ready_daemon(temp.path(), &session_file).await;
+
+    let ws_url = format!("ws://127.0.0.1:{rpc_port}/jsonrpc");
+    let (mut ws_stream, _) = connect_async(&ws_url).await.expect("WS connect failed");
+
+    ws_stream
+        .send(tokio_tungstenite::tungstenite::Message::Text(
+            serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 120,
+                "method": "aria2.getVersion",
+                "params": [],
+            })
+            .to_string(),
+        ))
+        .await
+        .expect("send WS RPC request");
+
+    let _response = tokio::time::timeout(Duration::from_secs(5), ws_stream.next())
+        .await
+        .expect("timed out waiting for WS RPC response")
+        .expect("WS stream ended before RPC response")
+        .expect("WS RPC response error");
+
+    let add_resp: serde_json::Value = reqwest::Client::new()
+        .post(format!("http://127.0.0.1:{rpc_port}"))
+        .json(&serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 121,
+            "method": "aria2.addUri",
+            "params": [[
+                "gopher://example.invalid/source-failed.bin",
+                format!("{}/source-failed.bin", fallback.uri())
+            ]],
+        }))
+        .send()
+        .await
+        .expect("send addUri")
+        .json()
+        .await
+        .expect("parse addUri response");
+    let gid = add_resp["result"].as_str().expect("gid").to_string();
+
+    let ws_deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    let source_failed_json = loop {
+        let frame = tokio::time::timeout_at(ws_deadline, ws_stream.next())
+            .await
+            .expect("timed out waiting for source-failed WS notification")
+            .expect("WS stream ended before source-failed notification")
+            .expect("WS source-failed notification error");
+        let json: serde_json::Value =
+            serde_json::from_str(frame.to_text().expect("WS text frame")).expect("json");
+        if json["method"] == "aria2.onSourceFailed" {
+            break json;
+        }
+    };
+    assert_eq!(source_failed_json["method"], "aria2.onSourceFailed");
+    assert_eq!(source_failed_json["params"][0]["gid"], gid);
+
+    let completion_deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let status_resp: serde_json::Value = reqwest::Client::new()
+            .post(format!("http://127.0.0.1:{rpc_port}"))
+            .json(&serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 122,
+                "method": "aria2.tellStatus",
+                "params": [gid.clone()],
+            }))
+            .send()
+            .await
+            .expect("send tellStatus")
+            .json()
+            .await
+            .expect("parse tellStatus");
+        if status_resp["result"]["status"].as_str() == Some("complete") {
+            break;
+        }
+        assert!(
+            Instant::now() < completion_deadline,
+            "download did not complete after source failure failover: {status_resp}"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+
+    let shutdown_resp: serde_json::Value = reqwest::Client::new()
+        .post(format!("http://127.0.0.1:{rpc_port}"))
+        .json(&serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 123,
+            "method": "aria2.shutdown",
+            "params": [],
+        }))
+        .send()
+        .await
+        .expect("send shutdown")
+        .json()
+        .await
+        .expect("parse shutdown response");
+    assert_eq!(shutdown_resp["result"], "OK");
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        match child.child.try_wait() {
+            Ok(Some(status)) => {
+                assert!(status.success(), "daemon exited unsuccessfully: {status}");
+                break;
+            }
+            Ok(None) => {
+                assert!(
+                    Instant::now() < deadline,
+                    "daemon did not exit after shutdown RPC"
+                );
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            Err(error) => panic!("failed waiting for daemon exit: {error}"),
+        }
+    }
+}
+
+#[tokio::test]
+async fn daemon_log_file_contains_terminal_integrity_failure_events() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("HEAD"))
+        .and(path("/integrity-log.bin"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-length", "4")
+                .insert_header("accept-ranges", "bytes"),
+        )
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/integrity-log.bin"))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(b"good"))
+        .mount(&server)
+        .await;
+
+    let temp = tempdir().expect("tempdir");
+    let session_file = temp.path().join("integrity-log.session.redb");
+    let log_path = temp.path().join("integrity.log");
+    let (mut child, rpc_port) = spawn_ready_daemon_with_args(
+        temp.path(),
+        &session_file,
+        &["--log", log_path.to_str().unwrap()],
+    )
+    .await;
+
+    let add_resp: serde_json::Value = reqwest::Client::new()
+        .post(format!("http://127.0.0.1:{rpc_port}"))
+        .json(&serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 83,
+            "method": "aria2.addUri",
+            "params": [[format!("{}/integrity-log.bin", server.uri())], {
+                "checksum": "sha-256=0000000000000000000000000000000000000000000000000000000000000000"
+            }],
+        }))
+        .send()
+        .await
+        .expect("send addUri")
+        .json()
+        .await
+        .expect("parse addUri response");
+    let gid = add_resp["result"].as_str().expect("gid").to_string();
+
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        let status_resp: serde_json::Value = reqwest::Client::new()
+            .post(format!("http://127.0.0.1:{rpc_port}"))
+            .json(&serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 84,
+                "method": "aria2.tellStatus",
+                "params": [gid.clone()],
+            }))
+            .send()
+            .await
+            .expect("send tellStatus")
+            .json()
+            .await
+            .expect("parse tellStatus response");
+        let status = status_resp["result"]["status"].as_str().expect("status");
+        if status == "error" {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "daemon did not reach terminal integrity failure in time: {status_resp}"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+
+    let shutdown_resp: serde_json::Value = reqwest::Client::new()
+        .post(format!("http://127.0.0.1:{rpc_port}"))
+        .json(&serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 85,
+            "method": "aria2.shutdown",
+            "params": [],
+        }))
+        .send()
+        .await
+        .expect("send shutdown")
+        .json()
+        .await
+        .expect("parse shutdown response");
+    assert_eq!(shutdown_resp["result"], "OK");
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        match child.child.try_wait() {
+            Ok(Some(status)) => {
+                assert!(status.success(), "daemon exited unsuccessfully: {status}");
+                break;
+            }
+            Ok(None) => {
+                assert!(
+                    Instant::now() < deadline,
+                    "daemon did not exit after shutdown RPC"
+                );
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            Err(error) => panic!("failed waiting for daemon exit: {error}"),
+        }
+    }
+
+    let entries = std::fs::read_to_string(&log_path)
+        .expect("read log file")
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("valid JSON line"))
+        .collect::<Vec<_>>();
+
+    assert!(
+        entries.iter().any(|entry| {
+            entry["target"] == "raria::daemon"
+                && entry["message"] == "mirror payload failed verification"
+                && entry["fields"]["gid"] == gid
+                && entry["fields"]["error"]
+                    .as_str()
+                    .is_some_and(|error| error.contains("checksum"))
+        }),
+        "structured log should capture terminal integrity failures with the verification error"
+    );
+}
+
+#[tokio::test]
+async fn daemon_log_file_contains_structured_restore_events() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("HEAD"))
+        .and(path("/restore-log.bin"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-length", "1048576")
+                .insert_header("accept-ranges", "bytes"),
+        )
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/restore-log.bin"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_delay(Duration::from_secs(5))
+                .set_body_bytes(vec![b'x'; 1024 * 1024]),
+        )
+        .mount(&server)
+        .await;
+
+    let temp = tempdir().expect("tempdir");
+    let session_file = temp.path().join("restore-log.session.redb");
+    let log_path = temp.path().join("restore.log");
+
+    let (mut first, first_port) = spawn_ready_daemon_with_args(
+        temp.path(),
+        &session_file,
+        &["--log", log_path.to_str().unwrap()],
+    )
+    .await;
+
+    let add_resp: serde_json::Value = reqwest::Client::new()
+        .post(format!("http://127.0.0.1:{first_port}"))
+        .json(&serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 90,
+            "method": "aria2.addUri",
+            "params": [[format!("{}/restore-log.bin", server.uri())]],
+        }))
+        .send()
+        .await
+        .expect("send addUri")
+        .json()
+        .await
+        .expect("parse addUri response");
+    let gid = add_resp["result"].as_str().expect("gid").to_string();
+
+    let progress_deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        let status_resp: serde_json::Value = reqwest::Client::new()
+            .post(format!("http://127.0.0.1:{first_port}"))
+            .json(&serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 91,
+                "method": "aria2.tellStatus",
+                "params": [gid.clone()],
+            }))
+            .send()
+            .await
+            .expect("send tellStatus")
+            .json()
+            .await
+            .expect("parse tellStatus response");
+        let status = status_resp["result"]["status"].as_str().expect("status");
+        if matches!(status, "waiting" | "active") {
+            break;
+        }
+        assert!(
+            Instant::now() < progress_deadline,
+            "job never reached a restorable state: {status_resp}"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+
+    let shutdown_resp: serde_json::Value = reqwest::Client::new()
+        .post(format!("http://127.0.0.1:{first_port}"))
+        .json(&serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 92,
+            "method": "aria2.shutdown",
+            "params": [],
+        }))
+        .send()
+        .await
+        .expect("send shutdown")
+        .json()
+        .await
+        .expect("parse shutdown response");
+    assert_eq!(shutdown_resp["result"], "OK");
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        match first.child.try_wait() {
+            Ok(Some(status)) => {
+                assert!(status.success(), "daemon exited unsuccessfully: {status}");
+                break;
+            }
+            Ok(None) => {
+                assert!(
+                    Instant::now() < deadline,
+                    "daemon did not exit after shutdown RPC"
+                );
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            Err(error) => panic!("failed waiting for daemon exit: {error}"),
+        }
+    }
+
+    let (mut second, second_port) = spawn_ready_daemon_with_args(
+        temp.path(),
+        &session_file,
+        &["--log", log_path.to_str().unwrap()],
+    )
+    .await;
+
+    let restored: serde_json::Value = reqwest::Client::new()
+        .post(format!("http://127.0.0.1:{second_port}"))
+        .json(&serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 93,
+            "method": "aria2.tellStatus",
+            "params": [gid.clone()],
+        }))
+        .send()
+        .await
+        .expect("send tellStatus")
+        .json()
+        .await
+        .expect("parse tellStatus response");
+    assert!(
+        restored["result"].is_object(),
+        "restored job should still be visible after restart: {restored}"
+    );
+
+    let shutdown_resp: serde_json::Value = reqwest::Client::new()
+        .post(format!("http://127.0.0.1:{second_port}"))
+        .json(&serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 94,
+            "method": "aria2.shutdown",
+            "params": [],
+        }))
+        .send()
+        .await
+        .expect("send shutdown")
+        .json()
+        .await
+        .expect("parse shutdown response");
+    assert_eq!(shutdown_resp["result"], "OK");
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        match second.child.try_wait() {
+            Ok(Some(status)) => {
+                assert!(status.success(), "daemon exited unsuccessfully: {status}");
+                break;
+            }
+            Ok(None) => {
+                assert!(
+                    Instant::now() < deadline,
+                    "daemon did not exit after shutdown RPC"
+                );
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            Err(error) => panic!("failed waiting for daemon exit: {error}"),
+        }
+    }
+
+    let entries = std::fs::read_to_string(&log_path)
+        .expect("read log file")
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("valid JSON line"))
+        .collect::<Vec<_>>();
+
+    assert!(
+        entries.iter().any(|entry| {
+            entry["target"] == "raria::engine" && entry["message"] == "restored jobs from store"
+        }),
+        "structured log should capture restore events"
+    );
+}
+
+#[tokio::test]
+async fn daemon_log_file_contains_structured_ws_notification_events() {
+    let temp = tempdir().expect("tempdir");
+    let session_file = temp.path().join("ws-log.session.redb");
+    let log_path = temp.path().join("ws.log");
+    let (mut child, rpc_port) = spawn_ready_daemon_with_args(
+        temp.path(),
+        &session_file,
+        &["--log", log_path.to_str().unwrap()],
+    )
+    .await;
+
+    let ws_url = format!("ws://127.0.0.1:{rpc_port}/jsonrpc");
+    let (mut ws_stream, _) = connect_async(&ws_url).await.expect("WS connect failed");
+
+    ws_stream
+        .send(tokio_tungstenite::tungstenite::Message::Text(
+            serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 110,
+                "method": "aria2.getVersion",
+                "params": [],
+            })
+            .to_string(),
+        ))
+        .await
+        .expect("send WS RPC request");
+
+    let _response = tokio::time::timeout(Duration::from_secs(5), ws_stream.next())
+        .await
+        .expect("timed out waiting for WS RPC response")
+        .expect("WS stream ended before RPC response")
+        .expect("WS RPC response error");
+
+    let add_resp: serde_json::Value = reqwest::Client::new()
+        .post(format!("http://127.0.0.1:{rpc_port}"))
+        .json(&serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 111,
+            "method": "aria2.addUri",
+            "params": [["https://example.com/ws-log.bin"]],
+        }))
+        .send()
+        .await
+        .expect("send addUri")
+        .json()
+        .await
+        .expect("parse addUri response");
+    let gid = add_resp["result"].as_str().expect("gid").to_string();
+
+    let _notification = tokio::time::timeout(Duration::from_secs(5), ws_stream.next())
+        .await
+        .expect("timed out waiting for WS notification")
+        .expect("WS stream ended before notification")
+        .expect("WS notification error");
+
+    let shutdown_resp: serde_json::Value = reqwest::Client::new()
+        .post(format!("http://127.0.0.1:{rpc_port}"))
+        .json(&serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 112,
+            "method": "aria2.shutdown",
+            "params": [],
+        }))
+        .send()
+        .await
+        .expect("send shutdown")
+        .json()
+        .await
+        .expect("parse shutdown response");
+    assert_eq!(shutdown_resp["result"], "OK");
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        match child.child.try_wait() {
+            Ok(Some(status)) => {
+                assert!(status.success(), "daemon exited unsuccessfully: {status}");
+                break;
+            }
+            Ok(None) => {
+                assert!(
+                    Instant::now() < deadline,
+                    "daemon did not exit after shutdown RPC"
+                );
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            Err(error) => panic!("failed waiting for daemon exit: {error}"),
+        }
+    }
+
+    let entries = std::fs::read_to_string(&log_path)
+        .expect("read log file")
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("valid JSON line"))
+        .collect::<Vec<_>>();
+
+    assert!(
+        entries.iter().any(|entry| {
+            entry["target"] == "raria::rpc"
+                && entry["message"] == "broadcasting WS notification"
+                && entry["fields"]["method"] == "aria2.onDownloadStart"
+                && entry["fields"]["gid"] == gid
+        }),
+        "structured log should capture WS notification emission"
+    );
 }
 
 #[cfg(unix)]
@@ -1553,37 +2504,22 @@ async fn change_global_option_updates_active_download_limit_in_product_path() {
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
 
-    let shutdown_resp: serde_json::Value = client
-        .post(format!("http://127.0.0.1:{rpc_port}"))
-        .json(&serde_json::json!({
-            "jsonrpc": "2.0",
-            "id": 5,
-            "method": "aria2.shutdown",
-            "params": [],
-        }))
-        .send()
-        .await
-        .expect("send shutdown")
-        .json()
-        .await
-        .expect("parse shutdown response");
-    assert_eq!(shutdown_resp["result"], "OK");
-
+    child
+        .child
+        .kill()
+        .expect("kill daemon after per-job limit assertion");
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
         match child.child.try_wait() {
             Ok(Some(status)) => {
-                assert!(status.success(), "daemon exited unsuccessfully: {status}");
+                assert!(!status.success() || status.code().is_some());
                 break;
             }
             Ok(None) => {
-                assert!(
-                    Instant::now() < deadline,
-                    "daemon did not exit after shutdown RPC"
-                );
+                assert!(Instant::now() < deadline, "daemon did not exit after kill");
                 tokio::time::sleep(Duration::from_millis(100)).await;
             }
-            Err(error) => panic!("failed waiting for daemon exit: {error}"),
+            Err(error) => panic!("failed waiting for daemon exit after kill: {error}"),
         }
     }
 }
@@ -1707,6 +2643,170 @@ async fn change_global_option_can_enable_a_limit_for_an_already_active_download(
             assert_ne!(
                 status, "complete",
                 "download completed too quickly after enabling a very low global limit: {status_resp}"
+            );
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+
+    let shutdown_resp: serde_json::Value = client
+        .post(format!("http://127.0.0.1:{rpc_port}"))
+        .json(&serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 5,
+            "method": "aria2.shutdown",
+            "params": [],
+        }))
+        .send()
+        .await
+        .expect("send shutdown")
+        .json()
+        .await
+        .expect("parse shutdown response");
+    assert_eq!(shutdown_resp["result"], "OK");
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        match child.child.try_wait() {
+            Ok(Some(status)) => {
+                assert!(status.success(), "daemon exited unsuccessfully: {status}");
+                break;
+            }
+            Ok(None) => {
+                assert!(
+                    Instant::now() < deadline,
+                    "daemon did not exit after shutdown RPC"
+                );
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            Err(error) => panic!("failed waiting for daemon exit: {error}"),
+        }
+    }
+}
+
+#[tokio::test]
+async fn change_option_can_enable_a_per_job_limit_for_an_already_active_download() {
+    let download_server = MockServer::start().await;
+
+    Mock::given(method("HEAD"))
+        .and(path("/late-job-limit.bin"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-length", "524288")
+                .insert_header("accept-ranges", "bytes"),
+        )
+        .mount(&download_server)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path("/late-job-limit.bin"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_delay(Duration::from_millis(500))
+                .set_body_bytes(vec![b'j'; 512 * 1024]),
+        )
+        .mount(&download_server)
+        .await;
+
+    let temp = tempdir().expect("tempdir");
+    let session_file = temp.path().join("late-job-limit.session.redb");
+    let (mut child, rpc_port) = spawn_ready_daemon(temp.path(), &session_file).await;
+
+    let client = reqwest::Client::new();
+    let add_resp: serde_json::Value = client
+        .post(format!("http://127.0.0.1:{rpc_port}"))
+        .json(&serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "aria2.addUri",
+            "params": [
+                [format!("{}/late-job-limit.bin", download_server.uri())],
+                {
+                    "split": "1",
+                    "max-connection-per-server": "1"
+                }
+            ],
+        }))
+        .send()
+        .await
+        .expect("send addUri")
+        .json()
+        .await
+        .expect("parse addUri response");
+
+    let gid = add_resp["result"].as_str().expect("gid").to_string();
+
+    let active_deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let status_resp: serde_json::Value = client
+            .post(format!("http://127.0.0.1:{rpc_port}"))
+            .json(&serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "aria2.tellStatus",
+                "params": [gid.clone()],
+            }))
+            .send()
+            .await
+            .expect("send tellStatus")
+            .json()
+            .await
+            .expect("parse tellStatus");
+
+        let status = status_resp["result"]["status"].as_str().expect("status");
+        if status == "active" {
+            break;
+        }
+
+        assert!(
+            Instant::now() < active_deadline,
+            "download never reached active state before per-job limit mutation: {status_resp}"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+
+    let resp: serde_json::Value = client
+        .post(format!("http://127.0.0.1:{rpc_port}"))
+        .json(&serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "aria2.changeOption",
+            "params": [gid.clone(), {"max-download-limit": "16384"}],
+        }))
+        .send()
+        .await
+        .expect("send changeOption")
+        .json()
+        .await
+        .expect("parse changeOption response");
+    assert_eq!(resp["result"], "OK");
+
+    let stall_window = Instant::now() + Duration::from_secs(2);
+    loop {
+        let status_resp: serde_json::Value = tokio::time::timeout(
+            Duration::from_secs(5),
+            client
+                .post(format!("http://127.0.0.1:{rpc_port}"))
+                .json(&serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": 4,
+                    "method": "aria2.tellStatus",
+                    "params": [gid.clone()],
+                }))
+                .send(),
+        )
+        .await
+        .expect("tellStatus should not hang after enabling per-job limit")
+        .expect("send tellStatus after enabling job limit")
+        .json()
+        .await
+        .expect("parse tellStatus after enabling job limit");
+
+        let status = status_resp["result"]["status"].as_str().expect("status");
+        if Instant::now() >= stall_window {
+            assert_ne!(
+                status, "complete",
+                "download completed too quickly after enabling a very low per-job limit: {status_resp}"
             );
             break;
         }

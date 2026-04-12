@@ -71,6 +71,58 @@ mod tests {
         cancel.cancel();
     }
 
+    #[tokio::test]
+    async fn ws_receives_on_source_failed() {
+        let config = GlobalConfig::default();
+        let engine = Arc::new(Engine::new(config));
+        let cancel = CancellationToken::new();
+        let rpc_config = RpcServerConfig {
+            listen_addr: SocketAddr::from(([127, 0, 0, 1], 0)),
+        };
+        let addrs = start_rpc_server(engine.clone(), &rpc_config, cancel.clone())
+            .await
+            .unwrap();
+
+        let ws_url = format!("ws://{}", addrs.ws_notify);
+        let (mut ws_stream, _) = connect_async(&ws_url).await.expect("WS connect failed");
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        let spec = raria_core::engine::AddUriSpec {
+            uris: vec!["https://example.com/source-failed.bin".into()],
+            filename: Some("source-failed.bin".into()),
+            dir: std::path::PathBuf::from("/tmp"),
+            connections: 1,
+        };
+        let handle = engine.add_uri(&spec).unwrap();
+
+        engine
+            .source_failed(
+                handle.gid,
+                "https://mirror.example/file.iso",
+                "permanent error: checksum mismatch",
+            )
+            .unwrap();
+
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
+        let source_failed_json = loop {
+            let msg = tokio::time::timeout_at(deadline, ws_stream.next())
+                .await
+                .expect("timed out waiting for WS source-failed notification")
+                .expect("stream ended before source-failed notification")
+                .expect("WS notification frame error");
+            let json: serde_json::Value =
+                serde_json::from_str(msg.to_text().expect("WS text frame")).unwrap();
+            if json["method"] == "aria2.onSourceFailed" {
+                break json;
+            }
+        };
+
+        let params = source_failed_json["params"].as_array().unwrap();
+        assert_eq!(params[0]["gid"], format!("{}", handle.gid));
+
+        cancel.cancel();
+    }
+
     /// WS notification should have the correct JSON-RPC 2.0 format.
     #[tokio::test]
     async fn ws_notification_format_is_jsonrpc() {

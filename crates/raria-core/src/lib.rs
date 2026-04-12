@@ -45,6 +45,8 @@ pub mod input_file;
 pub mod job;
 /// Global and per-job rate limiting.
 pub mod limiter;
+/// Shared structured lifecycle logging helpers.
+pub mod logging;
 /// Crash-safe persistence via redb (job state + segment checkpoints).
 pub mod persist;
 /// Broadcast event bus for download progress and status changes.

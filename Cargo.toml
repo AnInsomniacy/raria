@@ -63,7 +63,7 @@ clap_complete = "4"
 
 # === Logging ===
 tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 tracing-appender = "0.2"
 
 # === Utilities ===
@@ -107,4 +107,3 @@ digest_auth = "0.3.1"
 lto = true
 codegen-units = 1
 strip = true
-

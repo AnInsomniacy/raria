@@ -493,7 +493,9 @@ impl SegmentExecutor {
 
             // Rate limiting: consume bytes from the shared limiter.
             if let Some(limiter) = rate_limiter {
-                limiter.consume(n as u32).await;
+                if !limiter.consume_cancellable(n as u32, cancel).await {
+                    break;
+                }
             }
 
             on_progress(seg_id, n as u64);

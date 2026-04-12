@@ -23,6 +23,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use futures::{SinkExt, StreamExt};
 use raria_core::engine::Engine;
+use raria_core::logging::emit_structured_log;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
@@ -496,6 +497,7 @@ const ARIA2_NOTIFICATIONS: &[&str] = &[
     "aria2.onDownloadStop",
     "aria2.onDownloadComplete",
     "aria2.onDownloadError",
+    "aria2.onSourceFailed",
     "aria2.onBtDownloadComplete",
 ];
 
@@ -616,6 +618,7 @@ fn event_to_aria2_method(event: &raria_core::progress::DownloadEvent) -> Option<
         DownloadEvent::Complete { .. } => Some("aria2.onDownloadComplete"),
         DownloadEvent::BtDownloadComplete { .. } => Some("aria2.onBtDownloadComplete"),
         DownloadEvent::Error { .. } => Some("aria2.onDownloadError"),
+        DownloadEvent::SourceFailed { .. } => Some("aria2.onSourceFailed"),
         // StatusChanged and Progress are internal events, not sent as aria2 notifications.
         _ => None,
     }
@@ -654,6 +657,12 @@ async fn ws_event_push_loop(
                             });
                             let msg = notification.to_string();
                             tracing::debug!(%method, %gid_str, "broadcasting WS notification");
+                            emit_structured_log(
+                                "INFO",
+                                "raria::rpc",
+                                "broadcasting WS notification",
+                                [("method", method.to_string()), ("gid", gid_str.clone())],
+                            );
                             // Ignore send errors (no receivers connected).
                             let _ = notify_tx.send(msg);
                         }
@@ -786,6 +795,14 @@ mod tests {
                 message: "err".into()
             }),
             Some("aria2.onDownloadError")
+        );
+        assert_eq!(
+            event_to_aria2_method(&DownloadEvent::SourceFailed {
+                gid: Gid::from_raw(1),
+                uri: "https://mirror.example/file.iso".into(),
+                message: "err".into()
+            }),
+            Some("aria2.onSourceFailed")
         );
         assert_eq!(
             event_to_aria2_method(&DownloadEvent::BtDownloadComplete {

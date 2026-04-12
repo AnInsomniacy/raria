@@ -6,6 +6,7 @@ use arc_swap::ArcSwapOption;
 use governor::{Quota, RateLimiter as GovRateLimiter};
 use std::num::NonZeroU32;
 use std::sync::Arc;
+use tokio_util::sync::CancellationToken;
 
 /// A throughput rate limiter.
 ///
@@ -29,6 +30,7 @@ pub struct RateLimiter {
 #[derive(Debug, Default)]
 pub struct SharedRateLimiter {
     inner: ArcSwapOption<RateLimiter>,
+    chained: Option<Arc<SharedRateLimiter>>,
 }
 
 impl RateLimiter {
@@ -103,15 +105,41 @@ impl SharedRateLimiter {
         };
         Self {
             inner: ArcSwapOption::from(inner),
+            chained: None,
+        }
+    }
+
+    /// Create a limiter that enforces its own limit and an upstream shared limit.
+    pub fn chained(limit_bps: u64, chained: Arc<SharedRateLimiter>) -> Self {
+        let inner = if limit_bps > 0 {
+            Some(Arc::new(RateLimiter::new(limit_bps)))
+        } else {
+            None
+        };
+        Self {
+            inner: ArcSwapOption::from(inner),
+            chained: Some(chained),
         }
     }
 
     /// Current limit in bytes per second, or `0` if unlimited.
     pub fn limit_bps(&self) -> u64 {
-        self.inner
+        let own = self
+            .inner
             .load_full()
             .map(|limiter| limiter.limit_bps())
-            .unwrap_or(0)
+            .unwrap_or(0);
+        let chained = self
+            .chained
+            .as_ref()
+            .map(|limiter| limiter.limit_bps())
+            .unwrap_or(0);
+        match (own, chained) {
+            (0, 0) => 0,
+            (0, other) => other,
+            (own, 0) => own,
+            (own, chained) => own.min(chained),
+        }
     }
 
     /// Returns `true` if a rate limit is currently active.
@@ -134,11 +162,38 @@ impl SharedRateLimiter {
         let mut remaining = n;
         while remaining > 0 {
             let step = remaining.min(16 * 1024);
-            if let Some(limiter) = self.inner.load_full() {
-                limiter.consume(step).await;
+            let mut current = Some(self);
+            while let Some(limiter) = current {
+                if let Some(inner) = limiter.inner.load_full() {
+                    inner.consume(step).await;
+                }
+                current = limiter.chained.as_deref();
             }
             remaining -= step;
         }
+    }
+
+    /// Consume bytes while allowing cancellation to abort a blocked wait.
+    ///
+    /// Returns `true` if all requested quota was consumed, or `false` if
+    /// cancellation fired before the limiter finished waiting.
+    pub async fn consume_cancellable(&self, n: u32, cancel: &CancellationToken) -> bool {
+        let mut remaining = n;
+        while remaining > 0 {
+            let step = remaining.min(16 * 1024);
+            let mut current = Some(self);
+            while let Some(limiter) = current {
+                if let Some(inner) = limiter.inner.load_full() {
+                    tokio::select! {
+                        _ = inner.consume(step) => {}
+                        _ = cancel.cancelled() => return false,
+                    }
+                }
+                current = limiter.chained.as_deref();
+            }
+            remaining -= step;
+        }
+        true
     }
 }
 
@@ -206,5 +261,31 @@ mod tests {
         limiter.update_limit(0);
         assert_eq!(limiter.limit_bps(), 0);
         assert!(!limiter.is_limited());
+    }
+
+    #[test]
+    fn chained_shared_rate_limiter_reports_the_tightest_limit() {
+        let global = Arc::new(SharedRateLimiter::new(2048));
+        let limiter = SharedRateLimiter::chained(1024, Arc::clone(&global));
+        assert_eq!(limiter.limit_bps(), 1024);
+
+        limiter.update_limit(4096);
+        assert_eq!(limiter.limit_bps(), 2048);
+    }
+
+    #[test]
+    fn chained_shared_rate_limiter_uses_secondary_limit_when_primary_is_unlimited() {
+        let global = Arc::new(SharedRateLimiter::new(2048));
+        let limiter = SharedRateLimiter::chained(0, Arc::clone(&global));
+        assert_eq!(limiter.limit_bps(), 2048);
+    }
+
+    #[tokio::test]
+    async fn consume_cancellable_returns_false_when_cancelled_mid_wait() {
+        let limiter = SharedRateLimiter::new(1);
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+
+        assert!(!limiter.consume_cancellable(16 * 1024, &cancel).await);
     }
 }

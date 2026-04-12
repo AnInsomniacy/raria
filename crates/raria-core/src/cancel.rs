@@ -55,6 +55,14 @@ impl CancelRegistry {
         }
     }
 
+    /// Cancel every registered job token.
+    pub fn cancel_all(&self) {
+        let inner = self.inner.read();
+        for token in inner.values() {
+            token.cancel();
+        }
+    }
+
     /// Check if a job's token has been cancelled.
     pub fn is_cancelled(&self, gid: Gid) -> Option<bool> {
         let inner = self.inner.read();
@@ -114,6 +122,18 @@ mod tests {
 
         assert!(reg.cancel(gid));
         assert!(token.is_cancelled());
+    }
+
+    #[test]
+    fn cancel_all_cancels_every_registered_token() {
+        let reg = CancelRegistry::new();
+        let first = reg.register(Gid::from_raw(1));
+        let second = reg.register(Gid::from_raw(2));
+
+        reg.cancel_all();
+
+        assert!(first.is_cancelled());
+        assert!(second.is_cancelled());
     }
 
     #[test]

@@ -2,7 +2,7 @@ use crate::backend_factory::create_backend_with_config;
 use crate::bt_runtime::run_bt_download;
 use crate::executor_config::apply_global_retry_policy;
 use crate::hooks::{HookConfig, spawn_hook_runner};
-use crate::util::{build_conditional_get_probe_headers, parse_header_args};
+use crate::util::{build_conditional_get_probe_headers, parse_header_args, redact_url_for_logs};
 use anyhow::{Context, Result};
 use raria_core::checksum;
 use raria_core::config::GlobalConfig;
@@ -33,6 +33,10 @@ pub(crate) async fn run_daemon_with_config(
 
     let store = Arc::new(Store::open(session_file)?);
     let engine = Arc::new(Engine::with_store(config.clone(), Arc::clone(&store)));
+    raria_core::logging::replace_structured_log_context([(
+        "session_id",
+        engine.session_id.clone(),
+    )])?;
 
     let restored = engine.restore().unwrap_or_else(|e| {
         warn!(error = %e, "failed to restore jobs from session");
@@ -105,11 +109,11 @@ pub(crate) async fn run_daemon_with_config(
     }
 
     let shutdown_token = engine.shutdown_token();
-    let shutdown_clone = shutdown_token.clone();
+    let engine_for_ctrl_c = Arc::clone(&engine);
     tokio::spawn(async move {
         tokio::signal::ctrl_c().await.ok();
         info!("received Ctrl+C, shutting down daemon...");
-        shutdown_clone.cancel();
+        engine_for_ctrl_c.shutdown();
     });
 
     #[cfg(unix)]
@@ -142,7 +146,7 @@ pub(crate) async fn run_daemon_with_config(
 
     #[cfg(unix)]
     {
-        let shutdown_ref = shutdown_token.clone();
+        let engine_for_sigterm = Arc::clone(&engine);
         tokio::spawn(async move {
             use tokio::signal::unix::{SignalKind, signal};
 
@@ -156,7 +160,7 @@ pub(crate) async fn run_daemon_with_config(
 
             sigterm.recv().await;
             info!("received SIGTERM, shutting down daemon...");
-            shutdown_ref.cancel();
+            engine_for_sigterm.shutdown();
         });
     }
 
@@ -182,8 +186,6 @@ pub(crate) async fn run_daemon_with_config(
         );
     }
 
-    let rate_limiter = Some(Arc::clone(&engine.global_rate_limiter));
-
     let work_notify = engine.work_notify();
     let session_save_interval = config
         .save_session_interval
@@ -208,7 +210,6 @@ pub(crate) async fn run_daemon_with_config(
             };
 
             let engine_ref = Arc::clone(&engine);
-            let limiter_ref = rate_limiter.clone();
             let download_dir = config.dir.clone();
 
             let job_kind = engine
@@ -221,14 +222,8 @@ pub(crate) async fn run_daemon_with_config(
                 raria_core::job::JobKind::Range => {
                     let default_headers = default_headers.clone();
                     tokio::spawn(async move {
-                        if let Err(e) = run_job_download(
-                            engine_ref,
-                            gid,
-                            token,
-                            limiter_ref,
-                            default_headers.clone(),
-                        )
-                        .await
+                        if let Err(e) =
+                            run_job_download(engine_ref, gid, token, default_headers.clone()).await
                         {
                             error!(%gid, error = %e, "job download task failed");
                         }
@@ -310,6 +305,14 @@ fn classify_error(message: &str) -> ErrorClass {
         "unauthorized",
         "forbidden",
     ];
+    if msg.contains("401")
+        || msg.contains("unauthorized")
+        || msg.contains("403")
+        || msg.contains("forbidden")
+    {
+        return ErrorClass::Permanent;
+    }
+
     if permanent_markers.iter().any(|marker| msg.contains(marker)) {
         return ErrorClass::Permanent;
     }
@@ -341,6 +344,37 @@ fn classified_error_message(message: &str) -> String {
         ErrorClass::Permanent => "permanent",
     };
     format!("{class} error: {message}")
+}
+
+fn record_source_failure(engine: &Engine, gid: Gid, uri: &str, error_msg: &str) {
+    let classified = classified_error_message(error_msg);
+    if let Err(error) = engine.source_failed(gid, uri, &classified) {
+        warn!(
+            %gid,
+            uri,
+            error = %error,
+            "failed to publish source-failed event"
+        );
+    }
+}
+
+fn emit_integrity_failure_log(gid: Gid, uri: &str, error_msg: &str, cached: bool, retrying: bool) {
+    let message = match (cached, retrying) {
+        (true, true) => "cached mirror output failed verification, trying next mirror",
+        (true, false) => "cached mirror output failed verification",
+        (false, true) => "mirror payload failed verification, trying next mirror",
+        (false, false) => "mirror payload failed verification",
+    };
+    raria_core::logging::emit_structured_log(
+        "WARN",
+        "raria::daemon",
+        message,
+        [
+            ("gid", gid.to_string()),
+            ("uri", uri.to_string()),
+            ("error", error_msg.to_string()),
+        ],
+    );
 }
 
 fn cleanup_segment_checkpoints(engine: &Engine, gid: Gid) {
@@ -635,13 +669,13 @@ async fn run_job_download(
     engine: Arc<Engine>,
     gid: Gid,
     cancel: CancellationToken,
-    rate_limiter: Option<Arc<raria_core::limiter::SharedRateLimiter>>,
     default_headers: Vec<(String, String)>,
 ) -> Result<()> {
     let job = engine
         .registry
         .get(gid)
         .context("job not found in registry")?;
+    let rate_limiter = Some(engine.job_rate_limiter(gid, job.options.max_download_limit));
 
     let ctx = build_download_context(&engine, &job, &default_headers);
 
@@ -658,7 +692,14 @@ async fn run_job_download(
 
     for (uri_index, uri_str) in job.uris.iter().enumerate() {
         let parsed_url: url::Url = uri_str.parse().context("invalid URI")?;
-        info!(%gid, uri = %parsed_url, "daemon: starting download");
+        let redacted_url = redact_url_for_logs(parsed_url.as_str());
+        info!(%gid, uri = %redacted_url, "daemon: starting download");
+        raria_core::logging::emit_structured_log(
+            "INFO",
+            "raria::daemon",
+            "daemon: starting download",
+            [("gid", gid.to_string()), ("uri", redacted_url.clone())],
+        );
 
         let backend = match create_backend_with_config(
             uri_str,
@@ -668,7 +709,10 @@ async fn run_job_download(
         ) {
             Ok(backend) => backend,
             Err(error) => {
-                warn!(%gid, uri = %parsed_url, error = %error, "failed to create backend for mirror");
+                warn!(%gid, uri = %redacted_url, error = %error, "failed to create backend for mirror");
+                if uri_index + 1 < job.uris.len() {
+                    record_source_failure(&engine, gid, &redacted_url, &error.to_string());
+                }
                 last_error = Some(classified_error_message(&error.to_string()));
                 continue;
             }
@@ -692,7 +736,10 @@ async fn run_job_download(
         let probe = match backend.probe(&parsed_url, &probe_ctx).await {
             Ok(probe) => probe,
             Err(error) => {
-                warn!(%gid, uri = %parsed_url, error = %error, "failed to probe mirror");
+                warn!(%gid, uri = %redacted_url, error = %error, "failed to probe mirror");
+                if uri_index + 1 < job.uris.len() {
+                    record_source_failure(&engine, gid, &redacted_url, &error.to_string());
+                }
                 last_error = Some(classified_error_message(&error.to_string()));
                 continue;
             }
@@ -717,10 +764,14 @@ async fn run_job_download(
             {
                 last_error = Some(classified_error_message(&error.to_string()));
                 if uri_index + 1 < job.uris.len() {
-                    warn!(%gid, uri = %parsed_url, error = %error, "cached mirror output failed verification, trying next mirror");
+                    warn!(%gid, uri = %redacted_url, error = %error, "cached mirror output failed verification, trying next mirror");
+                    record_source_failure(&engine, gid, &redacted_url, &error.to_string());
+                    emit_integrity_failure_log(gid, &redacted_url, &error.to_string(), true, true);
                     reset_for_next_mirror(&engine, gid, out_path_ref, None);
                     continue;
                 }
+                emit_integrity_failure_log(gid, &redacted_url, &error.to_string(), true, false);
+                reset_for_next_mirror(&engine, gid, out_path_ref, None);
                 break;
             }
             return finalize_complete(&engine, gid, existing_len).await;
@@ -783,10 +834,14 @@ async fn run_job_download(
             {
                 last_error = Some(classified_error_message(&error.to_string()));
                 if uri_index + 1 < job.uris.len() {
-                    warn!(%gid, uri = %parsed_url, error = %error, "mirror payload failed verification, trying next mirror");
+                    warn!(%gid, uri = %redacted_url, error = %error, "mirror payload failed verification, trying next mirror");
+                    record_source_failure(&engine, gid, &redacted_url, &error.to_string());
+                    emit_integrity_failure_log(gid, &redacted_url, &error.to_string(), false, true);
                     reset_for_next_mirror(&engine, gid, out_path_ref, Some(segments_mut));
                     continue;
                 }
+                emit_integrity_failure_log(gid, &redacted_url, &error.to_string(), false, false);
+                reset_for_next_mirror(&engine, gid, out_path_ref, Some(segments_mut));
                 break;
             }
             return finalize_complete(&engine, gid, downloaded_total).await;
@@ -806,7 +861,14 @@ async fn run_job_download(
                 .join("; ");
             last_error = Some(classified_error_message(&raw_err_msg));
             if uri_index + 1 < job.uris.len() {
-                warn!(%gid, uri = %parsed_url, "mirror failed, trying next mirror");
+                warn!(%gid, uri = %redacted_url, "mirror failed, trying next mirror");
+                record_source_failure(&engine, gid, &redacted_url, &raw_err_msg);
+                raria_core::logging::emit_structured_log(
+                    "WARN",
+                    "raria::daemon",
+                    "mirror failed, trying next mirror",
+                    [("gid", gid.to_string()), ("uri", redacted_url.clone())],
+                );
                 continue;
             }
 
@@ -841,6 +903,13 @@ async fn run_job_download(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
+
+    use raria_core::job::Status;
+    use raria_core::progress::DownloadEvent;
+    use tempfile::tempdir;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
 
     #[test]
     fn heuristic_classifies_transient_errors() {
@@ -862,6 +931,14 @@ mod tests {
             ErrorClass::Permanent
         );
         assert_eq!(
+            classify_error("http status 401 unauthorized"),
+            ErrorClass::Permanent
+        );
+        assert_eq!(
+            classify_error("http status 403 forbidden"),
+            ErrorClass::Permanent
+        );
+        assert_eq!(
             classify_error("checksum mismatch for /tmp/file.bin"),
             ErrorClass::Permanent
         );
@@ -877,6 +954,101 @@ mod tests {
         assert_eq!(
             classified_error_message("http status 404 not found"),
             "permanent error: http status 404 not found"
+        );
+    }
+
+    #[test]
+    fn daemon_classification_matches_core_service_heuristics() {
+        use raria_core::service::{DownloadErrorClass, classify_download_error};
+
+        for (message, expected) in [
+            ("operation timed out", ErrorClass::Transient),
+            ("http status 404 not found", ErrorClass::Permanent),
+            ("unauthorized", ErrorClass::Permanent),
+            ("forbidden", ErrorClass::Permanent),
+        ] {
+            let shared = match classify_download_error(message) {
+                DownloadErrorClass::Transient => ErrorClass::Transient,
+                DownloadErrorClass::Permanent => ErrorClass::Permanent,
+            };
+            assert_eq!(shared, expected, "shared classifier drifted for {message}");
+            assert_eq!(
+                classify_error(message),
+                shared,
+                "daemon classifier drifted from shared service classifier for {message}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn mirror_failover_publishes_source_failed_event_before_completion() {
+        let server = MockServer::start().await;
+        Mock::given(method("HEAD"))
+            .and(path("/ok.bin"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("content-length", "2")
+                    .insert_header("accept-ranges", "bytes"),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/ok.bin"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(b"ok"))
+            .mount(&server)
+            .await;
+
+        let dir = tempdir().expect("tempdir");
+        let engine = Arc::new(Engine::new(GlobalConfig::default()));
+        let spec = AddUriSpec {
+            uris: vec![
+                "gopher://example.invalid/file.bin".into(),
+                format!("{}/ok.bin", server.uri()),
+            ],
+            dir: dir.path().to_path_buf(),
+            filename: Some("ok.bin".into()),
+            connections: 1,
+        };
+        let handle = engine.add_uri(&spec).expect("add uri");
+        let mut rx = engine.event_bus.subscribe();
+        let cancel = engine.activate_job(handle.gid).expect("activate job");
+
+        run_job_download(Arc::clone(&engine), handle.gid, cancel, Vec::new())
+            .await
+            .expect("download should succeed after failover");
+
+        let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(1);
+        let mut saw_source_failed = false;
+        let mut saw_complete = false;
+        while !(saw_source_failed && saw_complete) {
+            let event = tokio::time::timeout_at(deadline, rx.recv())
+                .await
+                .expect("timed out waiting for daemon events")
+                .expect("daemon event stream should stay alive");
+
+            match event {
+                DownloadEvent::SourceFailed { gid, uri, message } => {
+                    assert_eq!(gid, handle.gid);
+                    assert_eq!(uri, "gopher://example.invalid/file.bin");
+                    assert!(
+                        message.starts_with("permanent error:"),
+                        "expected classified mirror failure message, got {message}"
+                    );
+                    saw_source_failed = true;
+                }
+                DownloadEvent::Complete { gid } => {
+                    assert_eq!(gid, handle.gid);
+                    saw_complete = true;
+                }
+                _ => {}
+            }
+        }
+
+        let job = engine.registry.get(handle.gid).expect("job");
+        assert_eq!(job.status, Status::Complete);
+        assert_eq!(
+            std::fs::read(dir.path().join("ok.bin")).expect("downloaded output"),
+            b"ok"
         );
     }
 }

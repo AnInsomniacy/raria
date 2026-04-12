@@ -1,6 +1,8 @@
 use crate::backend_factory::create_backend_with_config;
 use crate::executor_config::apply_global_retry_policy;
-use crate::util::{build_conditional_get_probe_headers, format_bytes, parse_header_args};
+use crate::util::{
+    build_conditional_get_probe_headers, format_bytes, parse_header_args, redact_url_for_logs,
+};
 use anyhow::{Context, Result};
 use raria_core::checksum;
 use raria_core::config::GlobalConfig;
@@ -81,7 +83,11 @@ pub(crate) async fn run_download(options: SingleDownloadOptions) -> Result<()> {
         private_key: options.private_key.clone(),
         ..Default::default()
     };
-    let engine = Engine::new(config.clone());
+    let engine = Arc::new(Engine::new(config.clone()));
+    raria_core::logging::replace_structured_log_context([(
+        "session_id",
+        engine.session_id.clone(),
+    )])?;
 
     let http_cfg = raria_http::backend::HttpBackendConfig {
         all_proxy: config.all_proxy.clone(),
@@ -189,7 +195,12 @@ pub(crate) async fn run_download(options: SingleDownloadOptions) -> Result<()> {
         .get(gid)
         .context("job vanished from registry")?;
 
-    info!(%gid, url = %options.url, out = %job.out_path.display(), "starting download");
+    info!(
+        %gid,
+        url = %redact_url_for_logs(&options.url),
+        out = %job.out_path.display(),
+        "starting download"
+    );
 
     let file_size = probe.size.unwrap_or(0);
     let mut effective_connections = if probe.supports_range && file_size > 0 {
@@ -246,12 +257,32 @@ pub(crate) async fn run_download(options: SingleDownloadOptions) -> Result<()> {
         });
     }
 
-    let cancel_registry = engine.cancel_registry.clone();
+    let engine_for_ctrl_c = Arc::clone(&engine);
     tokio::spawn(async move {
         tokio::signal::ctrl_c().await.ok();
         info!("received Ctrl+C, shutting down gracefully...");
-        cancel_registry.cancel(gid);
+        engine_for_ctrl_c.shutdown();
     });
+
+    #[cfg(unix)]
+    {
+        let engine_for_sigterm = Arc::clone(&engine);
+        tokio::spawn(async move {
+            use tokio::signal::unix::{SignalKind, signal};
+
+            let mut sigterm = match signal(SignalKind::terminate()) {
+                Ok(stream) => stream,
+                Err(error) => {
+                    error!(error = %error, "failed to install SIGTERM handler");
+                    return;
+                }
+            };
+
+            sigterm.recv().await;
+            info!("received SIGTERM, shutting down gracefully...");
+            engine_for_sigterm.shutdown();
+        });
+    }
 
     let downloaded = Arc::new(std::sync::atomic::AtomicU64::new(0));
     let downloaded_clone = Arc::clone(&downloaded);

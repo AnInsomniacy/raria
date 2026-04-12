@@ -13,6 +13,11 @@ use tokio_rustls::TlsAcceptor;
 use wiremock::matchers::{header, header_exists, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
+#[cfg(unix)]
+use std::process::Stdio;
+#[cfg(unix)]
+use std::time::{Duration, Instant};
+
 fn cargo_bin(name: &str) -> String {
     std::env::var(format!("CARGO_BIN_EXE_{name}")).expect("cargo should provide binary path")
 }
@@ -1696,4 +1701,101 @@ async fn single_download_supports_explicit_ftps_with_custom_ca() {
         fs::read(tmp.path().join("file.bin")).expect("read ftps download"),
         b"hello-ftps-world"
     );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn single_download_sigterm_shuts_down_gracefully_while_throttled() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("HEAD"))
+        .and(path("/sigterm-single.bin"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-length", "524288")
+                .insert_header("accept-ranges", "bytes"),
+        )
+        .mount(&server)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path("/sigterm-single.bin"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_delay(Duration::from_millis(500))
+                .set_body_bytes(vec![b's'; 512 * 1024]),
+        )
+        .mount(&server)
+        .await;
+
+    let tmp = tempdir().expect("tempdir");
+    let out = tmp.path().join("sigterm-single.bin");
+    let mut child = Command::new(cargo_bin("raria"))
+        .arg("download")
+        .arg(server.uri().to_string() + "/sigterm-single.bin")
+        .arg("-d")
+        .arg(tmp.path())
+        .arg("--max-download-limit")
+        .arg("16384")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn throttled single download");
+
+    let active_deadline = Instant::now() + Duration::from_secs(20);
+    let throttled_window = Instant::now() + Duration::from_secs(3);
+    let mut saw_output_path = false;
+    loop {
+        if fs::metadata(&out).is_ok() {
+            saw_output_path = true;
+        }
+
+        if Instant::now() >= throttled_window {
+            assert!(
+                saw_output_path,
+                "single download never created its output path before SIGTERM"
+            );
+            break;
+        }
+
+        if let Some(status) = child
+            .try_wait()
+            .expect("poll child while waiting for progress")
+        {
+            panic!("single download exited before reaching throttled progress: {status}");
+        }
+
+        assert!(
+            Instant::now() < active_deadline,
+            "single download never reached a stable throttled window before SIGTERM"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+
+    nix::sys::signal::kill(
+        nix::unistd::Pid::from_raw(child.id() as i32),
+        nix::sys::signal::Signal::SIGTERM,
+    )
+    .expect("send SIGTERM");
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                assert!(
+                    status.success(),
+                    "single download exited unsuccessfully after SIGTERM: {status}"
+                );
+                break;
+            }
+            Ok(None) => {
+                assert!(
+                    Instant::now() < deadline,
+                    "single download did not exit promptly after SIGTERM while throttled"
+                );
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            Err(error) => panic!("failed waiting for single download SIGTERM shutdown: {error}"),
+        }
+    }
 }

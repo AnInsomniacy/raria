@@ -68,6 +68,8 @@ pub fn classify_download_error(message: &str) -> DownloadErrorClass {
         "permission denied",
         "403",
         "401",
+        "unauthorized",
+        "forbidden",
         "unsupported",
         "invalid uri",
         "invalid url",
@@ -192,6 +194,14 @@ mod tests {
         );
         assert_eq!(
             classify_download_error("checksum mismatch for file.bin"),
+            DownloadErrorClass::Permanent
+        );
+        assert_eq!(
+            classify_download_error("unauthorized"),
+            DownloadErrorClass::Permanent
+        );
+        assert_eq!(
+            classify_download_error("forbidden"),
             DownloadErrorClass::Permanent
         );
         assert_eq!(

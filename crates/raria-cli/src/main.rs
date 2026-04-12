@@ -11,22 +11,8 @@ use clap::{Parser, Subcommand};
 use raria_core::config::GlobalConfig;
 use std::ffi::OsString;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
 use tracing::{error, info, warn};
 use tracing_subscriber::EnvFilter;
-
-#[derive(Clone)]
-struct SharedLogFile(Arc<Mutex<std::fs::File>>);
-
-impl std::io::Write for SharedLogFile {
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        self.0.lock().unwrap().write(buf)
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        self.0.lock().unwrap().flush()
-    }
-}
 
 #[cfg(unix)]
 fn spawn_background_daemon(raw_args: &[OsString]) -> Result<()> {
@@ -416,35 +402,44 @@ async fn main() -> Result<()> {
 
     let env_filter =
         EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(&cli.log_level));
-    if let Some(ref log_path) = cli.log {
-        let directory = log_path
-            .parent()
-            .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from("."));
-        std::fs::create_dir_all(&directory)?;
-        let file = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(log_path)?;
-        let shared = Arc::new(Mutex::new(file));
-        {
-            use std::io::Write as _;
-            let mut guard = shared.lock().unwrap();
-            writeln!(guard, "raria logging initialized").ok();
-            guard.flush().ok();
-        }
-        tracing_subscriber::fmt()
-            .with_env_filter(env_filter)
-            .with_writer(move || SharedLogFile(Arc::clone(&shared)))
-            .init();
-    } else if cli.quiet {
-        tracing_subscriber::fmt()
-            .with_env_filter(env_filter)
-            .with_writer(std::io::sink)
-            .init();
-    } else {
-        tracing_subscriber::fmt().with_env_filter(env_filter).init();
-    }
+    let _log_guard: Option<tracing_appender::non_blocking::WorkerGuard> =
+        if let Some(ref log_path) = cli.log {
+            let directory = log_path
+                .parent()
+                .map(PathBuf::from)
+                .unwrap_or_else(|| PathBuf::from("."));
+            std::fs::create_dir_all(&directory)?;
+            raria_core::logging::install_structured_log_file(log_path)?;
+            tracing_subscriber::fmt()
+                .with_env_filter(env_filter)
+                .with_writer(std::io::sink)
+                .init();
+            None
+        } else if cli.quiet {
+            tracing_subscriber::fmt()
+                .with_env_filter(env_filter)
+                .with_writer(std::io::sink)
+                .init();
+            None
+        } else {
+            tracing_subscriber::fmt().with_env_filter(env_filter).init();
+            None
+        };
+
+    info!(
+        component = "logging",
+        event = "initialized",
+        "logging initialized"
+    );
+    raria_core::logging::emit_structured_log(
+        "INFO",
+        "raria::logging",
+        "logging initialized",
+        [
+            ("component", "logging".to_string()),
+            ("event", "initialized".to_string()),
+        ],
+    );
 
     let mut base_config = GlobalConfig::default();
     if let Some(ref conf_path) = cli.conf_path {

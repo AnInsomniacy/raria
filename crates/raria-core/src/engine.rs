@@ -18,11 +18,14 @@ use crate::config::GlobalConfig;
 use crate::config::JobOptions;
 use crate::job::{Gid, Job, Status};
 use crate::limiter::SharedRateLimiter;
+use crate::logging::emit_structured_log;
 use crate::persist::Store;
 use crate::progress::{DownloadEvent, EventBus};
 use crate::registry::JobRegistry;
 use crate::scheduler::Scheduler;
 use anyhow::{Context, Result};
+use parking_lot::Mutex;
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
@@ -64,6 +67,8 @@ pub struct Engine {
     pub config: GlobalConfig,
     /// Workspace-wide download rate limiter.
     pub global_rate_limiter: Arc<SharedRateLimiter>,
+    /// Per-job limiter handles layered on top of the global limiter.
+    job_rate_limiters: Mutex<HashMap<Gid, Arc<SharedRateLimiter>>>,
     /// Unique session identifier (random hex, persisted for lifetime of process).
     pub session_id: String,
     store: Option<Arc<Store>>,
@@ -86,6 +91,7 @@ impl Engine {
             event_bus: EventBus::new(256),
             config,
             global_rate_limiter,
+            job_rate_limiters: Mutex::new(HashMap::new()),
             session_id: format!("{:016x}", rand::random::<u64>()),
             store: None,
             shutdown: CancellationToken::new(),
@@ -106,6 +112,7 @@ impl Engine {
             event_bus: EventBus::new(256),
             config,
             global_rate_limiter,
+            job_rate_limiters: Mutex::new(HashMap::new()),
             session_id: format!("{:016x}", rand::random::<u64>()),
             store: Some(store),
             shutdown: CancellationToken::new(),
@@ -146,6 +153,12 @@ impl Engine {
                 Status::Active | Status::Seeding => {
                     // Process crashed while downloading or seeding — demote to Waiting.
                     warn!(%gid, "restoring active-like job as waiting (process crash recovery)");
+                    emit_structured_log(
+                        "WARN",
+                        "raria::engine",
+                        "restoring active-like job as waiting",
+                        [("gid", gid.to_string())],
+                    );
                     job.status = Status::Waiting;
                     self.registry.load_from(vec![job]);
                     self.cancel_registry.register(gid);
@@ -168,6 +181,12 @@ impl Engine {
         }
 
         info!(count, "restored jobs from store");
+        emit_structured_log(
+            "INFO",
+            "raria::engine",
+            "restored jobs from store",
+            [("count", count.to_string())],
+        );
         self.work_notify.notify_one();
         Ok(count)
     }
@@ -223,6 +242,12 @@ impl Engine {
 
         self.work_notify.notify_one();
         info!(%gid, "job added");
+        emit_structured_log(
+            "INFO",
+            "raria::engine",
+            "job added",
+            [("gid", gid.to_string())],
+        );
         Ok(JobHandle { gid })
     }
 
@@ -242,6 +267,12 @@ impl Engine {
         self.persist_job_by_gid(gid);
         self.event_bus.publish(DownloadEvent::Paused { gid });
         info!(%gid, "job paused");
+        emit_structured_log(
+            "INFO",
+            "raria::engine",
+            "job paused",
+            [("gid", gid.to_string())],
+        );
         Ok(())
     }
 
@@ -262,6 +293,12 @@ impl Engine {
         self.work_notify.notify_one();
         self.event_bus.publish(DownloadEvent::Started { gid });
         info!(%gid, "job resumed");
+        emit_structured_log(
+            "INFO",
+            "raria::engine",
+            "job resumed",
+            [("gid", gid.to_string())],
+        );
         Ok(())
     }
 
@@ -281,6 +318,13 @@ impl Engine {
         self.persist_job_by_gid(gid);
         self.event_bus.publish(DownloadEvent::Stopped { gid });
         info!(%gid, "job removed");
+        emit_structured_log(
+            "INFO",
+            "raria::engine",
+            "job removed",
+            [("gid", gid.to_string())],
+        );
+        self.clear_job_rate_limiter(gid);
         Ok(())
     }
 
@@ -330,6 +374,13 @@ impl Engine {
         self.persist_job_by_gid(gid);
         self.event_bus.publish(DownloadEvent::Complete { gid });
         info!(%gid, "job completed");
+        emit_structured_log(
+            "INFO",
+            "raria::engine",
+            "job completed",
+            [("gid", gid.to_string())],
+        );
+        self.clear_job_rate_limiter(gid);
         self.work_notify.notify_one();
         Ok(())
     }
@@ -354,8 +405,60 @@ impl Engine {
             message: error_msg.to_string(),
         });
         error!(%gid, error_msg, "job failed");
+        emit_structured_log(
+            "ERROR",
+            "raria::engine",
+            "job failed",
+            [("gid", gid.to_string()), ("error", error_msg.to_string())],
+        );
+        self.clear_job_rate_limiter(gid);
         self.work_notify.notify_one();
         Ok(())
+    }
+
+    /// Record that a single source failed while the job may continue with others.
+    pub fn source_failed(&self, gid: Gid, uri: &str, error_msg: &str) -> Result<()> {
+        self.registry.get(gid).context("job not found")?;
+        self.event_bus.publish(DownloadEvent::SourceFailed {
+            gid,
+            uri: uri.to_string(),
+            message: error_msg.to_string(),
+        });
+        warn!(%gid, uri, error = error_msg, "job source failed");
+        emit_structured_log(
+            "WARN",
+            "raria::engine",
+            "job source failed",
+            [
+                ("gid", gid.to_string()),
+                ("uri", uri.to_string()),
+                ("error", error_msg.to_string()),
+            ],
+        );
+        Ok(())
+    }
+
+    /// Get or create the shared per-job limiter layered on top of the global limiter.
+    pub fn job_rate_limiter(&self, gid: Gid, limit_bps: u64) -> Arc<SharedRateLimiter> {
+        let mut handles = self.job_rate_limiters.lock();
+        Arc::clone(handles.entry(gid).or_insert_with(|| {
+            Arc::new(SharedRateLimiter::chained(
+                limit_bps,
+                Arc::clone(&self.global_rate_limiter),
+            ))
+        }))
+    }
+
+    /// Hot-update the per-job limiter for a running or future download.
+    pub fn update_job_rate_limit(&self, gid: Gid, limit_bps: u64) -> Result<()> {
+        self.registry.get(gid).context("job not found")?;
+        let limiter = self.job_rate_limiter(gid, limit_bps);
+        limiter.update_limit(limit_bps);
+        Ok(())
+    }
+
+    fn clear_job_rate_limiter(&self, gid: Gid) {
+        self.job_rate_limiters.lock().remove(&gid);
     }
 
     /// Update download progress for a job.
@@ -373,6 +476,7 @@ impl Engine {
     /// Signal graceful shutdown.
     pub fn shutdown(&self) {
         info!("engine shutting down");
+        self.cancel_registry.cancel_all();
         self.shutdown.cancel();
     }
 
@@ -453,6 +557,7 @@ impl Engine {
         // Cancel first — even if the task is still running.
         self.cancel_registry.cancel(gid);
         self.scheduler.dequeue(gid);
+        self.clear_job_rate_limiter(gid);
 
         // Force transition to Removed regardless of current state.
         self.registry
@@ -475,6 +580,7 @@ impl Engine {
         match job.status {
             Status::Complete | Status::Error | Status::Removed => {
                 self.registry.remove(gid);
+                self.clear_job_rate_limiter(gid);
                 if let Some(ref store) = self.store {
                     if let Err(e) = store.remove_job(gid) {
                         warn!(%gid, error = %e, "failed to delete job from store");
@@ -499,6 +605,7 @@ impl Engine {
             match job.status {
                 Status::Complete | Status::Error | Status::Removed => {
                     self.registry.remove(job.gid);
+                    self.clear_job_rate_limiter(job.gid);
                     if let Some(ref store) = self.store {
                         let _ = store.remove_job(job.gid);
                         let _ = store.remove_segments(job.gid);
@@ -718,6 +825,40 @@ mod tests {
         assert_eq!(job.error_msg.as_deref(), Some("connection timeout"));
     }
 
+    #[tokio::test]
+    async fn source_failed_publishes_event_without_changing_job_status() {
+        let engine = Engine::new(default_config());
+        let handle = engine.add_uri(&default_spec()).unwrap();
+        engine.activate_job(handle.gid).unwrap();
+        let mut rx = engine.event_bus.subscribe();
+
+        engine
+            .source_failed(
+                handle.gid,
+                "https://mirror.example/file.zip",
+                "permanent error: checksum mismatch",
+            )
+            .unwrap();
+
+        let event = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
+            .await
+            .expect("timed out waiting for source-failed event")
+            .expect("source-failed event should be published");
+
+        match event {
+            DownloadEvent::SourceFailed { gid, uri, message } => {
+                assert_eq!(gid, handle.gid);
+                assert_eq!(uri, "https://mirror.example/file.zip");
+                assert_eq!(message, "permanent error: checksum mismatch");
+            }
+            other => panic!("unexpected event: {other:?}"),
+        }
+
+        let job = engine.registry.get(handle.gid).unwrap();
+        assert_eq!(job.status, Status::Active);
+        assert!(job.error_msg.is_none());
+    }
+
     #[test]
     fn remove_job_transitions() {
         let engine = Engine::new(default_config());
@@ -766,6 +907,17 @@ mod tests {
     fn shutdown_cancels_token() {
         let engine = Engine::new(default_config());
         let token = engine.shutdown_token();
+        assert!(!token.is_cancelled());
+
+        engine.shutdown();
+        assert!(token.is_cancelled());
+    }
+
+    #[test]
+    fn shutdown_cancels_active_job_tokens() {
+        let engine = Engine::new(default_config());
+        let handle = engine.add_uri(&default_spec()).unwrap();
+        let token = engine.activate_job(handle.gid).unwrap();
         assert!(!token.is_cancelled());
 
         engine.shutdown();

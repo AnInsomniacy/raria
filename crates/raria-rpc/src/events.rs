@@ -9,6 +9,7 @@
 // - aria2.onDownloadStop
 // - aria2.onDownloadComplete
 // - aria2.onDownloadError
+// - aria2.onSourceFailed
 
 use raria_core::job::Gid;
 use raria_core::progress::DownloadEvent;
@@ -76,10 +77,11 @@ pub fn event_to_notification(event: &DownloadEvent) -> Option<Aria2Notification>
         DownloadEvent::Error { gid, .. } => {
             Some(Aria2Notification::new("aria2.onDownloadError", *gid))
         }
+        DownloadEvent::SourceFailed { gid, .. } => {
+            Some(Aria2Notification::new("aria2.onSourceFailed", *gid))
+        }
         // StatusChanged and Progress don't map to aria2 notifications.
-        DownloadEvent::StatusChanged { .. }
-        | DownloadEvent::Progress { .. }
-        | DownloadEvent::SourceFailed { .. } => None,
+        DownloadEvent::StatusChanged { .. } | DownloadEvent::Progress { .. } => None,
     }
 }
 
@@ -144,6 +146,17 @@ mod tests {
         };
         let notif = event_to_notification(&event).unwrap();
         assert_eq!(notif.method, "aria2.onDownloadError");
+    }
+
+    #[test]
+    fn source_failed_event_maps_to_on_source_failed() {
+        let event = DownloadEvent::SourceFailed {
+            gid: Gid::from_raw(15),
+            uri: "https://mirror.example/file.iso".into(),
+            message: "checksum mismatch".into(),
+        };
+        let notif = event_to_notification(&event).unwrap();
+        assert_eq!(notif.method, "aria2.onSourceFailed");
     }
 
     #[test]

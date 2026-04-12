@@ -3,6 +3,7 @@ use base64::Engine as Base64Engine;
 use raria_bt::service::{BtService, BtServiceConfig, BtSource, BtStatus};
 use raria_core::engine::Engine;
 use raria_core::job::{BtCompletionDisposition, BtFile, BtPeer, Gid, Job, Status};
+use raria_core::logging::emit_structured_log;
 use raria_core::progress::DownloadEvent;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -190,6 +191,12 @@ pub(crate) async fn run_bt_download(
 
     let uri_str = job.uris.first().context("BT job has no URIs")?;
     info!(%gid, "daemon: starting BT download");
+    emit_structured_log(
+        "INFO",
+        "raria::bt",
+        "daemon: starting BT download",
+        [("gid", gid.to_string())],
+    );
 
     let source = if uri_str.starts_with("magnet:") {
         BtSource::Magnet(uri_str.clone())
@@ -215,12 +222,27 @@ pub(crate) async fn run_bt_download(
         .context("failed to add torrent to BtService")?;
 
     info!(%gid, torrent_id = handle.torrent_id, "BT download started");
+    emit_structured_log(
+        "INFO",
+        "raria::bt",
+        "BT download started",
+        [
+            ("gid", gid.to_string()),
+            ("torrent_id", handle.torrent_id.to_string()),
+        ],
+    );
     let mut seeding_started_at: Option<Instant> = None;
 
     loop {
         tokio::select! {
             _ = cancel.cancelled() => {
                 info!(%gid, "BT download cancelled");
+                emit_structured_log(
+                    "INFO",
+                    "raria::bt",
+                    "BT download cancelled",
+                    [("gid", gid.to_string())],
+                );
                 let _ = bt_service.pause(&handle).await;
                 handle_bt_cancellation(engine.as_ref(), gid);
                 return Ok(());
@@ -243,6 +265,12 @@ pub(crate) async fn run_bt_download(
                             BtCompletionAction::EnterSeeding => {
                                 seeding_started_at.get_or_insert_with(Instant::now);
                                 info!(%gid, "BT payload complete; entering seeding");
+                                emit_structured_log(
+                                    "INFO",
+                                    "raria::bt",
+                                    "BT payload complete; entering seeding",
+                                    [("gid", gid.to_string())],
+                                );
                                 engine
                                     .event_bus
                                     .publish(DownloadEvent::BtDownloadComplete { gid });
@@ -278,6 +306,12 @@ pub(crate) async fn run_bt_download(
                     }
                     Err(error) => {
                         warn!(%gid, error = %error, "BT status check failed");
+                        emit_structured_log(
+                            "WARN",
+                            "raria::bt",
+                            "BT status check failed",
+                            [("gid", gid.to_string()), ("error", error.to_string())],
+                        );
                         let _ = engine.fail_job(gid, &error.to_string());
                         return Ok(());
                     }

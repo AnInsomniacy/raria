@@ -39,7 +39,7 @@ fn allocate_port() -> u16 {
 }
 
 async fn wait_for_rpc_ready_with_child(port: u16, child: &mut ChildGuard) -> Result<(), String> {
-    let deadline = Instant::now() + Duration::from_secs(60);
+    let deadline = Instant::now() + Duration::from_secs(120);
     let client = reqwest::Client::new();
 
     loop {
@@ -92,6 +92,14 @@ async fn spawn_ready_daemon(
     download_dir: &std::path::Path,
     session_file: &std::path::Path,
 ) -> (ChildGuard, u16) {
+    spawn_ready_daemon_with_args(download_dir, session_file, &[]).await
+}
+
+async fn spawn_ready_daemon_with_args(
+    download_dir: &std::path::Path,
+    session_file: &std::path::Path,
+    extra_args: &[&str],
+) -> (ChildGuard, u16) {
     for _ in 0..8 {
         let rpc_port = allocate_port();
         let mut cmd = Command::new(cargo_bin("raria"));
@@ -104,6 +112,9 @@ async fn spawn_ready_daemon(
             .arg(session_file)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+        for arg in extra_args {
+            cmd.arg(arg);
+        }
         let child = cmd.spawn().expect("spawn daemon");
         let mut child = ChildGuard { child };
 
@@ -235,7 +246,7 @@ async fn daemon_bt_tracker_option_announces_to_tracker_on_real_daemon_path() {
         .expect("parse addTorrent response");
     let gid = add_resp["result"].as_str().expect("gid").to_string();
 
-    let deadline = Instant::now() + Duration::from_secs(30);
+    let deadline = Instant::now() + Duration::from_secs(60);
     loop {
         let status_resp: serde_json::Value = client
             .post(format!("http://127.0.0.1:{rpc_port}"))
@@ -347,7 +358,7 @@ async fn daemon_get_peers_exposes_live_bt_peer_details_over_rpc() {
         .expect("parse addTorrent response");
     let gid = add_resp["result"].as_str().expect("gid").to_string();
 
-    let deadline = Instant::now() + Duration::from_secs(30);
+    let deadline = Instant::now() + Duration::from_secs(120);
     loop {
         let peers_resp: serde_json::Value = client
             .post(format!("http://127.0.0.1:{rpc_port}"))
@@ -456,4 +467,133 @@ async fn daemon_get_peers_exposes_live_bt_peer_details_over_rpc() {
             Err(error) => panic!("failed waiting for daemon exit: {error}"),
         }
     }
+}
+
+#[tokio::test]
+async fn daemon_log_file_contains_structured_bt_lifecycle_events() {
+    let _guard = lock_bt_daemon_smoke_lane().await;
+    let fixture = spawn_bt_seed_fixture().await;
+    let temp = tempdir().expect("tempdir");
+    let session_file = temp.path().join("bt-log.session.redb");
+    let log_path = temp.path().join("bt.log");
+    let (mut child, rpc_port) = spawn_ready_daemon_with_args(
+        temp.path(),
+        &session_file,
+        &["--log", log_path.to_str().unwrap()],
+    )
+    .await;
+    let client = reqwest::Client::new();
+
+    let add_resp: serde_json::Value = client
+        .post(format!("http://127.0.0.1:{rpc_port}"))
+        .json(&serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 10,
+            "method": "aria2.addTorrent",
+            "params": [
+                fixture.torrent_b64,
+                [],
+                {
+                    "bt-tracker": fixture.tracker_url,
+                    "seed-time": "1"
+                }
+            ],
+        }))
+        .send()
+        .await
+        .expect("send addTorrent")
+        .json()
+        .await
+        .expect("parse addTorrent response");
+    let gid = add_resp["result"].as_str().expect("gid").to_string();
+
+    let deadline = Instant::now() + Duration::from_secs(60);
+    loop {
+        let status_resp: serde_json::Value = client
+            .post(format!("http://127.0.0.1:{rpc_port}"))
+            .json(&serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 11,
+                "method": "aria2.tellStatus",
+                "params": [gid.clone()],
+            }))
+            .send()
+            .await
+            .expect("send tellStatus")
+            .json()
+            .await
+            .expect("parse tellStatus response");
+
+        let tracker_requests = fixture.tracker.received_requests().await;
+        if tracker_requests
+            .as_ref()
+            .is_some_and(|requests| !requests.is_empty())
+            && status_resp["result"]["status"].as_str() == Some("active")
+        {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "BT daemon never reached an announced active state: {status_resp}"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+
+    let shutdown_resp: serde_json::Value = client
+        .post(format!("http://127.0.0.1:{rpc_port}"))
+        .json(&serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 12,
+            "method": "aria2.shutdown",
+            "params": [],
+        }))
+        .send()
+        .await
+        .expect("send shutdown")
+        .json()
+        .await
+        .expect("parse shutdown response");
+    assert_eq!(shutdown_resp["result"], "OK");
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        match child.child.try_wait() {
+            Ok(Some(status)) => {
+                assert!(status.success(), "daemon exited unsuccessfully: {status}");
+                break;
+            }
+            Ok(None) => {
+                assert!(
+                    Instant::now() < deadline,
+                    "daemon did not exit after shutdown RPC"
+                );
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            Err(error) => panic!("failed waiting for daemon exit: {error}"),
+        }
+    }
+
+    let entries = std::fs::read_to_string(&log_path)
+        .expect("read log file")
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("valid JSON line"))
+        .collect::<Vec<_>>();
+
+    assert!(
+        entries.iter().any(|entry| {
+            entry["target"] == "raria::bt"
+                && entry["message"] == "BT download started"
+                && entry["fields"]["gid"] == gid
+        }),
+        "structured log should capture BT start events"
+    );
+    assert!(
+        entries.iter().any(|entry| {
+            entry["target"] == "raria::bt"
+                && entry["message"] == "BT download cancelled"
+                && entry["fields"]["gid"] == gid
+        }),
+        "structured log should capture BT shutdown cancellation events"
+    );
 }

@@ -1,6 +1,6 @@
 # raria Practical Maturity Guide
 
-This document is the English repo-facing companion to `.omx/plans/2026-04-11-raria-progress-adjusted-maturity-plan.md`.
+This document is the English repo-facing maturity companion for the current repository state.
 
 It is not a future roadmap for work that already landed. The purpose of this guide is to keep repository prose aligned with current code and tests.
 
@@ -8,6 +8,7 @@ See also:
 
 - [`bt-stop-lines.md`](bt-stop-lines.md) for explicit BitTorrent parity limits
 - [`verification-contract.md`](verification-contract.md) for the durable verification standard
+- [`logging-contract.md`](logging-contract.md) for the current logging rollout contract
 
 ## Mission
 
@@ -134,3 +135,4 @@ When updating repo docs:
 2. The main remaining problem is closure evidence and honest projection, not the absence of a new architecture skeleton.
 3. The BitTorrent path is real but bounded. Remaining gaps must stay explicit.
 4. The aria2-style facade is a migration and control surface. It must project internal truth rather than redefine it.
+5. Logging/diagnostics work must stay bounded: first a contract, then bounded rollout across the highest-value runtime surfaces.
