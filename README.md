@@ -21,16 +21,16 @@ The repository uses explicit stop-lines instead of pretending unsupported parity
 
 ## Implemented Capabilities
 
-| Area | Current implementation |
-| --- | --- |
-| HTTP/HTTPS | Segmented downloads, resume, redirects, auth, headers, cookies, proxy support, TLS options, conditional GET, checksum verification |
-| FTP/FTPS | Download, probe, resume, proxy support, explicit FTPS with custom CA |
-| SFTP | Password and key auth, strict known-host verification, proxy support |
-| BitTorrent | Magnet and torrent ingestion, file selection intent, metadata projection, tracker override support, peer projection, `Active -> Seeding -> Complete`, one-shot BT completion semantics |
-| Metalink | XML parsing, normalization, mirror priority handling, checksum and piece-checksum wiring, relation projection, daemon-path mirror failover |
-| Daemon control plane | aria2-style JSON-RPC methods, multicall, session info, global stat, option mutation, health endpoint, WebSocket notifications |
-| Runtime observability | Structured JSON file logs, session correlation, daemon lifecycle events, mirror/source failure events, BT lifecycle events, restore events, RPC control and WS emission logs |
-| Persistence | `redb`-backed job/session persistence and restore across daemon restart |
+| Area                  | Current implementation                                                                                                                                                                 |
+| --------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| HTTP/HTTPS            | Segmented downloads, resume, redirects, auth, headers, cookies, proxy support, TLS options, conditional GET, checksum verification                                                     |
+| FTP/FTPS              | Download, probe, resume, proxy support, explicit FTPS with custom CA                                                                                                                   |
+| SFTP                  | Password and key auth, strict known-host verification, proxy support                                                                                                                   |
+| BitTorrent            | Magnet and torrent ingestion, file selection intent, metadata projection, tracker override support, peer projection, `Active -> Seeding -> Complete`, one-shot BT completion semantics |
+| Metalink              | XML parsing, normalization, mirror priority handling, checksum and piece-checksum wiring, relation projection, daemon-path mirror failover                                             |
+| Daemon control plane  | aria2-style JSON-RPC methods, multicall, session info, global stat, option mutation, health endpoint, WebSocket notifications                                                          |
+| Runtime observability | Structured JSON file logs, session correlation, daemon lifecycle events, mirror/source failure events, BT lifecycle events, restore events, RPC control and WS emission logs           |
+| Persistence           | `redb`-backed job/session persistence and restore across daemon restart                                                                                                                |
 
 ## Verified Runtime Behaviors
 
@@ -45,26 +45,6 @@ These behaviors are backed by repository tests and current code:
 - structured log files redact obvious secrets and credential-bearing URLs on covered paths
 
 The durable verification contract lives in [`docs/verification-contract.md`](docs/verification-contract.md).
-
-## Explicit Limits
-
-The following limits are intentional, documented, and should not be described as missing accidentals:
-
-### Out of Scope
-
-- XML-RPC
-- historical `.aria2` control-file compatibility
-- historical aria2 session/control-file format compatibility
-- forcing internal design to mirror legacy aria2 shell behavior
-
-### Explicit BitTorrent Stop-Lines
-
-- `BT-GAP-001`: MSE/PSE encryption parity
-- `BT-GAP-002`: WebSeed support
-- `BT-GAP-003`: rarest-first piece-selection parity
-- `BT-GAP-004`: mixed range plus BitTorrent downloading of the same file
-
-See [`docs/bt-stop-lines.md`](docs/bt-stop-lines.md) for the current rationale and evidence.
 
 ## Control Surface
 
@@ -177,13 +157,6 @@ Repository prose should only claim behavior that is either:
 
 - backed by durable test/code anchors, or
 - backed by fresh rerun evidence for the current tree
-
-## Additional Documentation
-
-- [`docs/practical-maturity.md`](docs/practical-maturity.md)
-- [`docs/verification-contract.md`](docs/verification-contract.md)
-- [`docs/bt-stop-lines.md`](docs/bt-stop-lines.md)
-- [`docs/logging-contract.md`](docs/logging-contract.md)
 
 ## License
 
