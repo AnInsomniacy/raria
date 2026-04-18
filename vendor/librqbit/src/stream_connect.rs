@@ -27,13 +27,7 @@ impl SocksProxyConfig {
         })
     }
 
-    async fn connect(
-        &self,
-        addr: SocketAddr,
-    ) -> anyhow::Result<(
-        impl tokio::io::AsyncRead + Unpin,
-        impl tokio::io::AsyncWrite + Unpin,
-    )> {
+    async fn connect(&self, addr: SocketAddr) -> anyhow::Result<tokio::net::TcpStream> {
         let proxy_addr = (self.host.as_str(), self.port);
 
         let stream = if let Some((username, password)) = self.username_password.as_ref() {
@@ -51,7 +45,7 @@ impl SocksProxyConfig {
                 .context("error connecting to proxy")?
         };
 
-        Ok(tokio::io::split(stream))
+        Ok(stream.into_inner())
     }
 }
 
@@ -67,22 +61,13 @@ impl From<Option<SocksProxyConfig>> for StreamConnector {
 }
 
 impl StreamConnector {
-    pub async fn connect(
-        &self,
-        addr: SocketAddr,
-    ) -> anyhow::Result<(
-        Box<dyn tokio::io::AsyncRead + Send + Unpin>,
-        Box<dyn tokio::io::AsyncWrite + Send + Unpin>,
-    )> {
+    pub async fn connect(&self, addr: SocketAddr) -> anyhow::Result<tokio::net::TcpStream> {
         if let Some(proxy) = self.proxy_config.as_ref() {
-            let (r, w) = proxy.connect(addr).await?;
-            return Ok((Box::new(r), Box::new(w)));
+            return proxy.connect(addr).await;
         }
 
-        let (r, w) = tokio::net::TcpStream::connect(addr)
+        tokio::net::TcpStream::connect(addr)
             .await
-            .context("error connecting")?
-            .into_split();
-        Ok((Box::new(r), Box::new(w)))
+            .context("error connecting")
     }
 }

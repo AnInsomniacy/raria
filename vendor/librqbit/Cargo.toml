@@ -171,6 +171,9 @@ version = "0.2.7"
 [dependencies.itertools]
 version = "0.14"
 
+[dependencies.crypto-bigint]
+version = "0.7"
+
 [dependencies.librqbit-core]
 version = "5"
 default-features = false
@@ -204,6 +207,18 @@ package = "librqbit-peer-protocol"
 [dependencies.rand]
 version = "0.9"
 
+[dependencies.rc4]
+version = "0.1"
+
+[dependencies.raria-ftp]
+path = "../../crates/raria-ftp"
+
+[dependencies.raria-range]
+path = "../../crates/raria-range"
+
+[dependencies.raria-sftp]
+path = "../../crates/raria-sftp"
+
 [dependencies.regex]
 version = "1"
 
@@ -228,6 +243,9 @@ version = "1"
 
 [dependencies.serde_urlencoded]
 version = "0.7"
+
+[dependencies.sha1_smol]
+version = "1"
 
 [dependencies.serde_with]
 version = "3.4.0"

@@ -15,7 +15,11 @@ use crate::{
     dht_utils::{read_metainfo_from_peer_receiver, ReadMetainfoResult},
     limits::{Limits, LimitsConfig},
     merge_streams::merge_streams,
-    peer_connection::PeerConnectionOptions,
+    peer_connection::{PeerConnectionOptions, with_timeout},
+    peer_encryption::{
+        BT_PROTOCOL_PREFIX, BorrowingDecryptingReader, Crypto, negotiate_incoming,
+        plaintext_incoming_allowed,
+    },
     read_buf::ReadBuf,
     session_persistence::{json::JsonSessionPersistenceStore, SessionPersistenceStore},
     session_stats::SessionStats,
@@ -57,6 +61,7 @@ use parking_lot::RwLock;
 use peer_binary_protocol::Handshake;
 use serde::{Deserialize, Serialize};
 use tokio::{
+    io::AsyncReadExt,
     net::{TcpListener, TcpStream},
     sync::Notify,
 };
@@ -290,6 +295,12 @@ pub struct AddTorrentOptions {
 
     #[serde(default)]
     pub piece_selection_strategy: PieceSelectionStrategy,
+
+    /// Additional WebSeed base URIs for this torrent (BEP-17/BEP-19 style).
+    ///
+    /// These are merged with any WebSeed URIs embedded in the `.torrent` metainfo (e.g. `url-list`,
+    /// `httpseeds`) and are treated as auxiliary ranged sources for pieces.
+    pub web_seed_uris: Option<Vec<String>>,
 }
 
 pub struct ListOnlyResponse {
@@ -476,11 +487,102 @@ fn torrent_file_from_info_bytes(info_bytes: &[u8], trackers: &[url::Url]) -> any
     Ok(w.into())
 }
 
+fn extract_web_seed_uris_from_torrent_bytes(torrent_bytes: &Bytes) -> Vec<String> {
+    use bencode::BencodeValue;
+    use buffers::ByteBuf;
+
+    let Ok(root) = bencode::dyn_from_bytes::<ByteBuf>(torrent_bytes) else {
+        return Vec::new();
+    };
+
+    let BencodeValue::Dict(dict) = root else {
+        return Vec::new();
+    };
+
+    fn decode_utf8(bytes: &ByteBuf<'_>) -> Option<String> {
+        std::str::from_utf8(bytes.as_ref()).ok().map(|s| s.to_string())
+    }
+
+    let mut out = Vec::<String>::new();
+
+    // BEP-19: "url-list" can be either a string or a list of strings.
+    let url_list_key = ByteBuf::from("url-list".as_bytes());
+    if let Some(value) = dict.get(&url_list_key) {
+        match value {
+            BencodeValue::Bytes(b) => {
+                if let Some(s) = decode_utf8(b) {
+                    out.push(s);
+                }
+            }
+            BencodeValue::List(items) => {
+                for item in items {
+                    if let BencodeValue::Bytes(b) = item {
+                        if let Some(s) = decode_utf8(b) {
+                            out.push(s);
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    // Legacy key seen in some torrents: "httpseeds" is typically a list of strings.
+    let httpseeds_key = ByteBuf::from("httpseeds".as_bytes());
+    if let Some(value) = dict.get(&httpseeds_key) {
+        if let BencodeValue::List(items) = value {
+            for item in items {
+                if let BencodeValue::Bytes(b) = item {
+                    if let Some(s) = decode_utf8(b) {
+                        out.push(s);
+                    }
+                }
+            }
+        }
+    }
+
+    out
+}
+
+fn merge_web_seed_uris(
+    torrent_bytes: &Bytes,
+    explicit: Option<&[String]>,
+) -> Vec<url::Url> {
+    use std::collections::HashSet;
+
+    let mut raw = extract_web_seed_uris_from_torrent_bytes(torrent_bytes);
+    if let Some(explicit) = explicit {
+        raw.extend(explicit.iter().cloned());
+    }
+
+    let mut seen = HashSet::<String>::new();
+    let mut out = Vec::<url::Url>::new();
+    for s in raw {
+        let s = s.trim();
+        if s.is_empty() || !seen.insert(s.to_string()) {
+            continue;
+        }
+        match url::Url::parse(s) {
+            Ok(url) if matches!(url.scheme(), "http" | "https" | "ftp" | "ftps" | "sftp") => {
+                out.push(url)
+            }
+            Ok(_) => {
+                warn!(value = %s, "ignoring unsupported WebSeed URI scheme");
+            }
+            Err(error) => {
+                warn!(value = %s, error = %error, "ignoring invalid WebSeed URI");
+            }
+        }
+    }
+    out
+}
+
 pub(crate) struct CheckedIncomingConnection {
     pub addr: SocketAddr,
     pub stream: tokio::net::TcpStream,
     pub read_buf: ReadBuf,
     pub handshake: Handshake<ByteBufOwned>,
+    pub crypto: Option<Crypto>,
 }
 
 struct InternalAddResult {
@@ -501,6 +603,10 @@ impl Session {
 
     pub fn cancellation_token(&self) -> &CancellationToken {
         &self.cancellation_token
+    }
+
+    pub(crate) fn http_client(&self) -> reqwest::Client {
+        self.reqwest_client.clone()
     }
 
     /// Create a new session with options.
@@ -760,12 +866,63 @@ impl Session {
         if self.blocklist.is_blocked(incoming_ip) {
             bail!("Incoming ip {incoming_ip} is in blocklist");
         }
+        let encryption_policy = self.peer_opts.encryption_policy.unwrap_or_default();
+
+        let mut prefix = [0u8; BT_PROTOCOL_PREFIX.len()];
+        with_timeout(
+            rwtimeout,
+            async {
+                stream.read_exact(&mut prefix).await?;
+                Ok::<_, std::io::Error>(())
+            },
+        )
+            .await
+            .context("error reading incoming protocol prefix")?;
 
         let mut read_buf = ReadBuf::new();
-        let h = read_buf
-            .read_handshake(&mut stream, rwtimeout)
+        let mut crypto = None;
+        let h = if prefix.as_slice() == BT_PROTOCOL_PREFIX {
+            if !plaintext_incoming_allowed(encryption_policy) {
+                bail!("incoming plaintext peer rejected because encrypted transport is required");
+            }
+            read_buf.seed_prefix(&prefix);
+            read_buf
+                .read_handshake(&mut stream, rwtimeout)
+                .await
+                .context("error reading plaintext handshake")?
+        } else {
+            let candidate_info_hashes: Vec<[u8; 20]> = self
+                .db
+                .read()
+                .torrents
+                .values()
+                .filter_map(|torrent| torrent.live().map(|_| torrent.info_hash().0))
+                .collect();
+            let (matched_info_hash, negotiated_crypto) = with_timeout(
+                rwtimeout,
+                negotiate_incoming(&mut stream, &prefix, &candidate_info_hashes, encryption_policy),
+            )
             .await
-            .context("error reading handshake")?;
+            .context("error negotiating incoming peer encryption")?;
+            crypto = negotiated_crypto;
+            let handshake = if let Some(crypto_ref) = crypto.as_mut() {
+                let mut encrypted_read =
+                    BorrowingDecryptingReader::new(&mut stream, &mut crypto_ref.decryptor);
+                read_buf
+                    .read_handshake(&mut encrypted_read, rwtimeout)
+                    .await
+                    .context("error reading encrypted handshake")?
+            } else {
+                read_buf
+                    .read_handshake(&mut stream, rwtimeout)
+                    .await
+                    .context("error reading post-PE plaintext handshake")?
+            };
+            if handshake.info_hash != matched_info_hash {
+                bail!("encrypted peer handshake info hash did not match negotiated torrent");
+            }
+            handshake
+        };
         trace!("received handshake from {addr}: {:?}", h);
 
         if h.peer_id == self.peer_id.0 {
@@ -793,6 +950,7 @@ impl Session {
                     stream,
                     handshake,
                     read_buf,
+                    crypto,
                 },
             ));
         }
@@ -850,19 +1008,7 @@ impl Session {
     }
 
     fn merge_peer_opts(&self, other: Option<PeerConnectionOptions>) -> PeerConnectionOptions {
-        let other = match other {
-            Some(o) => o,
-            None => self.peer_opts,
-        };
-        PeerConnectionOptions {
-            connect_timeout: other.connect_timeout.or(self.peer_opts.connect_timeout),
-            read_write_timeout: other
-                .read_write_timeout
-                .or(self.peer_opts.read_write_timeout),
-            keep_alive_interval: other
-                .keep_alive_interval
-                .or(self.peer_opts.keep_alive_interval),
-        }
+        merge_peer_connection_options(self.peer_opts, other)
     }
 
     /// Spawn a task in the context of the session.
@@ -1161,6 +1307,7 @@ impl Session {
             let span = error_span!(parent: self.rs(), "torrent", id);
             let peer_opts = self.merge_peer_opts(opts.peer_opts);
             let metadata = Arc::new(metadata);
+            let web_seed_uris = merge_web_seed_uris(&metadata.torrent_bytes, opts.web_seed_uris.as_deref());
             let minfo = Arc::new(ManagedTorrentShared {
                 id,
                 span,
@@ -1179,6 +1326,7 @@ impl Session {
                     ratelimits: opts.ratelimits,
                     initial_peers: opts.initial_peers.clone().unwrap_or_default(),
                     piece_selection_strategy: opts.piece_selection_strategy,
+                    web_seed_uris,
                     #[cfg(feature = "disable-upload")]
                     _disable_upload: self._disable_upload,
                 },
@@ -1482,6 +1630,22 @@ pub(crate) struct ResolveMagnetResult {
     pub seen_peers: Vec<SocketAddr>,
 }
 
+fn merge_peer_connection_options(
+    base: PeerConnectionOptions,
+    other: Option<PeerConnectionOptions>,
+) -> PeerConnectionOptions {
+    let other = match other {
+        Some(options) => options,
+        None => base,
+    };
+    PeerConnectionOptions {
+        connect_timeout: other.connect_timeout.or(base.connect_timeout),
+        read_write_timeout: other.read_write_timeout.or(base.read_write_timeout),
+        keep_alive_interval: other.keep_alive_interval.or(base.keep_alive_interval),
+        encryption_policy: other.encryption_policy.or(base.encryption_policy),
+    }
+}
+
 fn remove_files_and_dirs(infos: &FileInfos, files: &dyn TorrentStorage) {
     let mut all_dirs = HashSet::new();
     for (id, fi) in infos.iter().enumerate() {
@@ -1564,7 +1728,10 @@ mod tests {
     use itertools::Itertools;
     use librqbit_core::torrent_metainfo::{torrent_from_bytes_ext, TorrentMetaV1};
 
-    use super::torrent_file_from_info_bytes;
+    use super::{merge_peer_connection_options, torrent_file_from_info_bytes};
+    use crate::peer_connection::{
+        PeerConnectionOptions, PeerEncryptionMinLevel, PeerEncryptionMode, PeerEncryptionPolicy,
+    };
 
     #[test]
     fn test_torrent_file_from_info_and_bytes() {
@@ -1588,5 +1755,25 @@ mod tests {
         assert_eq!(parsed.meta.info, generated_parsed.meta.info);
         assert_eq!(parsed.info_bytes, generated_parsed.info_bytes);
         assert_eq!(parsed_trackers, get_trackers(&generated_parsed.meta));
+    }
+
+    #[test]
+    fn merge_peer_connection_options_preserves_base_encryption_policy() {
+        let base = PeerConnectionOptions {
+            encryption_policy: Some(PeerEncryptionPolicy {
+                mode: PeerEncryptionMode::Require,
+                min_crypto_level: PeerEncryptionMinLevel::Arc4,
+            }),
+            ..Default::default()
+        };
+        let merged = merge_peer_connection_options(
+            base,
+            Some(PeerConnectionOptions {
+                read_write_timeout: Some(std::time::Duration::from_secs(15)),
+                ..Default::default()
+            }),
+        );
+        assert_eq!(merged.read_write_timeout, Some(std::time::Duration::from_secs(15)));
+        assert_eq!(merged.encryption_policy, base.encryption_policy);
     }
 }

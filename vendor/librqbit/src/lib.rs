@@ -57,6 +57,7 @@ pub mod http_api_types;
 pub mod limits;
 mod merge_streams;
 mod peer_connection;
+mod peer_encryption;
 mod peer_info_reader;
 mod read_buf;
 mod session;
@@ -78,7 +79,9 @@ pub use api::Api;
 pub use api_error::ApiError;
 pub use create_torrent_file::{create_torrent, CreateTorrentOptions};
 pub use dht;
-pub use peer_connection::PeerConnectionOptions;
+pub use peer_connection::{
+    PeerConnectionOptions, PeerEncryptionMinLevel, PeerEncryptionMode, PeerEncryptionPolicy,
+};
 pub use session::{
     AddTorrent, AddTorrentOptions, AddTorrentResponse, ListOnlyResponse, PieceSelectionStrategy,
     Session, SessionOptions, SessionPersistenceConfig, SUPPORTED_SCHEMES,

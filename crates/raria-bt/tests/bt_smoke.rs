@@ -1,8 +1,12 @@
 use anyhow::{Context, Result};
 use librqbit::{
-    AddTorrent, AddTorrentOptions, CreateTorrentOptions, Session, SessionOptions, create_torrent,
+    AddTorrent, AddTorrentOptions, CreateTorrentOptions, PeerConnectionOptions, Session,
+    SessionOptions, create_torrent,
 };
-use raria_bt::service::{BtService, BtServiceConfig, BtSource, PieceSelectionStrategy};
+use raria_bt::service::{
+    BtService, BtServiceConfig, BtSource, PeerEncryptionMinLevel, PeerEncryptionMode,
+    PeerEncryptionPolicy, PieceSelectionStrategy,
+};
 use raria_core::job::Gid;
 use std::fs;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener as StdTcpListener};
@@ -127,6 +131,7 @@ struct SeedFixture {
 async fn start_seed_fixture_with_initial_peers(
     payload_len: usize,
     initial_peers: Option<Vec<SocketAddr>>,
+    peer_opts: Option<PeerConnectionOptions>,
 ) -> Result<SeedFixture> {
     let source_root = tempdir().context("source tempdir")?;
     let session_dir = tempdir().context("session tempdir")?;
@@ -164,6 +169,7 @@ async fn start_seed_fixture_with_initial_peers(
             disable_dht_persistence: true,
             listen_port_range: Some(listen_port..(listen_port + 1)),
             enable_upnp_port_forwarding: false,
+            peer_opts,
             ..Default::default()
         },
     )
@@ -206,7 +212,7 @@ async fn start_seed_fixture_with_initial_peers(
 }
 
 async fn start_seed_fixture(payload_len: usize) -> Result<SeedFixture> {
-    start_seed_fixture_with_initial_peers(payload_len, None).await
+    start_seed_fixture_with_initial_peers(payload_len, None, None).await
 }
 
 async fn wait_for_bt_completion(
@@ -215,7 +221,7 @@ async fn wait_for_bt_completion(
     torrent_bytes: Vec<u8>,
 ) -> raria_bt::service::BtHandle {
     let handle = service
-        .add(BtSource::TorrentBytes(torrent_bytes), gid, None, None)
+        .add(BtSource::TorrentBytes(torrent_bytes), gid, None, None, None)
         .await
         .expect("add torrent to BtService");
 
@@ -240,7 +246,7 @@ async fn wait_for_partial_bt_download(
     torrent_bytes: Vec<u8>,
 ) -> (raria_bt::service::BtHandle, u64) {
     let handle = service
-        .add(BtSource::TorrentBytes(torrent_bytes), gid, None, None)
+        .add(BtSource::TorrentBytes(torrent_bytes), gid, None, None, None)
         .await
         .expect("add torrent to BtService");
 
@@ -303,6 +309,52 @@ async fn bt_service_downloads_real_torrent_from_seed_peer() {
         fs::read(download_dir.path().join(&seed.output_name)).expect("read downloaded torrent"),
         seed.payload
     );
+
+    service.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[serial_test::serial]
+async fn bt_service_downloads_real_torrent_with_required_peer_encryption() {
+    let seed = start_seed_fixture_with_initial_peers(
+        4 * 1024 * 1024,
+        None,
+        Some(PeerConnectionOptions {
+            encryption_policy: Some(PeerEncryptionPolicy {
+                mode: PeerEncryptionMode::Require,
+                min_crypto_level: PeerEncryptionMinLevel::Arc4,
+            }),
+            ..Default::default()
+        }),
+    )
+    .await
+    .expect("encrypted seed fixture");
+    let download_dir = tempdir().expect("download tempdir");
+    let service = BtService::with_config(
+        download_dir.path().to_path_buf(),
+        BtServiceConfig {
+            disable_dht: true,
+            disable_dht_persistence: true,
+            initial_peers: Some(vec![seed.seed_addr]),
+            peer_encryption_policy: PeerEncryptionPolicy {
+                mode: PeerEncryptionMode::Require,
+                min_crypto_level: PeerEncryptionMinLevel::Arc4,
+            },
+            ..Default::default()
+        },
+    )
+    .expect("create encrypted bt service");
+
+    let handle =
+        wait_for_bt_completion(&service, Gid::from_raw(101), seed.torrent_bytes.clone()).await;
+
+    assert_eq!(
+        fs::read(download_dir.path().join(&seed.output_name)).expect("read encrypted torrent"),
+        seed.payload
+    );
+
+    let status = service.status(&handle).await.expect("encrypted bt status");
+    assert!(status.is_complete, "encrypted BT transfer should complete");
 
     service.shutdown().await;
 }
@@ -372,6 +424,7 @@ async fn bt_service_completes_peer_download_through_socks5_proxy() {
             dht_config_filename: None,
             initial_peers: Some(vec![seed.seed_addr]),
             piece_selection_strategy: PieceSelectionStrategy::Current,
+            peer_encryption_policy: PeerEncryptionPolicy::default(),
         },
     )
     .expect("create bt service");
@@ -426,6 +479,7 @@ async fn bt_service_status_exposes_reachable_bt_metadata_fields() {
             Gid::from_raw(22),
             None,
             Some(vec![tracker_url.clone()]),
+            None,
         )
         .await
         .expect("add torrent to BtService");
@@ -502,6 +556,7 @@ async fn bt_service_persists_fastresume_state_and_restores_progress_after_restar
             Gid::from_raw(4),
             None,
             None,
+            None,
         )
         .await
         .expect("re-add torrent after restart");
@@ -553,6 +608,7 @@ async fn bt_service_status_exposes_real_bt_metadata_fields() {
             Gid::from_raw(5),
             None,
             Some(vec![tracker.clone()]),
+            None,
         )
         .await
         .expect("add torrent to BtService");

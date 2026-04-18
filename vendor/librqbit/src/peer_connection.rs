@@ -19,10 +19,19 @@ use peer_binary_protocol::{
 };
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
+use tokio::io::AsyncWriteExt;
 use tokio::time::timeout;
 use tracing::{debug, trace};
 
-use crate::{read_buf::ReadBuf, spawn_utils::BlockingSpawner, stream_connect::StreamConnector};
+use crate::{
+    peer_encryption::{
+        BorrowingDecryptingReader, Crypto, DecryptingReader, Decryptor, Encryptor,
+        negotiate_outbound, write_post_pe_payload,
+    },
+    read_buf::ReadBuf,
+    spawn_utils::BlockingSpawner,
+    stream_connect::StreamConnector,
+};
 
 pub trait PeerConnectionHandler {
     fn on_connected(&self, _connection_time: Duration) {}
@@ -53,6 +62,32 @@ pub enum WriterRequest {
 }
 
 #[serde_as]
+#[derive(Default, Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum PeerEncryptionMode {
+    Disabled,
+    #[default]
+    Prefer,
+    Require,
+}
+
+#[serde_as]
+#[derive(Default, Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum PeerEncryptionMinLevel {
+    #[default]
+    Plain,
+    Arc4,
+}
+
+#[serde_as]
+#[derive(Default, Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PeerEncryptionPolicy {
+    pub mode: PeerEncryptionMode,
+    pub min_crypto_level: PeerEncryptionMinLevel,
+}
+
+#[serde_as]
 #[derive(Default, Debug, Copy, Clone, Serialize, Deserialize)]
 pub struct PeerConnectionOptions {
     #[serde_as(as = "Option<serde_with::DurationSeconds>")]
@@ -63,6 +98,9 @@ pub struct PeerConnectionOptions {
 
     #[serde_as(as = "Option<serde_with::DurationSeconds>")]
     pub keep_alive_interval: Option<Duration>,
+
+    #[serde(default)]
+    pub encryption_policy: Option<PeerEncryptionPolicy>,
 }
 
 pub(crate) struct PeerConnection<H> {
@@ -94,6 +132,8 @@ struct ManagePeerArgs<R, W> {
     write_buf: Vec<u8>,
     read: R,
     write: W,
+    encryptor: Option<Encryptor>,
+    decryptor: Option<Decryptor>,
     outgoing_chan: tokio::sync::mpsc::UnboundedReceiver<WriterRequest>,
     have_broadcast: tokio::sync::broadcast::Receiver<ValidPieceIndex>,
 }
@@ -127,10 +167,9 @@ impl<H: PeerConnectionHandler> PeerConnection<H> {
         read_buf: ReadBuf,
         handshake: Handshake<ByteBufOwned>,
         mut conn: tokio::net::TcpStream,
+        mut crypto: Option<Crypto>,
         have_broadcast: tokio::sync::broadcast::Receiver<ValidPieceIndex>,
     ) -> anyhow::Result<()> {
-        use tokio::io::AsyncWriteExt;
-
         let rwtimeout = self
             .options
             .read_write_timeout
@@ -152,7 +191,13 @@ impl<H: PeerConnectionHandler> PeerConnection<H> {
         let mut write_buf = Vec::<u8>::with_capacity(PIECE_MESSAGE_DEFAULT_LEN);
         let handshake = Handshake::new(self.info_hash, self.peer_id);
         handshake.serialize(&mut write_buf);
-        with_timeout(rwtimeout, conn.write_all(&write_buf))
+        with_timeout(
+            rwtimeout,
+            conn.write_all(write_post_pe_payload(
+                crypto.as_mut().map(|c| &mut c.encryptor),
+                &mut write_buf,
+            )),
+        )
             .await
             .context("error writing handshake")?;
         write_buf.clear();
@@ -161,6 +206,13 @@ impl<H: PeerConnectionHandler> PeerConnection<H> {
 
         self.handler.on_handshake(handshake)?;
 
+        let (encryptor, decryptor) = match crypto {
+            Some(Crypto {
+                encryptor,
+                decryptor,
+            }) => (Some(encryptor), Some(decryptor)),
+            None => (None, None),
+        };
         let (read, write) = conn.into_split();
 
         self.manage_peer(ManagePeerArgs {
@@ -169,6 +221,8 @@ impl<H: PeerConnectionHandler> PeerConnection<H> {
             write_buf,
             read,
             write,
+            encryptor,
+            decryptor,
             outgoing_chan,
             have_broadcast,
         })
@@ -180,7 +234,6 @@ impl<H: PeerConnectionHandler> PeerConnection<H> {
         outgoing_chan: tokio::sync::mpsc::UnboundedReceiver<WriterRequest>,
         have_broadcast: tokio::sync::broadcast::Receiver<ValidPieceIndex>,
     ) -> anyhow::Result<()> {
-        use tokio::io::AsyncWriteExt;
         let rwtimeout = self
             .options
             .read_write_timeout
@@ -190,27 +243,63 @@ impl<H: PeerConnectionHandler> PeerConnection<H> {
             .options
             .connect_timeout
             .unwrap_or_else(|| Duration::from_secs(10));
+        let encryption_policy = self.options.encryption_policy.unwrap_or_default();
 
         let now = Instant::now();
-        let (mut read, mut write) =
-            with_timeout(connect_timeout, self.connector.connect(self.addr))
-                .await
-                .context("error connecting")?;
+        let mut conn = with_timeout(connect_timeout, self.connector.connect(self.addr))
+            .await
+            .context("error connecting")?;
         self.handler.on_connected(now.elapsed());
+
+        let mut crypto = if encryption_policy.mode != PeerEncryptionMode::Disabled {
+            match with_timeout(
+                rwtimeout,
+                negotiate_outbound(&mut conn, &self.info_hash.0, encryption_policy),
+            )
+                .await
+            {
+                Ok(crypto) => crypto,
+                Err(error) if matches!(encryption_policy.mode, PeerEncryptionMode::Prefer) => {
+                    trace!(error = %error, addr = %self.addr, "encrypted outbound connect failed, retrying plaintext");
+                    conn = with_timeout(connect_timeout, self.connector.connect(self.addr))
+                        .await
+                        .context("error reconnecting after encryption fallback")?;
+                    None
+                }
+                Err(error) => return Err(error.into()),
+            }
+        } else {
+            None
+        };
 
         let mut write_buf = Vec::<u8>::with_capacity(PIECE_MESSAGE_DEFAULT_LEN);
         let handshake = Handshake::new(self.info_hash, self.peer_id);
         handshake.serialize(&mut write_buf);
-        with_timeout(rwtimeout, write.write_all(&write_buf))
+        with_timeout(
+            rwtimeout,
+            conn.write_all(write_post_pe_payload(
+                crypto.as_mut().map(|c| &mut c.encryptor),
+                &mut write_buf,
+            )),
+        )
             .await
             .context("error writing handshake")?;
         write_buf.clear();
 
         let mut read_buf = ReadBuf::new();
-        let h = read_buf
-            .read_handshake(&mut read, rwtimeout)
-            .await
-            .context("error reading handshake")?;
+        let h = if let Some(crypto) = crypto.as_mut() {
+            let mut read = BorrowingDecryptingReader::new(&mut conn, &mut crypto.decryptor);
+            let h = read_buf
+                .read_handshake(&mut read, rwtimeout)
+                .await
+                .context("error reading handshake")?;
+            h
+        } else {
+            read_buf
+                .read_handshake(&mut conn, rwtimeout)
+                .await
+                .context("error reading handshake")?
+        };
         let handshake_supports_extended = h.supports_extended();
         trace!(
             peer_id=?Id20::new(h.peer_id),
@@ -227,12 +316,23 @@ impl<H: PeerConnectionHandler> PeerConnection<H> {
 
         self.handler.on_handshake(h)?;
 
+        let (encryptor, decryptor) = match crypto {
+            Some(Crypto {
+                encryptor,
+                decryptor,
+            }) => (Some(encryptor), Some(decryptor)),
+            None => (None, None),
+        };
+        let (read, write) = conn.into_split();
+
         self.manage_peer(ManagePeerArgs {
             handshake_supports_extended,
             read_buf,
             write_buf,
             read,
             write,
+            encryptor,
+            decryptor,
             outgoing_chan,
             have_broadcast,
         })
@@ -250,8 +350,10 @@ impl<H: PeerConnectionHandler> PeerConnection<H> {
             handshake_supports_extended,
             mut read_buf,
             mut write_buf,
-            mut read,
+            read,
             mut write,
+            mut encryptor,
+            decryptor,
             mut outgoing_chan,
             mut have_broadcast,
         } = args;
@@ -278,7 +380,13 @@ impl<H: PeerConnectionHandler> PeerConnection<H> {
             my_extended
                 .serialize(&mut write_buf, &Default::default)
                 .unwrap();
-            with_timeout(rwtimeout, write.write_all(&write_buf))
+            with_timeout(
+                rwtimeout,
+                write.write_all(write_post_pe_payload(
+                    encryptor.as_mut(),
+                    write_buf.as_mut_slice(),
+                )),
+            )
                 .await
                 .context("error writing extended handshake")?;
             write_buf.clear();
@@ -294,14 +402,26 @@ impl<H: PeerConnectionHandler> PeerConnection<H> {
                 let len = self
                     .handler
                     .serialize_bitfield_message_to_buf(&mut write_buf)?;
-                with_timeout(rwtimeout, write.write_all(&write_buf[..len]))
+                with_timeout(
+                    rwtimeout,
+                    write.write_all(write_post_pe_payload(
+                        encryptor.as_mut(),
+                        &mut write_buf[..len],
+                    )),
+                )
                     .await
                     .context("error writing bitfield to peer")?;
                 trace!("sent bitfield");
             }
 
             let len = MessageOwned::Unchoke.serialize(&mut write_buf, &Default::default)?;
-            with_timeout(rwtimeout, write.write_all(&write_buf[..len]))
+            with_timeout(
+                rwtimeout,
+                write.write_all(write_post_pe_payload(
+                    encryptor.as_mut(),
+                    &mut write_buf[..len],
+                )),
+            )
                 .await
                 .context("error writing unchoke")?;
             trace!("sent unchoke");
@@ -398,7 +518,13 @@ impl<H: PeerConnectionHandler> PeerConnection<H> {
                     }
                 };
 
-                with_timeout(rwtimeout, write.write_all(&write_buf[..len]))
+                with_timeout(
+                    rwtimeout,
+                    write.write_all(write_post_pe_payload(
+                        encryptor.as_mut(),
+                        &mut write_buf[..len],
+                    )),
+                )
                     .await
                     .context("error writing the message to peer")?;
 
@@ -413,6 +539,10 @@ impl<H: PeerConnectionHandler> PeerConnection<H> {
         };
 
         let reader = async move {
+            let mut read: Box<dyn tokio::io::AsyncRead + Send + Unpin> = match decryptor {
+                Some(decryptor) => Box::new(DecryptingReader::new(read, decryptor)),
+                None => Box::new(read),
+            };
             loop {
                 let message = read_buf
                     .read_message(&mut read, rwtimeout)

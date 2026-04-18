@@ -42,6 +42,7 @@
 pub mod peer;
 pub mod peers;
 pub mod stats;
+mod webseed;
 
 use std::{
     collections::{HashMap, HashSet},
@@ -339,6 +340,15 @@ impl TorrentStateLive {
             error_span!(parent: state.shared.span.clone(), "upload_scheduler"),
             state.clone().task_upload_scheduler(ratelimit_upload_rx),
         );
+
+        if !state.shared.options.web_seed_uris.is_empty() {
+            let http_client = session.http_client();
+            let web_seed_uris = state.shared.options.web_seed_uris.clone();
+            state.spawn(
+                error_span!(parent: state.shared.span.clone(), "webseed_downloader"),
+                webseed::run_webseed_downloader(state.clone(), http_client, web_seed_uris),
+            );
+        }
         Ok(state)
     }
 
@@ -485,6 +495,7 @@ impl TorrentStateLive {
                 checked_peer.read_buf,
                 checked_peer.handshake,
                 checked_peer.stream,
+                checked_peer.crypto,
                 self.have_broadcast_tx.subscribe()
             ) => {r}
         };

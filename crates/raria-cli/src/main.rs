@@ -8,7 +8,7 @@ mod util;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use raria_core::config::GlobalConfig;
+use raria_core::config::{BtMinCryptoLevel, GlobalConfig};
 use std::ffi::OsString;
 use std::path::PathBuf;
 use tracing::{error, info, warn};
@@ -32,6 +32,47 @@ fn spawn_background_daemon(raw_args: &[OsString]) -> Result<()> {
         .spawn()
         .map_err(|e| anyhow::anyhow!("failed to spawn background daemon: {e}"))?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Cli, Commands};
+    use clap::Parser;
+
+    #[test]
+    fn daemon_bt_require_crypto_is_none_when_flag_is_omitted() {
+        let cli = Cli::try_parse_from(["raria", "daemon"]).expect("parse daemon args");
+        let Commands::Daemon {
+            bt_require_crypto, ..
+        } = cli.command
+        else {
+            panic!("expected daemon command");
+        };
+        assert_eq!(bt_require_crypto, None);
+    }
+
+    #[test]
+    fn daemon_bt_require_crypto_supports_presence_and_explicit_false() {
+        let cli =
+            Cli::try_parse_from(["raria", "daemon", "--bt-require-crypto"]).expect("parse true");
+        let Commands::Daemon {
+            bt_require_crypto, ..
+        } = cli.command
+        else {
+            panic!("expected daemon command");
+        };
+        assert_eq!(bt_require_crypto, Some(true));
+
+        let cli = Cli::try_parse_from(["raria", "daemon", "--bt-require-crypto=false"])
+            .expect("parse false");
+        let Commands::Daemon {
+            bt_require_crypto, ..
+        } = cli.command
+        else {
+            panic!("expected daemon command");
+        };
+        assert_eq!(bt_require_crypto, Some(false));
+    }
 }
 
 #[derive(Parser)]
@@ -275,6 +316,14 @@ enum Commands {
         /// BT piece selection strategy: `current` or `rarest-first`.
         #[arg(long = "bt-piece-strategy")]
         bt_piece_strategy: Option<String>,
+
+        /// Require encrypted BitTorrent peer transport.
+        #[arg(long = "bt-require-crypto", num_args = 0..=1, default_missing_value = "true")]
+        bt_require_crypto: Option<bool>,
+
+        /// Minimum BitTorrent crypto level: `plain` or `arc4`.
+        #[arg(long = "bt-min-crypto-level")]
+        bt_min_crypto_level: Option<String>,
 
         /// Path to client certificate chain for mTLS.
         #[arg(long)]
@@ -566,6 +615,8 @@ async fn main() -> Result<()> {
             ca_certificate,
             bt_dht_config_file,
             bt_piece_strategy,
+            bt_require_crypto,
+            bt_min_crypto_level,
             certificate,
             private_key,
             user_agent,
@@ -648,6 +699,18 @@ async fn main() -> Result<()> {
                             )
                         },
                     )?;
+            }
+            if let Some(bt_require_crypto) = bt_require_crypto {
+                config.bt_require_crypto = bt_require_crypto;
+            }
+            if let Some(bt_min_crypto_level) = bt_min_crypto_level {
+                config.bt_min_crypto_level = BtMinCryptoLevel::parse(&bt_min_crypto_level)
+                    .ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "invalid --bt-min-crypto-level '{}': expected 'plain' or 'arc4'",
+                            bt_min_crypto_level
+                        )
+                    })?;
             }
             if certificate.is_some() {
                 config.certificate = certificate;

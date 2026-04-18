@@ -8,6 +8,4 @@ Until each gap is resolved or reclassified with evidence, the repository must no
 
 Known indexed gaps:
 
-- MSE/PSE
-- WebSeed
-- mixed HTTP/FTP/SFTP plus BitTorrent download
+- None currently. `scripts/parity/build_bt_gap_index.sh` should now render an empty `entries` list.

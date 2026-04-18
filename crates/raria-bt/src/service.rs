@@ -24,6 +24,7 @@ use std::sync::Arc;
 use tracing::{debug, info, warn};
 
 pub use librqbit::PieceSelectionStrategy;
+pub use librqbit::{PeerEncryptionMinLevel, PeerEncryptionMode, PeerEncryptionPolicy};
 
 fn is_selected_file(selected_files: Option<&[usize]>, file_index: usize) -> bool {
     selected_files
@@ -60,6 +61,10 @@ fn bt_session_options(output_dir: &Path, config: &BtServiceConfig) -> SessionOpt
     SessionOptions {
         disable_dht: config.disable_dht,
         disable_dht_persistence: config.disable_dht_persistence,
+        peer_opts: Some(librqbit::PeerConnectionOptions {
+            encryption_policy: Some(config.peer_encryption_policy),
+            ..Default::default()
+        }),
         dht_config: config.dht_config_filename.as_ref().map(|path| {
             librqbit::dht::PersistentDhtConfig {
                 dump_interval: None,
@@ -186,6 +191,8 @@ pub struct BtServiceConfig {
     pub initial_peers: Option<Vec<SocketAddr>>,
     /// Piece selection strategy forwarded into librqbit.
     pub piece_selection_strategy: PieceSelectionStrategy,
+    /// Peer transport encryption policy forwarded into librqbit.
+    pub peer_encryption_policy: PeerEncryptionPolicy,
 }
 
 /// BitTorrent download service managing a librqbit session.
@@ -261,6 +268,7 @@ impl BtService {
         gid: raria_core::job::Gid,
         selected_files: Option<Vec<usize>>,
         trackers: Option<Vec<String>>,
+        web_seed_uris: Option<Vec<String>>,
     ) -> Result<BtHandle> {
         let session = self.ensure_session().await?;
 
@@ -281,6 +289,7 @@ impl BtService {
             initial_peers: self.config.initial_peers.clone(),
             piece_selection_strategy: self.config.piece_selection_strategy,
             trackers,
+            web_seed_uris,
             ..Default::default()
         };
 
@@ -719,6 +728,10 @@ mod tests {
                 dht_config_filename: Some(PathBuf::from("/tmp/raria-bt-dht.json")),
                 initial_peers: None,
                 piece_selection_strategy: PieceSelectionStrategy::Current,
+                peer_encryption_policy: PeerEncryptionPolicy {
+                    mode: PeerEncryptionMode::Require,
+                    min_crypto_level: PeerEncryptionMinLevel::Arc4,
+                },
             },
         );
 
@@ -729,6 +742,16 @@ mod tests {
         assert_eq!(
             options.socks_proxy_url.as_deref(),
             Some("socks5://127.0.0.1:1080")
+        );
+        assert_eq!(
+            options
+                .peer_opts
+                .expect("peer opts")
+                .encryption_policy,
+            Some(PeerEncryptionPolicy {
+                mode: PeerEncryptionMode::Require,
+                min_crypto_level: PeerEncryptionMinLevel::Arc4,
+            })
         );
         assert!(options.disable_dht);
         assert!(options.disable_dht_persistence);

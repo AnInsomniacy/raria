@@ -17,6 +17,8 @@ pub struct ReadBuf {
     processed: usize,
 }
 
+const MIN_BT_HANDSHAKE_LEN: usize = 68;
+
 impl ReadBuf {
     pub fn new() -> Self {
         Self {
@@ -43,6 +45,13 @@ impl ReadBuf {
         }
     }
 
+    pub fn seed_prefix(&mut self, prefix: &[u8]) {
+        self.buf.resize(self.buf.len().max(prefix.len()), 0);
+        self.buf[..prefix.len()].copy_from_slice(prefix);
+        self.filled = prefix.len();
+        self.processed = 0;
+    }
+
     // Read the BT handshake.
     // This MUST be run as the first operation on the buffer.
     pub async fn read_handshake(
@@ -50,21 +59,33 @@ impl ReadBuf {
         mut conn: impl AsyncReadExt + Unpin,
         timeout: Duration,
     ) -> anyhow::Result<Handshake<ByteBuf<'_>>> {
-        self.filled = with_timeout(timeout, conn.read(&mut self.buf))
-            .await
-            .context("error reading handshake")?;
-        if self.filled == 0 {
-            anyhow::bail!("peer disconnected while reading handshake");
+        loop {
+            if self.filled >= MIN_BT_HANDSHAKE_LEN {
+                let deserialize = Handshake::deserialize(&self.buf[..self.filled]);
+                match deserialize {
+                    Ok((h, size)) => {
+                        self.processed = size;
+                        return Ok(h);
+                    }
+                    Err(e) => {
+                        return Err(anyhow::anyhow!(
+                            "error deserializing handshake: {:?} hadshake data {:?}",
+                            e,
+                            &self.buf[..self.filled.min(19)]
+                        ));
+                    }
+                }
+            }
+
+            self.prepare_for_read(MIN_BT_HANDSHAKE_LEN.saturating_sub(self.filled));
+            let size = with_timeout(timeout, conn.read(&mut self.buf[self.filled..]))
+                .await
+                .context("error reading handshake")?;
+            if size == 0 {
+                anyhow::bail!("peer disconnected while reading handshake");
+            }
+            self.filled += size;
         }
-        let (h, size) = Handshake::deserialize(&self.buf[..self.filled]).map_err(|e| {
-            anyhow::anyhow!(
-                "error deserializing handshake: {:?} hadshake data {:?}",
-                e,
-                &self.buf[..self.filled.min(19)]
-            )
-        })?;
-        self.processed = size;
-        Ok(h)
     }
 
     // Read a message into the buffer, try to deserialize it and call the callback on it.

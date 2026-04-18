@@ -1,11 +1,15 @@
 use anyhow::{Context, Result};
 use base64::Engine as Base64Engine;
-use raria_bt::service::{BtService, BtServiceConfig, BtSource, BtStatus, PieceSelectionStrategy};
-use raria_core::config::BtPieceStrategy;
+use raria_bt::service::{
+    BtService, BtServiceConfig, BtSource, BtStatus, PeerEncryptionMinLevel, PeerEncryptionMode,
+    PeerEncryptionPolicy, PieceSelectionStrategy,
+};
+use raria_core::config::{BtMinCryptoLevel, BtPieceStrategy};
 use raria_core::engine::Engine;
 use raria_core::job::{BtCompletionDisposition, BtFile, BtPeer, Gid, Job, Status};
 use raria_core::logging::emit_structured_log;
 use raria_core::progress::DownloadEvent;
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -58,6 +62,17 @@ fn bt_service_config(engine: &Engine) -> BtServiceConfig {
         piece_selection_strategy: match engine.config.bt_piece_strategy {
             BtPieceStrategy::Current => PieceSelectionStrategy::Current,
             BtPieceStrategy::RarestFirst => PieceSelectionStrategy::RarestFirst,
+        },
+        peer_encryption_policy: PeerEncryptionPolicy {
+            mode: if engine.config.bt_require_crypto {
+                PeerEncryptionMode::Require
+            } else {
+                PeerEncryptionMode::Prefer
+            },
+            min_crypto_level: match engine.config.bt_min_crypto_level {
+                BtMinCryptoLevel::Plain => PeerEncryptionMinLevel::Plain,
+                BtMinCryptoLevel::Arc4 => PeerEncryptionMinLevel::Arc4,
+            },
         },
         ..Default::default()
     }
@@ -189,6 +204,42 @@ fn should_stop_seeding(
     false
 }
 
+fn derive_bt_web_seed_uris(job: &Job, primary_uri: &str) -> Option<Vec<String>> {
+    let mut uris = Vec::<String>::new();
+    let mut seen = HashSet::<String>::new();
+
+    let mut maybe_push = |candidate: &str| {
+        let trimmed = candidate.trim();
+        if trimmed.is_empty() || trimmed == primary_uri {
+            return;
+        }
+
+        let Ok(parsed) = url::Url::parse(trimmed) else {
+            return;
+        };
+        let scheme = parsed.scheme();
+        if !matches!(scheme, "http" | "https" | "ftp" | "ftps" | "sftp") {
+            return;
+        }
+
+        if seen.insert(trimmed.to_string()) {
+            uris.push(trimmed.to_string());
+        }
+    };
+
+    if let Some(explicit) = job.options.bt_web_seed_uris.as_ref() {
+        for uri in explicit {
+            maybe_push(uri);
+        }
+    }
+
+    for uri in &job.uris {
+        maybe_push(uri);
+    }
+
+    (!uris.is_empty()).then_some(uris)
+}
+
 pub(crate) async fn run_bt_download(
     engine: Arc<Engine>,
     gid: Gid,
@@ -220,12 +271,15 @@ pub(crate) async fn run_bt_download(
         BtSource::TorrentFile(PathBuf::from(uri_str))
     };
 
+    let web_seed_uris = derive_bt_web_seed_uris(&job, uri_str);
+
     let handle = bt_service
         .add(
             source,
             gid,
             job.options.bt_selected_files.clone(),
             job.options.bt_trackers.clone(),
+            web_seed_uris,
         )
         .await
         .context("failed to add torrent to BtService")?;
@@ -334,11 +388,15 @@ pub(crate) async fn run_bt_download(
 mod tests {
     use super::{
         BtCompletionAction, bt_service_config, handle_bt_cancellation, map_bt_files, map_bt_peers,
-        should_stop_seeding, sync_bt_job_from_status, sync_bt_status_into_job,
+        derive_bt_web_seed_uris, should_stop_seeding, sync_bt_job_from_status,
+        sync_bt_status_into_job,
     };
     use crate::bt_runtime::PieceSelectionStrategy;
-    use raria_bt::service::{BtFileInfo, BtPeerInfo, BtStatus};
-    use raria_core::config::{BtPieceStrategy, GlobalConfig, JobOptions};
+    use raria_bt::service::{
+        BtFileInfo, BtPeerInfo, BtStatus, PeerEncryptionMinLevel, PeerEncryptionMode,
+        PeerEncryptionPolicy,
+    };
+    use raria_core::config::{BtMinCryptoLevel, BtPieceStrategy, GlobalConfig, JobOptions};
     use raria_core::engine::{AddUriSpec, Engine};
     use raria_core::job::{BtSnapshot, Job, Status};
     use std::path::PathBuf;
@@ -445,6 +503,83 @@ mod tests {
         assert_eq!(
             bt_config.piece_selection_strategy,
             PieceSelectionStrategy::RarestFirst
+        );
+    }
+
+    #[test]
+    fn bt_service_config_forwards_bt_crypto_policy() {
+        let engine = Engine::new(GlobalConfig {
+            bt_require_crypto: true,
+            bt_min_crypto_level: BtMinCryptoLevel::Arc4,
+            ..Default::default()
+        });
+        let bt_config = bt_service_config(&engine);
+        assert_eq!(
+            bt_config.peer_encryption_policy,
+            PeerEncryptionPolicy {
+                mode: PeerEncryptionMode::Require,
+                min_crypto_level: PeerEncryptionMinLevel::Arc4,
+            }
+        );
+
+        let engine = Engine::new(GlobalConfig {
+            bt_require_crypto: false,
+            bt_min_crypto_level: BtMinCryptoLevel::Plain,
+            ..Default::default()
+        });
+        let bt_config = bt_service_config(&engine);
+        assert_eq!(
+            bt_config.peer_encryption_policy,
+            PeerEncryptionPolicy {
+                mode: PeerEncryptionMode::Prefer,
+                min_crypto_level: PeerEncryptionMinLevel::Plain,
+            }
+        );
+    }
+
+    #[test]
+    fn derive_bt_web_seed_uris_merges_explicit_and_job_uri_candidates() {
+        let mut job = Job::new_bt(
+            vec![
+                "magnet:?xt=urn:btih:feedface".into(),
+                "https://job.example/mirror.iso".into(),
+                "http://job.example/fallback.iso".into(),
+                "https://job.example/mirror.iso".into(),
+                "udp://tracker.example/announce".into(),
+            ],
+            PathBuf::from("/tmp/downloads"),
+        );
+        job.options.bt_web_seed_uris = Some(vec![
+            "https://explicit.example/seed.iso".into(),
+            "ftp://explicit.example/seed.iso".into(),
+            "ftps://explicit.example/secure.iso".into(),
+            "not-a-uri".into(),
+            "https://job.example/mirror.iso".into(),
+        ]);
+
+        let derived = derive_bt_web_seed_uris(&job, "magnet:?xt=urn:btih:feedface")
+            .expect("should derive mixed-source seed URIs");
+        assert_eq!(
+            derived,
+            vec![
+                "https://explicit.example/seed.iso".to_string(),
+                "ftp://explicit.example/seed.iso".to_string(),
+                "ftps://explicit.example/secure.iso".to_string(),
+                "https://job.example/mirror.iso".to_string(),
+                "http://job.example/fallback.iso".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn derive_bt_web_seed_uris_returns_none_without_aux_sources() {
+        let job = Job::new_bt(
+            vec!["magnet:?xt=urn:btih:feedface".into()],
+            PathBuf::from("/tmp/downloads"),
+        );
+        assert!(
+            derive_bt_web_seed_uris(&job, "magnet:?xt=urn:btih:feedface").is_none(),
+            "no auxiliary URI should produce no derived web-seed list"
         );
     }
 

@@ -11,7 +11,7 @@
 //   max-overall-download-limit=1048576
 //   all-proxy=http://proxy:8080
 
-use crate::config::{BtPieceStrategy, GlobalConfig};
+use crate::config::{BtMinCryptoLevel, BtPieceStrategy, GlobalConfig};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
@@ -207,6 +207,20 @@ pub fn apply_config_map_with_mode(
                 None if mode == ConfigParseMode::Strict => {
                     anyhow::bail!(
                         "invalid value for '{}': expected one of [current, rarest-first], got '{}'",
+                        key,
+                        value
+                    );
+                }
+                None => {}
+            },
+            "bt-require-crypto" => {
+                config.bt_require_crypto = value == "true" || value == "1";
+            }
+            "bt-min-crypto-level" => match BtMinCryptoLevel::parse(value) {
+                Some(level) => config.bt_min_crypto_level = level,
+                None if mode == ConfigParseMode::Strict => {
+                    anyhow::bail!(
+                        "invalid value for '{}': expected one of [plain, arc4], got '{}'",
                         key,
                         value
                     );
@@ -836,6 +850,24 @@ user-agent=raria/1.0
     }
 
     #[test]
+    fn apply_config_bt_require_crypto() {
+        let mut config = GlobalConfig::default();
+        let mut map = HashMap::new();
+        map.insert("bt-require-crypto".into(), "true".into());
+        apply_config_map(&mut config, &map);
+        assert!(config.bt_require_crypto);
+    }
+
+    #[test]
+    fn apply_config_bt_min_crypto_level() {
+        let mut config = GlobalConfig::default();
+        let mut map = HashMap::new();
+        map.insert("bt-min-crypto-level".into(), "arc4".into());
+        apply_config_map(&mut config, &map);
+        assert_eq!(config.bt_min_crypto_level, BtMinCryptoLevel::Arc4);
+    }
+
+    #[test]
     fn apply_config_auto_file_renaming_false() {
         let mut config = GlobalConfig::default();
         let mut map = HashMap::new();
@@ -880,6 +912,20 @@ user-agent=raria/1.0
         assert!(result.is_err(), "strict mode must reject invalid BT strategy");
         let err_msg = format!("{}", result.unwrap_err());
         assert!(err_msg.contains("bt-piece-strategy"));
+    }
+
+    #[test]
+    fn strict_mode_rejects_invalid_bt_min_crypto_level() {
+        let mut config = GlobalConfig::default();
+        let mut map = HashMap::new();
+        map.insert("bt-min-crypto-level".into(), "des".into());
+        let result = apply_config_map_with_mode(&mut config, &map, ConfigParseMode::Strict);
+        assert!(
+            result.is_err(),
+            "strict mode must reject invalid BT crypto level"
+        );
+        let err_msg = format!("{}", result.unwrap_err());
+        assert!(err_msg.contains("bt-min-crypto-level"));
     }
 
     #[test]
