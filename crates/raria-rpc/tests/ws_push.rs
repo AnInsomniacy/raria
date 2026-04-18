@@ -8,6 +8,8 @@ mod tests {
     use futures::{SinkExt, StreamExt};
     use raria_core::config::GlobalConfig;
     use raria_core::engine::Engine;
+    use raria_core::job::Gid;
+    use raria_core::progress::DownloadEvent;
     use raria_rpc::server::{RpcServerConfig, start_rpc_server};
     use std::net::SocketAddr;
     use std::sync::Arc;
@@ -119,6 +121,50 @@ mod tests {
 
         let params = source_failed_json["params"].as_array().unwrap();
         assert_eq!(params[0]["gid"], format!("{}", handle.gid));
+
+        cancel.cancel();
+    }
+
+    #[tokio::test]
+    async fn ws_receives_on_bt_download_complete() {
+        let config = GlobalConfig::default();
+        let engine = Arc::new(Engine::new(config));
+        let cancel = CancellationToken::new();
+        let rpc_config = RpcServerConfig {
+            listen_addr: SocketAddr::from(([127, 0, 0, 1], 0)),
+        };
+        let addrs = start_rpc_server(engine.clone(), &rpc_config, cancel.clone())
+            .await
+            .unwrap();
+
+        let ws_url = format!("ws://{}", addrs.ws_notify);
+        let (mut ws_stream, _) = connect_async(&ws_url).await.expect("WS connect failed");
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        let gid = Gid::from_raw(0x42);
+        engine
+            .event_bus
+            .publish(DownloadEvent::BtDownloadComplete { gid });
+
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
+        let bt_complete_json = loop {
+            let msg = tokio::time::timeout_at(deadline, ws_stream.next())
+                .await
+                .expect("timed out waiting for WS BT completion notification")
+                .expect("stream ended before BT completion notification")
+                .expect("WS notification frame error");
+            let json: serde_json::Value =
+                serde_json::from_str(msg.to_text().expect("WS text frame")).unwrap();
+            if json["method"] == "aria2.onBtDownloadComplete" {
+                break json;
+            }
+        };
+
+        assert_eq!(bt_complete_json["jsonrpc"], "2.0");
+        assert!(bt_complete_json.get("id").is_none());
+        let params = bt_complete_json["params"].as_array().unwrap();
+        assert_eq!(params.len(), 1, "BT completion params must contain one gid");
+        assert_eq!(params[0]["gid"], format!("{gid}"));
 
         cancel.cancel();
     }

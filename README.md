@@ -40,7 +40,7 @@ These behaviors are backed by repository tests and current code:
 - throttled active downloads respond correctly to runtime limit changes
 - signal-driven daemon shutdown cancels throttled active downloads promptly
 - mirror failover emits non-terminal `SourceFailed` events before eventual completion
-- `SourceFailed` is available through aria2-style WebSocket notifications as `aria2.onSourceFailed`
+- `SourceFailed` is available as the extension-style notification `aria2.onSourceFailed`; it is not currently counted as confirmed legacy aria2 parity
 - terminal checksum and piece-integrity failures reject invalid output instead of leaving corrupt files behind
 - structured log files redact obvious secrets and credential-bearing URLs on covered paths
 
@@ -64,15 +64,18 @@ Current surface highlights:
 - `aria2.shutdown`, `aria2.saveSession`, `aria2.getVersion`, `aria2.getSessionInfo`
 - `system.multicall`, `system.listMethods`, `system.listNotifications`
 
-Current WebSocket notification coverage includes:
+Current WebSocket notification coverage includes confirmed parity surfaces:
 
 - `aria2.onDownloadStart`
 - `aria2.onDownloadPause`
 - `aria2.onDownloadStop`
 - `aria2.onDownloadComplete`
 - `aria2.onDownloadError`
-- `aria2.onSourceFailed`
 - `aria2.onBtDownloadComplete`
+
+Current extension surface includes:
+
+- extension notification `aria2.onSourceFailed`
 
 ## Structured Logging
 

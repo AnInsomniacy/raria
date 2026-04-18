@@ -23,6 +23,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tracing::{debug, info, warn};
 
+pub use librqbit::PieceSelectionStrategy;
+
 fn is_selected_file(selected_files: Option<&[usize]>, file_index: usize) -> bool {
     selected_files
         .map(|files| files.contains(&file_index))
@@ -71,6 +73,15 @@ fn bt_session_options(output_dir: &Path, config: &BtServiceConfig) -> SessionOpt
         }),
         ..Default::default()
     }
+}
+
+/// Hidden parity-contract hook for integration tests that validate session wiring.
+#[doc(hidden)]
+pub fn parity_contract_session_options(
+    output_dir: &Path,
+    config: &BtServiceConfig,
+) -> SessionOptions {
+    bt_session_options(output_dir, config)
 }
 
 /// Source for a BitTorrent download.
@@ -161,10 +172,6 @@ pub struct BtPeerInfo {
 /// This is the entry point for all BT operations. It manages a librqbit
 /// Session internally and provides raria-compatible operations.
 ///
-/// # Product Constraint
-/// librqbit only supports sequential downloading (rarest-first is not available).
-/// This means BT download behavior is NOT equivalent to aria2's BT engine.
-/// This is an accepted product constraint.
 #[derive(Debug, Clone, Default)]
 pub struct BtServiceConfig {
     /// SOCKS5 proxy URL for tracker and peer connections.
@@ -177,6 +184,8 @@ pub struct BtServiceConfig {
     pub dht_config_filename: Option<PathBuf>,
     /// Bootstrap peers to connect to before DHT discovery.
     pub initial_peers: Option<Vec<SocketAddr>>,
+    /// Piece selection strategy forwarded into librqbit.
+    pub piece_selection_strategy: PieceSelectionStrategy,
 }
 
 /// BitTorrent download service managing a librqbit session.
@@ -187,6 +196,8 @@ pub struct BtService {
     config: BtServiceConfig,
     /// librqbit session (initialized lazily on first use).
     session: Arc<RwLock<Option<Arc<Session>>>>,
+    /// Serializes first-session creation so concurrent BT jobs cannot orphan extra sessions.
+    session_init: Arc<tokio::sync::Mutex<()>>,
     /// Map from raria GID → librqbit `Arc<ManagedTorrent>` for active torrents.
     handles: Arc<RwLock<HashMap<raria_core::job::Gid, Arc<ManagedTorrent>>>>,
 }
@@ -206,6 +217,7 @@ impl BtService {
             output_dir,
             config,
             session: Arc::new(RwLock::new(None)),
+            session_init: Arc::new(tokio::sync::Mutex::new(())),
             handles: Arc::new(RwLock::new(HashMap::new())),
         })
     }
@@ -213,6 +225,14 @@ impl BtService {
     /// Ensure the librqbit session is initialized. Returns a clone of the Arc.
     async fn ensure_session(&self) -> Result<Arc<Session>> {
         // Fast path: session already initialized.
+        {
+            let guard = self.session.read();
+            if let Some(ref session) = *guard {
+                return Ok(Arc::clone(session));
+            }
+        }
+
+        let _init_guard = self.session_init.lock().await;
         {
             let guard = self.session.read();
             if let Some(ref session) = *guard {
@@ -259,6 +279,7 @@ impl BtService {
             output_folder: Some(self.output_dir.clone().to_string_lossy().to_string()),
             only_files: selected_files,
             initial_peers: self.config.initial_peers.clone(),
+            piece_selection_strategy: self.config.piece_selection_strategy,
             trackers,
             ..Default::default()
         };
@@ -460,6 +481,28 @@ impl BtService {
         &self.output_dir
     }
 
+    fn persist_dht_snapshot(&self, session: &Session) -> Result<()> {
+        if self.config.disable_dht || self.config.disable_dht_persistence {
+            return Ok(());
+        }
+
+        let dht = match session.get_dht() {
+            Some(dht) => dht,
+            None => return Ok(()),
+        };
+
+        librqbit::dht::PersistentDht::dump_now(dht, self.config.dht_config_filename.clone())
+            .context("failed to persist upstream DHT shutdown snapshot")?;
+        let config_filename = self
+            .config
+            .dht_config_filename
+            .clone()
+            .map(Ok)
+            .unwrap_or_else(librqbit::dht::PersistentDht::default_persistence_filename)?;
+        info!(path = %config_filename.display(), "persisted BT DHT shutdown snapshot");
+        Ok(())
+    }
+
     /// Stop the librqbit session.
     pub async fn shutdown(&self) {
         let session = {
@@ -468,6 +511,9 @@ impl BtService {
         };
         if let Some(session) = session {
             session.stop().await;
+            if let Err(error) = self.persist_dht_snapshot(&session) {
+                warn!(error = %error, "failed to persist BT DHT shutdown snapshot");
+            }
             info!("librqbit session stopped");
         }
     }
@@ -604,6 +650,40 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn concurrent_ensure_session_reuses_single_session() {
+        let svc = BtService::with_config(
+            PathBuf::from("/tmp/raria-bt-concurrent-session"),
+            BtServiceConfig {
+                disable_dht: true,
+                disable_dht_persistence: true,
+                ..Default::default()
+            },
+        )
+        .expect("construct BtService");
+
+        let (left, right) = tokio::join!(svc.ensure_session(), svc.ensure_session());
+        let left = left.expect("left ensure_session");
+        let right = right.expect("right ensure_session");
+
+        assert!(
+            Arc::ptr_eq(&left, &right),
+            "concurrent ensure_session calls must share a single librqbit session"
+        );
+
+        let stored = svc
+            .session
+            .read()
+            .clone()
+            .expect("stored session after concurrent ensure_session");
+        assert!(
+            Arc::ptr_eq(&left, &stored),
+            "stored session must match the concurrently initialized session"
+        );
+
+        svc.shutdown().await;
+    }
+
+    #[tokio::test]
     async fn bt_service_rejects_non_socks5_proxy_urls_when_session_starts() {
         let svc = BtService::with_config(
             PathBuf::from("/tmp"),
@@ -638,6 +718,7 @@ mod tests {
                 disable_dht_persistence: true,
                 dht_config_filename: Some(PathBuf::from("/tmp/raria-bt-dht.json")),
                 initial_peers: None,
+                piece_selection_strategy: PieceSelectionStrategy::Current,
             },
         );
 

@@ -272,6 +272,10 @@ enum Commands {
         #[arg(long = "bt-dht-config-file")]
         bt_dht_config_file: Option<PathBuf>,
 
+        /// BT piece selection strategy: `current` or `rarest-first`.
+        #[arg(long = "bt-piece-strategy")]
+        bt_piece_strategy: Option<String>,
+
         /// Path to client certificate chain for mTLS.
         #[arg(long)]
         certificate: Option<PathBuf>,
@@ -561,6 +565,7 @@ async fn main() -> Result<()> {
             check_certificate,
             ca_certificate,
             bt_dht_config_file,
+            bt_piece_strategy,
             certificate,
             private_key,
             user_agent,
@@ -632,6 +637,17 @@ async fn main() -> Result<()> {
             }
             if bt_dht_config_file.is_some() {
                 config.bt_dht_config_file = bt_dht_config_file;
+            }
+            if let Some(bt_piece_strategy) = bt_piece_strategy {
+                config.bt_piece_strategy =
+                    raria_core::config::BtPieceStrategy::parse(&bt_piece_strategy).ok_or_else(
+                        || {
+                            anyhow::anyhow!(
+                                "invalid --bt-piece-strategy '{}': expected 'current' or 'rarest-first'",
+                                bt_piece_strategy
+                            )
+                        },
+                    )?;
             }
             if certificate.is_some() {
                 config.certificate = certificate;

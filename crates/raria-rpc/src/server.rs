@@ -12,6 +12,7 @@
 // while the transport contract is owned explicitly here so we can provide
 // aria2-compatible same-socket notifications.
 
+use crate::events::{all_notification_method_names, event_to_notification_method};
 use crate::methods::{Aria2RpcServer, RpcHandler};
 use anyhow::{Context, Result};
 use axum::Router;
@@ -490,17 +491,6 @@ fn wrap_module_with_auth(
     Ok(outer)
 }
 
-/// Notification method names that aria2 supports.
-const ARIA2_NOTIFICATIONS: &[&str] = &[
-    "aria2.onDownloadStart",
-    "aria2.onDownloadPause",
-    "aria2.onDownloadStop",
-    "aria2.onDownloadComplete",
-    "aria2.onDownloadError",
-    "aria2.onSourceFailed",
-    "aria2.onBtDownloadComplete",
-];
-
 /// Register system.multicall, system.listMethods, system.listNotifications
 /// on the RPC module.
 ///
@@ -529,7 +519,9 @@ fn register_system_methods(module: &mut jsonrpsee::RpcModule<RpcHandler>) -> Res
     // system.listNotifications — returns notification method names.
     module
         .register_method("system.listNotifications", move |_params, _ctx, _| {
-            serde_json::to_value(ARIA2_NOTIFICATIONS).map_err(|e| {
+            let mut names = all_notification_method_names();
+            names.sort();
+            serde_json::to_value(names).map_err(|e| {
                 jsonrpsee::types::ErrorObjectOwned::owned(-32603, e.to_string(), None::<()>)
             })
         })
@@ -608,22 +600,6 @@ fn register_system_methods(module: &mut jsonrpsee::RpcModule<RpcHandler>) -> Res
     Ok(())
 }
 
-/// Maps DownloadEvent variants to aria2-compatible WebSocket notification method names.
-fn event_to_aria2_method(event: &raria_core::progress::DownloadEvent) -> Option<&'static str> {
-    use raria_core::progress::DownloadEvent;
-    match event {
-        DownloadEvent::Started { .. } => Some("aria2.onDownloadStart"),
-        DownloadEvent::Paused { .. } => Some("aria2.onDownloadPause"),
-        DownloadEvent::Stopped { .. } => Some("aria2.onDownloadStop"),
-        DownloadEvent::Complete { .. } => Some("aria2.onDownloadComplete"),
-        DownloadEvent::BtDownloadComplete { .. } => Some("aria2.onBtDownloadComplete"),
-        DownloadEvent::Error { .. } => Some("aria2.onDownloadError"),
-        DownloadEvent::SourceFailed { .. } => Some("aria2.onSourceFailed"),
-        // StatusChanged and Progress are internal events, not sent as aria2 notifications.
-        _ => None,
-    }
-}
-
 /// Continuously subscribes to engine events and broadcasts them as
 /// JSON-RPC 2.0 notifications to all connected WebSocket clients.
 ///
@@ -648,7 +624,7 @@ async fn ws_event_push_loop(
             result = rx.recv() => {
                 match result {
                     Ok(event) => {
-                        if let Some(method) = event_to_aria2_method(&event) {
+                        if let Some(method) = event_to_notification_method(&event) {
                             let gid_str = format!("{:016x}", event_gid(&event).as_raw());
                             let notification = serde_json::json!({
                                 "jsonrpc": "2.0",
@@ -766,38 +742,38 @@ mod tests {
         use raria_core::progress::DownloadEvent;
 
         assert_eq!(
-            event_to_aria2_method(&DownloadEvent::Started {
+            event_to_notification_method(&DownloadEvent::Started {
                 gid: Gid::from_raw(1)
             }),
             Some("aria2.onDownloadStart")
         );
         assert_eq!(
-            event_to_aria2_method(&DownloadEvent::Complete {
+            event_to_notification_method(&DownloadEvent::Complete {
                 gid: Gid::from_raw(1)
             }),
             Some("aria2.onDownloadComplete")
         );
         assert_eq!(
-            event_to_aria2_method(&DownloadEvent::Paused {
+            event_to_notification_method(&DownloadEvent::Paused {
                 gid: Gid::from_raw(1)
             }),
             Some("aria2.onDownloadPause")
         );
         assert_eq!(
-            event_to_aria2_method(&DownloadEvent::Stopped {
+            event_to_notification_method(&DownloadEvent::Stopped {
                 gid: Gid::from_raw(1)
             }),
             Some("aria2.onDownloadStop")
         );
         assert_eq!(
-            event_to_aria2_method(&DownloadEvent::Error {
+            event_to_notification_method(&DownloadEvent::Error {
                 gid: Gid::from_raw(1),
                 message: "err".into()
             }),
             Some("aria2.onDownloadError")
         );
         assert_eq!(
-            event_to_aria2_method(&DownloadEvent::SourceFailed {
+            event_to_notification_method(&DownloadEvent::SourceFailed {
                 gid: Gid::from_raw(1),
                 uri: "https://mirror.example/file.iso".into(),
                 message: "err".into()
@@ -805,7 +781,7 @@ mod tests {
             Some("aria2.onSourceFailed")
         );
         assert_eq!(
-            event_to_aria2_method(&DownloadEvent::BtDownloadComplete {
+            event_to_notification_method(&DownloadEvent::BtDownloadComplete {
                 gid: Gid::from_raw(1)
             }),
             Some("aria2.onBtDownloadComplete")
@@ -818,7 +794,7 @@ mod tests {
         use raria_core::progress::DownloadEvent;
 
         assert_eq!(
-            event_to_aria2_method(&DownloadEvent::Progress {
+            event_to_notification_method(&DownloadEvent::Progress {
                 gid: Gid::from_raw(1),
                 downloaded: 0,
                 total: None,
@@ -827,7 +803,7 @@ mod tests {
             None
         );
         assert_eq!(
-            event_to_aria2_method(&DownloadEvent::StatusChanged {
+            event_to_notification_method(&DownloadEvent::StatusChanged {
                 gid: Gid::from_raw(1),
                 old_status: Status::Waiting,
                 new_status: Status::Active,

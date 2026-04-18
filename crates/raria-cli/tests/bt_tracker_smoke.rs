@@ -325,6 +325,107 @@ async fn daemon_bt_tracker_option_announces_to_tracker_on_real_daemon_path() {
 }
 
 #[tokio::test]
+async fn daemon_shutdown_persists_bt_dht_snapshot_before_periodic_dump_window() {
+    let _guard = lock_bt_daemon_smoke_lane().await;
+    let fixture = spawn_bt_seed_fixture().await;
+    let temp = tempdir().expect("tempdir");
+    let session_file = temp.path().join("bt-dht.session.redb");
+    let dht_config_file = temp.path().join("bt-dht.json");
+    let dht_config_arg = dht_config_file.to_string_lossy().to_string();
+    let (mut child, rpc_port) = spawn_ready_daemon_with_args(
+        temp.path(),
+        &session_file,
+        &["--bt-dht-config-file", &dht_config_arg],
+    )
+    .await;
+    let client = reqwest::Client::new();
+
+    let add_resp: serde_json::Value = client
+        .post(format!("http://127.0.0.1:{rpc_port}"))
+        .json(&serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "aria2.addTorrent",
+            "params": [
+                fixture.torrent_b64,
+                [],
+                { "bt-tracker": fixture.tracker_url }
+            ],
+        }))
+        .send()
+        .await
+        .expect("send addTorrent")
+        .json()
+        .await
+        .expect("parse addTorrent response");
+    assert!(
+        add_resp.get("result").and_then(|value| value.as_str()).is_some(),
+        "daemon should accept BT job before shutdown: {add_resp}"
+    );
+    assert!(
+        !dht_config_file.exists(),
+        "fresh daemon run should not persist DHT state before shutdown is requested"
+    );
+
+    let shutdown_started_at = Instant::now();
+    let shutdown_resp: serde_json::Value = client
+        .post(format!("http://127.0.0.1:{rpc_port}"))
+        .json(&serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "aria2.shutdown",
+            "params": [],
+        }))
+        .send()
+        .await
+        .expect("send shutdown")
+        .json()
+        .await
+        .expect("parse shutdown response");
+    assert_eq!(shutdown_resp["result"], "OK");
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        match child.child.try_wait() {
+            Ok(Some(status)) => {
+                assert!(status.success(), "daemon exited unsuccessfully: {status}");
+                break;
+            }
+            Ok(None) => {
+                assert!(
+                    Instant::now() < deadline,
+                    "daemon did not exit after shutdown RPC"
+                );
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            Err(error) => panic!("failed waiting for daemon exit: {error}"),
+        }
+    }
+
+    assert!(
+        shutdown_started_at.elapsed() < Duration::from_secs(3),
+        "shutdown-driven DHT snapshot should land before the upstream 3s periodic dump fallback"
+    );
+
+    let dht_bytes = std::fs::read(&dht_config_file)
+        .expect("DHT config file should be written during daemon shutdown");
+    let dht_json: serde_json::Value =
+        serde_json::from_slice(&dht_bytes).expect("parse persisted DHT JSON");
+    assert!(
+        dht_json.get("addr").is_some(),
+        "persisted DHT JSON should include the listen address"
+    );
+    assert!(
+        dht_json.get("table").is_some(),
+        "persisted DHT JSON should include the routing table"
+    );
+    assert!(
+        dht_json.get("peer_store").is_some(),
+        "persisted DHT JSON should include the peer store field from the upstream writer"
+    );
+}
+
+#[tokio::test]
 async fn daemon_get_peers_exposes_live_bt_peer_details_over_rpc() {
     let _guard = lock_bt_daemon_smoke_lane().await;
     let fixture = spawn_bt_seed_fixture_with_payload(

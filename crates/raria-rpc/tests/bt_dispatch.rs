@@ -210,6 +210,45 @@ mod tests {
         cancel.cancel();
     }
 
+    #[tokio::test]
+    async fn add_torrent_with_webseed_uris_stores_them_for_runtime_use() {
+        let (engine, url, cancel) = spawn_server().await;
+
+        use base64::Engine as Base64Engine;
+        let fake_torrent = b"d8:announce35:http://tracker.example.com/announcee";
+        let encoded = base64::engine::general_purpose::STANDARD.encode(fake_torrent);
+
+        let resp = rpc_call(
+            &url,
+            "aria2.addTorrent",
+            serde_json::json!([
+                encoded,
+                [
+                    "https://webseed.example/file.iso",
+                    "http://mirror.example/file.iso"
+                ]
+            ]),
+        )
+        .await;
+
+        assert!(
+            resp.get("error").is_none(),
+            "addTorrent with webseed URIs should succeed: {resp}"
+        );
+        let gid_str = resp["result"].as_str().unwrap();
+        let gid = raria_core::job::Gid::from_raw(u64::from_str_radix(gid_str, 16).unwrap());
+        let job = engine.registry.get(gid).unwrap();
+        assert_eq!(
+            job.options.bt_web_seed_uris,
+            Some(vec![
+                "https://webseed.example/file.iso".into(),
+                "http://mirror.example/file.iso".into(),
+            ])
+        );
+
+        cancel.cancel();
+    }
+
     /// tellStatus for a BT job should include bittorrent-specific fields.
     #[tokio::test]
     async fn tell_status_bt_job_shows_kind() {

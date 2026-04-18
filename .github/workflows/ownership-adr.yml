@@ -1,0 +1,13 @@
+name: ownership-adr
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  ownership-adr:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: test -f docs/adr/ADR-0001-bt-dht-ownership.md
+      - run: test -f .omx/parity/ownership-decisions.yaml

@@ -1,6 +1,7 @@
 use anyhow::{Context, Result};
 use base64::Engine as Base64Engine;
-use raria_bt::service::{BtService, BtServiceConfig, BtSource, BtStatus};
+use raria_bt::service::{BtService, BtServiceConfig, BtSource, BtStatus, PieceSelectionStrategy};
+use raria_core::config::BtPieceStrategy;
 use raria_core::engine::Engine;
 use raria_core::job::{BtCompletionDisposition, BtFile, BtPeer, Gid, Job, Status};
 use raria_core::logging::emit_structured_log;
@@ -54,8 +55,18 @@ fn bt_service_config(engine: &Engine) -> BtServiceConfig {
             .clone()
             .filter(|proxy| proxy.starts_with("socks5://")),
         dht_config_filename: engine.config.bt_dht_config_file.clone(),
+        piece_selection_strategy: match engine.config.bt_piece_strategy {
+            BtPieceStrategy::Current => PieceSelectionStrategy::Current,
+            BtPieceStrategy::RarestFirst => PieceSelectionStrategy::RarestFirst,
+        },
         ..Default::default()
     }
+}
+
+pub(crate) fn create_bt_service(engine: &Engine, download_dir: PathBuf) -> Result<Arc<BtService>> {
+    BtService::with_config(download_dir, bt_service_config(engine))
+        .map(Arc::new)
+        .context("failed to create BtService")
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -182,7 +193,7 @@ pub(crate) async fn run_bt_download(
     engine: Arc<Engine>,
     gid: Gid,
     cancel: CancellationToken,
-    download_dir: PathBuf,
+    bt_service: Arc<BtService>,
 ) -> Result<()> {
     let job = engine
         .registry
@@ -209,8 +220,6 @@ pub(crate) async fn run_bt_download(
         BtSource::TorrentFile(PathBuf::from(uri_str))
     };
 
-    let bt_service = BtService::with_config(download_dir, bt_service_config(engine.as_ref()))
-        .context("failed to create BtService")?;
     let handle = bt_service
         .add(
             source,
@@ -327,8 +336,9 @@ mod tests {
         BtCompletionAction, bt_service_config, handle_bt_cancellation, map_bt_files, map_bt_peers,
         should_stop_seeding, sync_bt_job_from_status, sync_bt_status_into_job,
     };
+    use crate::bt_runtime::PieceSelectionStrategy;
     use raria_bt::service::{BtFileInfo, BtPeerInfo, BtStatus};
-    use raria_core::config::{GlobalConfig, JobOptions};
+    use raria_core::config::{BtPieceStrategy, GlobalConfig, JobOptions};
     use raria_core::engine::{AddUriSpec, Engine};
     use raria_core::job::{BtSnapshot, Job, Status};
     use std::path::PathBuf;
@@ -423,6 +433,19 @@ mod tests {
         let engine = Engine::new(config);
         let bt_config = bt_service_config(&engine);
         assert!(bt_config.socks_proxy_url.is_none());
+    }
+
+    #[test]
+    fn bt_service_config_forwards_piece_strategy() {
+        let engine = Engine::new(GlobalConfig {
+            bt_piece_strategy: BtPieceStrategy::RarestFirst,
+            ..Default::default()
+        });
+        let bt_config = bt_service_config(&engine);
+        assert_eq!(
+            bt_config.piece_selection_strategy,
+            PieceSelectionStrategy::RarestFirst
+        );
     }
 
     #[test]

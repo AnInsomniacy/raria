@@ -6,6 +6,36 @@ use crate::file_alloc::FileAllocation;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
+/// BitTorrent piece selection strategy exposed through raria configuration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum BtPieceStrategy {
+    /// Prefer pieces that are available from the fewest live peers.
+    #[default]
+    RarestFirst,
+    /// Keep librqbit's existing selection order.
+    Current,
+}
+
+impl BtPieceStrategy {
+    /// Parse the aria2-style string form used by config files and CLI flags.
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "current" => Some(Self::Current),
+            "rarest-first" => Some(Self::RarestFirst),
+            _ => None,
+        }
+    }
+
+    /// Return the canonical config/CLI string representation.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Current => "current",
+            Self::RarestFirst => "rarest-first",
+        }
+    }
+}
+
 /// Global configuration for the raria daemon.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GlobalConfig {
@@ -110,6 +140,8 @@ pub struct GlobalConfig {
     pub sftp_private_key_passphrase: Option<String>,
     /// Optional BT DHT persistence/config file path used to seed librqbit's persistent DHT state.
     pub bt_dht_config_file: Option<PathBuf>,
+    /// BT piece selection strategy forwarded into the BitTorrent runtime.
+    pub bt_piece_strategy: BtPieceStrategy,
     /// Hook script fired when a download starts.
     pub on_download_start: Option<PathBuf>,
     /// Hook script fired when a download completes.
@@ -168,6 +200,7 @@ impl Default for GlobalConfig {
             sftp_private_key: None,
             sftp_private_key_passphrase: None,
             bt_dht_config_file: None,
+            bt_piece_strategy: BtPieceStrategy::RarestFirst,
             on_download_start: None,
             on_download_complete: None,
             on_download_error: None,
@@ -201,6 +234,8 @@ pub struct JobOptions {
     pub bt_selected_files: Option<Vec<usize>>,
     /// Additional BT trackers appended to the torrent.
     pub bt_trackers: Option<Vec<String>>,
+    /// Additional WebSeed URIs supplied alongside a torrent add request.
+    pub bt_web_seed_uris: Option<Vec<String>>,
     /// Stop seeding after this upload ratio is reached.
     pub seed_ratio: Option<f64>,
     /// Stop seeding after this many minutes.
@@ -221,6 +256,7 @@ impl Default for JobOptions {
             checksum: None,
             bt_selected_files: None,
             bt_trackers: None,
+            bt_web_seed_uris: None,
             seed_ratio: None,
             seed_time: None,
         }
@@ -239,11 +275,15 @@ mod tests {
         assert_eq!(cfg.rpc_listen_port, 6800);
         assert!(!cfg.enable_rpc);
         assert!(!cfg.rpc_allow_origin_all);
+        assert_eq!(cfg.bt_piece_strategy, BtPieceStrategy::RarestFirst);
     }
 
     #[test]
     fn global_config_serde_roundtrips() {
-        let cfg = GlobalConfig::default();
+        let cfg = GlobalConfig {
+            bt_piece_strategy: BtPieceStrategy::RarestFirst,
+            ..GlobalConfig::default()
+        };
         let json = serde_json::to_string(&cfg).unwrap();
         let recovered: GlobalConfig = serde_json::from_str(&json).unwrap();
         assert_eq!(
@@ -251,6 +291,20 @@ mod tests {
             cfg.max_concurrent_downloads
         );
         assert_eq!(recovered.rpc_listen_port, cfg.rpc_listen_port);
+        assert_eq!(recovered.bt_piece_strategy, BtPieceStrategy::RarestFirst);
+    }
+
+    #[test]
+    fn bt_piece_strategy_parses_known_values() {
+        assert_eq!(
+            BtPieceStrategy::parse("current"),
+            Some(BtPieceStrategy::Current)
+        );
+        assert_eq!(
+            BtPieceStrategy::parse("rarest-first"),
+            Some(BtPieceStrategy::RarestFirst)
+        );
+        assert_eq!(BtPieceStrategy::parse("unknown"), None);
     }
 
     #[test]

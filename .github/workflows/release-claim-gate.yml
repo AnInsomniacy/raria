@@ -1,0 +1,13 @@
+name: release-claim-gate
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  release-claim-gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: scripts/parity/render_release_claims.sh
+      - run: scripts/parity/check_claim_drift.sh

@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use librqbit::{
     AddTorrent, AddTorrentOptions, CreateTorrentOptions, Session, SessionOptions, create_torrent,
 };
-use raria_bt::service::{BtService, BtServiceConfig, BtSource};
+use raria_bt::service::{BtService, BtServiceConfig, BtSource, PieceSelectionStrategy};
 use raria_core::job::Gid;
 use std::fs;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener as StdTcpListener};
@@ -371,6 +371,7 @@ async fn bt_service_completes_peer_download_through_socks5_proxy() {
             disable_dht_persistence: true,
             dht_config_filename: None,
             initial_peers: Some(vec![seed.seed_addr]),
+            piece_selection_strategy: PieceSelectionStrategy::Current,
         },
     )
     .expect("create bt service");

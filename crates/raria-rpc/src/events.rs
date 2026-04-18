@@ -3,13 +3,18 @@
 // Maps raria-core's DownloadEvent to aria2-compatible notification format
 // and provides a subscription task that pushes events to WebSocket clients.
 //
-// aria2 notifications:
-// - aria2.onDownloadStart
-// - aria2.onDownloadPause
-// - aria2.onDownloadStop
-// - aria2.onDownloadComplete
-// - aria2.onDownloadError
-// - aria2.onSourceFailed
+/// Legacy-compatible notification names.
+pub const PARITY_NOTIFICATION_METHODS: &[&str] = &[
+    "aria2.onDownloadStart",
+    "aria2.onDownloadPause",
+    "aria2.onDownloadStop",
+    "aria2.onDownloadComplete",
+    "aria2.onDownloadError",
+    "aria2.onBtDownloadComplete",
+];
+
+/// Extension notification names that remain outside confirmed legacy parity.
+pub const EXTENSION_NOTIFICATION_METHODS: &[&str] = &["aria2.onSourceFailed"];
 
 use raria_core::job::Gid;
 use raria_core::progress::DownloadEvent;
@@ -58,31 +63,41 @@ impl Aria2Notification {
 ///
 /// Returns `None` for events that don't have an aria2 equivalent (e.g. Progress).
 pub fn event_to_notification(event: &DownloadEvent) -> Option<Aria2Notification> {
+    let gid = match event {
+        DownloadEvent::Started { gid }
+        | DownloadEvent::Paused { gid }
+        | DownloadEvent::Stopped { gid }
+        | DownloadEvent::Complete { gid }
+        | DownloadEvent::BtDownloadComplete { gid }
+        | DownloadEvent::Error { gid, .. }
+        | DownloadEvent::SourceFailed { gid, .. } => *gid,
+        DownloadEvent::StatusChanged { .. } | DownloadEvent::Progress { .. } => return None,
+    };
+
+    event_to_notification_method(event).map(|method| Aria2Notification::new(method, gid))
+}
+
+/// Return the aria2-style notification method name for a runtime event.
+pub fn event_to_notification_method(event: &DownloadEvent) -> Option<&'static str> {
     match event {
-        DownloadEvent::Started { gid } => {
-            Some(Aria2Notification::new("aria2.onDownloadStart", *gid))
-        }
-        DownloadEvent::Paused { gid } => {
-            Some(Aria2Notification::new("aria2.onDownloadPause", *gid))
-        }
-        DownloadEvent::Stopped { gid } => {
-            Some(Aria2Notification::new("aria2.onDownloadStop", *gid))
-        }
-        DownloadEvent::Complete { gid } => {
-            Some(Aria2Notification::new("aria2.onDownloadComplete", *gid))
-        }
-        DownloadEvent::BtDownloadComplete { gid } => {
-            Some(Aria2Notification::new("aria2.onBtDownloadComplete", *gid))
-        }
-        DownloadEvent::Error { gid, .. } => {
-            Some(Aria2Notification::new("aria2.onDownloadError", *gid))
-        }
-        DownloadEvent::SourceFailed { gid, .. } => {
-            Some(Aria2Notification::new("aria2.onSourceFailed", *gid))
-        }
-        // StatusChanged and Progress don't map to aria2 notifications.
+        DownloadEvent::Started { .. } => Some("aria2.onDownloadStart"),
+        DownloadEvent::Paused { .. } => Some("aria2.onDownloadPause"),
+        DownloadEvent::Stopped { .. } => Some("aria2.onDownloadStop"),
+        DownloadEvent::Complete { .. } => Some("aria2.onDownloadComplete"),
+        DownloadEvent::BtDownloadComplete { .. } => Some("aria2.onBtDownloadComplete"),
+        DownloadEvent::Error { .. } => Some("aria2.onDownloadError"),
+        DownloadEvent::SourceFailed { .. } => Some("aria2.onSourceFailed"),
         DownloadEvent::StatusChanged { .. } | DownloadEvent::Progress { .. } => None,
     }
+}
+
+/// Return the discoverable notification names exposed by the RPC surface.
+pub fn all_notification_method_names() -> Vec<&'static str> {
+    PARITY_NOTIFICATION_METHODS
+        .iter()
+        .chain(EXTENSION_NOTIFICATION_METHODS.iter())
+        .copied()
+        .collect()
 }
 
 #[cfg(test)]

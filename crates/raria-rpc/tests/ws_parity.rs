@@ -1,4 +1,4 @@
-// WebSocket notification parity tests.
+// WebSocket notification compatibility tests.
 //
 // These tests verify that raria's WebSocket notifications match aria2 1.37.0's
 // exact wire format. The aria2 manual specifies:
@@ -7,12 +7,12 @@
 // - params is an array containing a single struct: [{"gid": "..."}]
 // - Method names: aria2.onDownloadStart, aria2.onDownloadPause,
 //   aria2.onDownloadStop, aria2.onDownloadComplete, aria2.onDownloadError,
-//   aria2.onSourceFailed, aria2.onBtDownloadComplete
+//   aria2.onBtDownloadComplete
 //
 // Reference: https://aria2.github.io/manual/en/html/aria2c.html#notifications
 //
-// raria additionally exposes aria2.onSourceFailed for non-terminal mirror/source
-// failures that still allow the overall job to complete.
+// raria additionally exposes aria2.onSourceFailed as an extension surface for
+// non-terminal mirror/source failures that still allow the overall job to complete.
 
 #[cfg(test)]
 mod tests {

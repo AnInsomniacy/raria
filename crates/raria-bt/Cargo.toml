@@ -20,6 +20,7 @@ hex = { workspace = true }
 parking_lot = { workspace = true }
 
 [dev-dependencies]
+librqbit-dht = "5"
 tempfile = { workspace = true }
 tokio-test = { workspace = true }
 serial_test = "3"

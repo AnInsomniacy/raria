@@ -191,8 +191,55 @@ impl Engine {
         Ok(count)
     }
 
+    /// Insert a prepared job into the engine and waiting queue.
+    pub fn submit_job(&self, job: Job, queue_position: Option<usize>) -> Result<JobHandle> {
+        let gid = job.gid;
+
+        // Persist BEFORE in-memory state so crash-safe.
+        self.persist_job(&job);
+
+        self.cancel_registry.register(gid);
+        self.registry
+            .insert(job)
+            .map_err(|e| anyhow::anyhow!("{e}"))
+            .context("failed to insert job into registry")?;
+        if let Some(position) = queue_position {
+            self.scheduler.enqueue_at(gid, position);
+        } else {
+            self.scheduler.enqueue(gid);
+        }
+
+        self.event_bus.publish(DownloadEvent::Started { gid });
+        self.work_notify.notify_one();
+        info!(%gid, queue_position = ?queue_position, "job added");
+        emit_structured_log(
+            "INFO",
+            "raria::engine",
+            "job added",
+            [
+                ("gid", gid.to_string()),
+                (
+                    "queue_position",
+                    queue_position
+                        .map(|value| value.to_string())
+                        .unwrap_or_else(|| "append".to_string()),
+                ),
+            ],
+        );
+        Ok(JobHandle { gid })
+    }
+
     /// Submit a new URI download job. Returns the GID.
     pub fn add_uri(&self, spec: &AddUriSpec) -> Result<JobHandle> {
+        self.add_uri_with_position(spec, None)
+    }
+
+    /// Submit a new URI download job at a specific waiting-queue position.
+    pub fn add_uri_with_position(
+        &self,
+        spec: &AddUriSpec,
+        queue_position: Option<usize>,
+    ) -> Result<JobHandle> {
         let filename = spec
             .filename
             .clone()
@@ -226,29 +273,7 @@ impl Engine {
         } else {
             Job::new_range_with_options(spec.uris.clone(), out_path, options)
         };
-        let gid = job.gid;
-
-        // Persist BEFORE in-memory state so crash-safe.
-        self.persist_job(&job);
-
-        self.cancel_registry.register(gid);
-        self.registry
-            .insert(job)
-            .map_err(|e| anyhow::anyhow!("{e}"))
-            .context("failed to insert job into registry")?;
-        self.scheduler.enqueue(gid);
-
-        self.event_bus.publish(DownloadEvent::Started { gid });
-
-        self.work_notify.notify_one();
-        info!(%gid, "job added");
-        emit_structured_log(
-            "INFO",
-            "raria::engine",
-            "job added",
-            [("gid", gid.to_string())],
-        );
-        Ok(JobHandle { gid })
+        self.submit_job(job, queue_position)
     }
 
     /// Pause an active job.
@@ -436,6 +461,77 @@ impl Engine {
             ],
         );
         Ok(())
+    }
+
+    /// Mutate the URI list attached to a single-file download.
+    ///
+    /// Removal happens before insertion. When `position` is omitted, new URIs
+    /// are appended to the remaining list.
+    pub fn change_uris(
+        &self,
+        gid: Gid,
+        file_index: usize,
+        del_uris: &[String],
+        add_uris: &[String],
+        position: Option<usize>,
+    ) -> Result<(usize, usize)> {
+        let outcome = self
+            .registry
+            .update(gid, |job| -> anyhow::Result<(usize, usize, bool)> {
+                anyhow::ensure!(file_index > 0, "fileIndex must be 1-based");
+                anyhow::ensure!(
+                    job.kind != crate::job::JobKind::Bt,
+                    "changeUri is not supported for BitTorrent jobs"
+                );
+
+                let file_count = if job.kind == crate::job::JobKind::Bt {
+                    job.bt_files.as_ref().map(|files| files.len()).unwrap_or(1)
+                } else {
+                    1
+                };
+                anyhow::ensure!(
+                    file_index <= file_count,
+                    "fileIndex {file_index} is out of range for this download"
+                );
+                anyhow::ensure!(
+                    file_count == 1,
+                    "per-file URI mutation is not supported for multi-file downloads"
+                );
+
+                let mut deleted = 0usize;
+                for uri in del_uris {
+                    if let Some(index) = job.uris.iter().position(|candidate| candidate == uri) {
+                        job.uris.remove(index);
+                        deleted += 1;
+                    }
+                }
+
+                let insert_at = position.unwrap_or(job.uris.len()).min(job.uris.len());
+                let mut added = 0usize;
+                for uri in add_uris {
+                    if url::Url::parse(uri).is_err() {
+                        continue;
+                    }
+                    job.uris.insert(insert_at + added, uri.clone());
+                    added += 1;
+                }
+
+                Ok((
+                    deleted,
+                    added,
+                    matches!(job.status, Status::Waiting | Status::Paused),
+                ))
+            })
+            .context("job not found")?
+            .map_err(|error| anyhow::anyhow!("changeUri failed: {error}"))?;
+
+        let (deleted, added, should_notify) = outcome;
+        self.persist_job_by_gid(gid);
+        if should_notify {
+            self.work_notify.notify_one();
+        }
+        debug!(%gid, deleted, added, ?position, "changed job URIs");
+        Ok((deleted, added))
     }
 
     /// Get or create the shared per-job limiter layered on top of the global limiter.
@@ -723,6 +819,21 @@ mod tests {
     }
 
     #[test]
+    fn add_uri_with_position_inserts_into_waiting_queue() {
+        let engine = Engine::new(default_config());
+        let first = engine.add_uri(&default_spec()).unwrap();
+        let second = engine.add_uri(&default_spec()).unwrap();
+        let third = engine
+            .add_uri_with_position(&default_spec(), Some(1))
+            .unwrap();
+
+        assert_eq!(
+            engine.scheduler.waiting_queue(),
+            vec![first.gid, third.gid, second.gid]
+        );
+    }
+
+    #[test]
     fn add_uri_extracts_filename() {
         let engine = Engine::new(default_config());
         let handle = engine
@@ -857,6 +968,97 @@ mod tests {
         let job = engine.registry.get(handle.gid).unwrap();
         assert_eq!(job.status, Status::Active);
         assert!(job.error_msg.is_none());
+    }
+
+    #[test]
+    fn change_uris_removes_then_inserts_at_requested_position() {
+        let engine = Engine::new(default_config());
+        let handle = engine
+            .add_uri(&AddUriSpec {
+                uris: vec![
+                    "https://mirror-1.example/file.iso".into(),
+                    "https://mirror-2.example/file.iso".into(),
+                    "https://mirror-3.example/file.iso".into(),
+                ],
+                ..default_spec()
+            })
+            .unwrap();
+
+        let (deleted, added) = engine
+            .change_uris(
+                handle.gid,
+                1,
+                &[String::from("https://mirror-2.example/file.iso")],
+                &[String::from("https://mirror-new.example/file.iso")],
+                Some(0),
+            )
+            .unwrap();
+
+        assert_eq!((deleted, added), (1, 1));
+        let job = engine.registry.get(handle.gid).unwrap();
+        assert_eq!(
+            job.uris,
+            vec![
+                "https://mirror-new.example/file.iso",
+                "https://mirror-1.example/file.iso",
+                "https://mirror-3.example/file.iso",
+            ]
+        );
+    }
+
+    #[test]
+    fn change_uris_skips_invalid_additions_without_failing() {
+        let engine = Engine::new(default_config());
+        let handle = engine.add_uri(&default_spec()).unwrap();
+
+        let (deleted, added) = engine
+            .change_uris(
+                handle.gid,
+                1,
+                &[],
+                &[
+                    String::from("not a uri"),
+                    String::from("https://mirror-new.example/file.iso"),
+                ],
+                None,
+            )
+            .unwrap();
+
+        assert_eq!((deleted, added), (0, 1));
+        let job = engine.registry.get(handle.gid).unwrap();
+        assert_eq!(
+            job.uris,
+            vec![
+                "https://example.com/file.zip",
+                "https://mirror-new.example/file.iso",
+            ]
+        );
+    }
+
+    #[test]
+    fn change_uris_rejects_bittorrent_jobs() {
+        let engine = Engine::new(default_config());
+        let job = Job::new_bt(
+            vec!["magnet:?xt=urn:btih:abc123".into()],
+            PathBuf::from("/tmp/download"),
+        );
+        let gid = job.gid;
+        engine.submit_job(job, None).unwrap();
+
+        let error = engine
+            .change_uris(
+                gid,
+                1,
+                &[],
+                &[String::from("https://example.com/file")],
+                None,
+            )
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("changeUri is not supported for BitTorrent jobs")
+        );
     }
 
     #[test]

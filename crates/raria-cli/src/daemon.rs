@@ -1,5 +1,5 @@
 use crate::backend_factory::create_backend_with_config;
-use crate::bt_runtime::run_bt_download;
+use crate::bt_runtime::{create_bt_service, run_bt_download};
 use crate::executor_config::apply_global_retry_policy;
 use crate::hooks::{HookConfig, spawn_hook_runner};
 use crate::util::{build_conditional_get_probe_headers, parse_header_args, redact_url_for_logs};
@@ -14,6 +14,7 @@ use raria_core::segment::{SegmentStatus, init_segment_states, plan_segments};
 use raria_range::backend::{ByteSourceBackend, Credentials, ProbeContext};
 use raria_range::executor::{ExecutorConfig, SegmentExecutor, apply_results};
 use raria_rpc::server::{RpcServerConfig, start_rpc_server};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
@@ -33,6 +34,7 @@ pub(crate) async fn run_daemon_with_config(
 
     let store = Arc::new(Store::open(session_file)?);
     let engine = Arc::new(Engine::with_store(config.clone(), Arc::clone(&store)));
+    let bt_service = create_bt_service(engine.as_ref(), config.dir.clone())?;
     raria_core::logging::replace_structured_log_context([(
         "session_id",
         engine.session_id.clone(),
@@ -210,8 +212,6 @@ pub(crate) async fn run_daemon_with_config(
             };
 
             let engine_ref = Arc::clone(&engine);
-            let download_dir = config.dir.clone();
-
             let job_kind = engine
                 .registry
                 .get(gid)
@@ -230,8 +230,9 @@ pub(crate) async fn run_daemon_with_config(
                     });
                 }
                 raria_core::job::JobKind::Bt => {
+                    let bt_service = Arc::clone(&bt_service);
                     tokio::spawn(async move {
-                        if let Err(e) = run_bt_download(engine_ref, gid, token, download_dir).await
+                        if let Err(e) = run_bt_download(engine_ref, gid, token, bt_service).await
                         {
                             error!(%gid, error = %e, "BT download task failed");
                         }
@@ -264,6 +265,7 @@ pub(crate) async fn run_daemon_with_config(
         engine.cancel_registry.cancel(job.gid);
     }
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    bt_service.shutdown().await;
     match engine.save_session() {
         Ok(()) => info!("session saved successfully"),
         Err(e) => warn!(error = %e, "failed to save session on shutdown"),
@@ -644,6 +646,35 @@ fn reset_for_next_mirror(
     }
 }
 
+fn next_unattempted_uri(
+    uris: &[String],
+    attempted_counts: &HashMap<String, usize>,
+) -> Option<String> {
+    let mut seen_counts: HashMap<&str, usize> = HashMap::new();
+    for uri in uris {
+        let seen = seen_counts.entry(uri.as_str()).or_insert(0);
+        *seen += 1;
+        let attempted = attempted_counts.get(uri).copied().unwrap_or(0);
+        if *seen > attempted {
+            return Some(uri.clone());
+        }
+    }
+    None
+}
+
+fn has_unattempted_registered_uri(
+    engine: &Engine,
+    gid: Gid,
+    attempted_counts: &HashMap<String, usize>,
+) -> Result<bool> {
+    let uris = engine
+        .registry
+        .get(gid)
+        .context("job not found in registry during mirror retry check")?
+        .uris;
+    Ok(next_unattempted_uri(&uris, attempted_counts).is_some())
+}
+
 /// Persist interrupted segment state for future resumption.
 fn persist_interrupted_segments(
     engine: &Engine,
@@ -690,7 +721,17 @@ async fn run_job_download(
     let mut on_checkpoint: Option<CheckpointFn> = None;
     let mut last_error: Option<String> = None;
 
-    for (uri_index, uri_str) in job.uris.iter().enumerate() {
+    let mut attempted_counts: HashMap<String, usize> = HashMap::new();
+    loop {
+        let current_uris = engine
+            .registry
+            .get(gid)
+            .context("job not found in registry during mirror loop")?
+            .uris;
+        let Some(uri_str) = next_unattempted_uri(&current_uris, &attempted_counts) else {
+            break;
+        };
+        *attempted_counts.entry(uri_str.clone()).or_insert(0) += 1;
         let parsed_url: url::Url = uri_str.parse().context("invalid URI")?;
         let redacted_url = redact_url_for_logs(parsed_url.as_str());
         info!(%gid, uri = %redacted_url, "daemon: starting download");
@@ -702,7 +743,7 @@ async fn run_job_download(
         );
 
         let backend = match create_backend_with_config(
-            uri_str,
+            &uri_str,
             Some(&ctx.http_cfg),
             Some(&ctx.ftp_cfg),
             Some(&ctx.sftp_cfg),
@@ -710,7 +751,7 @@ async fn run_job_download(
             Ok(backend) => backend,
             Err(error) => {
                 warn!(%gid, uri = %redacted_url, error = %error, "failed to create backend for mirror");
-                if uri_index + 1 < job.uris.len() {
+                if has_unattempted_registered_uri(&engine, gid, &attempted_counts)? {
                     record_source_failure(&engine, gid, &redacted_url, &error.to_string());
                 }
                 last_error = Some(classified_error_message(&error.to_string()));
@@ -737,7 +778,7 @@ async fn run_job_download(
             Ok(probe) => probe,
             Err(error) => {
                 warn!(%gid, uri = %redacted_url, error = %error, "failed to probe mirror");
-                if uri_index + 1 < job.uris.len() {
+                if has_unattempted_registered_uri(&engine, gid, &attempted_counts)? {
                     record_source_failure(&engine, gid, &redacted_url, &error.to_string());
                 }
                 last_error = Some(classified_error_message(&error.to_string()));
@@ -763,7 +804,7 @@ async fn run_job_download(
             .await
             {
                 last_error = Some(classified_error_message(&error.to_string()));
-                if uri_index + 1 < job.uris.len() {
+                if has_unattempted_registered_uri(&engine, gid, &attempted_counts)? {
                     warn!(%gid, uri = %redacted_url, error = %error, "cached mirror output failed verification, trying next mirror");
                     record_source_failure(&engine, gid, &redacted_url, &error.to_string());
                     emit_integrity_failure_log(gid, &redacted_url, &error.to_string(), true, true);
@@ -833,7 +874,7 @@ async fn run_job_download(
             .await
             {
                 last_error = Some(classified_error_message(&error.to_string()));
-                if uri_index + 1 < job.uris.len() {
+                if has_unattempted_registered_uri(&engine, gid, &attempted_counts)? {
                     warn!(%gid, uri = %redacted_url, error = %error, "mirror payload failed verification, trying next mirror");
                     record_source_failure(&engine, gid, &redacted_url, &error.to_string());
                     emit_integrity_failure_log(gid, &redacted_url, &error.to_string(), false, true);
@@ -860,7 +901,7 @@ async fn run_job_download(
                 .collect::<Vec<_>>()
                 .join("; ");
             last_error = Some(classified_error_message(&raw_err_msg));
-            if uri_index + 1 < job.uris.len() {
+            if has_unattempted_registered_uri(&engine, gid, &attempted_counts)? {
                 warn!(%gid, uri = %redacted_url, "mirror failed, trying next mirror");
                 record_source_failure(&engine, gid, &redacted_url, &raw_err_msg);
                 raria_core::logging::emit_structured_log(
@@ -978,6 +1019,38 @@ mod tests {
                 "daemon classifier drifted from shared service classifier for {message}"
             );
         }
+    }
+
+    #[test]
+    fn next_unattempted_uri_uses_fresh_registry_order() {
+        let mut attempted = HashMap::new();
+        attempted.insert("https://primary.example/file.iso".to_string(), 1usize);
+
+        let next = next_unattempted_uri(
+            &[
+                "https://fallback.example/file.iso".to_string(),
+                "https://primary.example/file.iso".to_string(),
+            ],
+            &attempted,
+        );
+
+        assert_eq!(next.as_deref(), Some("https://fallback.example/file.iso"));
+    }
+
+    #[test]
+    fn next_unattempted_uri_tracks_duplicate_occurrences() {
+        let mut attempted = HashMap::new();
+        attempted.insert("https://mirror.example/file.iso".to_string(), 1usize);
+
+        let next = next_unattempted_uri(
+            &[
+                "https://mirror.example/file.iso".to_string(),
+                "https://mirror.example/file.iso".to_string(),
+            ],
+            &attempted,
+        );
+
+        assert_eq!(next.as_deref(), Some("https://mirror.example/file.iso"));
     }
 
     #[tokio::test]

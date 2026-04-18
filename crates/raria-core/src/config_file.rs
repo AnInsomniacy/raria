@@ -11,7 +11,7 @@
 //   max-overall-download-limit=1048576
 //   all-proxy=http://proxy:8080
 
-use crate::config::GlobalConfig;
+use crate::config::{BtPieceStrategy, GlobalConfig};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
@@ -202,6 +202,17 @@ pub fn apply_config_map_with_mode(
                     Some(PathBuf::from(value))
                 };
             }
+            "bt-piece-strategy" => match BtPieceStrategy::parse(value) {
+                Some(strategy) => config.bt_piece_strategy = strategy,
+                None if mode == ConfigParseMode::Strict => {
+                    anyhow::bail!(
+                        "invalid value for '{}': expected one of [current, rarest-first], got '{}'",
+                        key,
+                        value
+                    );
+                }
+                None => {}
+            },
             "rpc-secret" => {
                 config.rpc_secret = if value.is_empty() {
                     None
@@ -816,6 +827,15 @@ user-agent=raria/1.0
     }
 
     #[test]
+    fn apply_config_bt_piece_strategy() {
+        let mut config = GlobalConfig::default();
+        let mut map = HashMap::new();
+        map.insert("bt-piece-strategy".into(), "rarest-first".into());
+        apply_config_map(&mut config, &map);
+        assert_eq!(config.bt_piece_strategy, BtPieceStrategy::RarestFirst);
+    }
+
+    #[test]
     fn apply_config_auto_file_renaming_false() {
         let mut config = GlobalConfig::default();
         let mut map = HashMap::new();
@@ -849,6 +869,17 @@ user-agent=raria/1.0
         let result = apply_config_map_with_mode(&mut config, &map, ConfigParseMode::Strict);
         assert!(result.is_ok(), "strict mode must accept valid config");
         assert_eq!(config.max_concurrent_downloads, 10);
+    }
+
+    #[test]
+    fn strict_mode_rejects_invalid_bt_piece_strategy() {
+        let mut config = GlobalConfig::default();
+        let mut map = HashMap::new();
+        map.insert("bt-piece-strategy".into(), "zigzag".into());
+        let result = apply_config_map_with_mode(&mut config, &map, ConfigParseMode::Strict);
+        assert!(result.is_err(), "strict mode must reject invalid BT strategy");
+        let err_msg = format!("{}", result.unwrap_err());
+        assert!(err_msg.contains("bt-piece-strategy"));
     }
 
     #[test]

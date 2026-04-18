@@ -4,7 +4,7 @@
 //!
 //! aria2-compatible JSON-RPC/WebSocket server for raria.
 //!
-//! Provides the full aria2 JSON-RPC interface including `system.multicall`,
+//! Provides an aria2-style JSON-RPC interface including `system.multicall`,
 //! token-based authentication, WebSocket push notifications, and CORS.
 //!
 //! ## Modules
@@ -18,7 +18,7 @@
 pub mod events;
 /// Conversion between raria-core types and aria2 JSON response format.
 pub mod facade;
-/// RPC method implementations (aria2 JSON-RPC parity).
+/// RPC method implementations for the declared aria2-style surface.
 pub mod methods;
 /// HTTP + WebSocket server, authentication, and CORS.
 pub mod server;

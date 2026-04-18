@@ -11,7 +11,9 @@ mod tests {
     use raria_core::config::GlobalConfig;
     use raria_core::engine::Engine;
     use raria_rpc::server::{RpcServerConfig, start_rpc_server};
+    use std::fs;
     use std::net::SocketAddr;
+    use std::path::PathBuf;
     use std::sync::Arc;
     use tokio_util::sync::CancellationToken;
 
@@ -26,6 +28,22 @@ mod tests {
             .await
             .unwrap();
         (addrs.rpc, cancel)
+    }
+
+    fn workspace_root() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("crate parent")
+            .parent()
+            .expect("workspace root")
+            .to_path_buf()
+    }
+
+    fn read_generated_manifest(relative_path: &str) -> Vec<String> {
+        let path = workspace_root().join(relative_path);
+        let bytes = fs::read(&path).unwrap_or_else(|err| panic!("read {}: {err}", path.display()));
+        serde_json::from_slice(&bytes)
+            .unwrap_or_else(|err| panic!("parse {}: {err}", path.display()))
     }
 
     /// system.multicall should execute multiple aria2 methods in a single request.
@@ -118,7 +136,7 @@ mod tests {
         cancel.cancel();
     }
 
-    /// system.listMethods should return a list of all registered RPC methods.
+    /// system.listMethods should return the exact generated method manifest.
     #[tokio::test]
     async fn list_methods_returns_method_names() {
         let (rpc_addr, cancel) = start_test_server().await;
@@ -141,36 +159,18 @@ mod tests {
         let json: serde_json::Value = resp.json().await.unwrap();
         assert!(json.get("error").is_none(), "listMethods error: {json}");
 
-        let methods = json["result"].as_array().unwrap();
-        assert!(!methods.is_empty());
-
-        // Must include key aria2 methods
-        let method_names: Vec<&str> = methods.iter().map(|v| v.as_str().unwrap()).collect();
-        assert!(
-            method_names.contains(&"aria2.addUri"),
-            "missing aria2.addUri"
-        );
-        assert!(
-            method_names.contains(&"aria2.tellStatus"),
-            "missing aria2.tellStatus"
-        );
-        assert!(
-            method_names.contains(&"aria2.getVersion"),
-            "missing aria2.getVersion"
-        );
-        assert!(
-            method_names.contains(&"system.multicall"),
-            "missing system.multicall"
-        );
-        assert!(
-            method_names.contains(&"system.listMethods"),
-            "missing system.listMethods"
+        let actual: Vec<String> = serde_json::from_value(json["result"].clone()).unwrap();
+        let expected =
+            read_generated_manifest(".omx/parity/generated/live-rpc-methods.json");
+        assert_eq!(
+            actual, expected,
+            "system.listMethods must match the generated live RPC method manifest"
         );
 
         cancel.cancel();
     }
 
-    /// system.listNotifications should return aria2 notification method names.
+    /// system.listNotifications should return the exact generated notification manifest.
     #[tokio::test]
     async fn list_notifications_returns_notification_names() {
         let (rpc_addr, cancel) = start_test_server().await;
@@ -196,12 +196,13 @@ mod tests {
             "listNotifications error: {json}"
         );
 
-        let notifications = json["result"].as_array().unwrap();
-        let names: Vec<&str> = notifications.iter().map(|v| v.as_str().unwrap()).collect();
-        assert!(names.contains(&"aria2.onDownloadStart"));
-        assert!(names.contains(&"aria2.onDownloadComplete"));
-        assert!(names.contains(&"aria2.onDownloadError"));
-        assert!(names.contains(&"aria2.onSourceFailed"));
+        let actual: Vec<String> = serde_json::from_value(json["result"].clone()).unwrap();
+        let expected =
+            read_generated_manifest(".omx/parity/generated/live-rpc-notifications.json");
+        assert_eq!(
+            actual, expected,
+            "system.listNotifications must match the generated live notification manifest"
+        );
 
         cancel.cancel();
     }

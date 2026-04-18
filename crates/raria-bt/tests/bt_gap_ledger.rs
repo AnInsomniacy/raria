@@ -30,13 +30,16 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "BT-GAP-003: librqbit uses sequential piece selection only. \
-                aria2 uses rarest-first by default for optimal swarm health. \
-                This may reduce upload contribution to the swarm."]
-    fn bt_rarest_first_piece_selection() {
-        // librqbit downloads pieces sequentially, not by rarity.
-        // Impact: Reduced swarm contribution, but download still works.
-        panic!("not implemented");
+    fn bt_rarest_first_piece_selection_contract() {
+        let ordered = librqbit::parity_contract_sort_piece_candidates(
+            librqbit::PieceSelectionStrategy::RarestFirst,
+            &[(0, 5), (1, 1), (2, 3)],
+        );
+        assert_eq!(
+            ordered,
+            vec![1, 2, 0],
+            "rarest-first must prioritize lower-availability pieces"
+        );
     }
 
     #[test]

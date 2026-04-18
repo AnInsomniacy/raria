@@ -1,6 +1,6 @@
-// raria-rpc: JSON-RPC method handlers — full aria2 RPC parity.
+// raria-rpc: JSON-RPC method handlers for the declared aria2-style RPC surface.
 //
-// Implements all 27 aria2-compatible JSON-RPC methods using jsonrpsee.
+// Implements the declared aria2-style JSON-RPC methods using jsonrpsee.
 //
 // Complete method list:
 // ─ Download control ─
@@ -72,14 +72,19 @@ pub struct RpcOptions {
     pub seed_time: Option<String>,
 }
 
-/// JSON-RPC interface definition — full aria2 parity.
+/// JSON-RPC interface definition for the declared aria2-style surface.
 #[rpc(server)]
 pub trait Aria2Rpc {
     // ── Download control ─────────────────────────────────────────────
 
     /// Add a download by URI(s). Returns the GID.
     #[method(name = "aria2.addUri")]
-    async fn add_uri(&self, uris: Vec<String>, options: Option<RpcOptions>) -> RpcResult<String>;
+    async fn add_uri(
+        &self,
+        uris: Vec<String>,
+        options: Option<RpcOptions>,
+        position: Option<i32>,
+    ) -> RpcResult<String>;
 
     /// Add a download by base64-encoded `.torrent` file. Returns the GID.
     #[method(name = "aria2.addTorrent")]
@@ -88,6 +93,7 @@ pub trait Aria2Rpc {
         torrent_base64: String,
         uris: Option<Vec<String>>,
         options: Option<RpcOptions>,
+        position: Option<i32>,
     ) -> RpcResult<String>;
 
     /// Add downloads from a base64-encoded `.metalink` file. Returns GIDs.
@@ -96,6 +102,7 @@ pub trait Aria2Rpc {
         &self,
         metalink_base64: String,
         options: Option<RpcOptions>,
+        position: Option<i32>,
     ) -> RpcResult<Vec<String>>;
 
     /// Remove a download. Returns the GID.
@@ -198,6 +205,17 @@ pub trait Aria2Rpc {
     #[method(name = "aria2.changePosition")]
     async fn change_position(&self, gid: String, pos: i32, how: String) -> RpcResult<i64>;
 
+    /// Change the URI list attached to a download.
+    #[method(name = "aria2.changeUri")]
+    async fn change_uri(
+        &self,
+        gid: String,
+        file_index: u32,
+        del_uris: Vec<String>,
+        add_uris: Vec<String>,
+        position: Option<i32>,
+    ) -> RpcResult<Vec<i64>>;
+
     // ── Session management ───────────────────────────────────────────
 
     /// Remove all completed/failed/removed downloads from memory.
@@ -237,7 +255,12 @@ impl RpcHandler {
 impl Aria2RpcServer for RpcHandler {
     // ── Download control ─────────────────────────────────────────────
 
-    async fn add_uri(&self, uris: Vec<String>, options: Option<RpcOptions>) -> RpcResult<String> {
+    async fn add_uri(
+        &self,
+        uris: Vec<String>,
+        options: Option<RpcOptions>,
+        position: Option<i32>,
+    ) -> RpcResult<String> {
         let opts = options.unwrap_or_default();
         let dir = opts
             .dir
@@ -259,7 +282,7 @@ impl Aria2RpcServer for RpcHandler {
 
         let handle = self
             .engine
-            .add_uri(&spec)
+            .add_uri_with_position(&spec, parse_queue_position(position)?)
             .map_err(|e| rpc_err(1, &e.to_string()))?;
 
         // Apply per-job options from RPC request.
@@ -281,11 +304,12 @@ impl Aria2RpcServer for RpcHandler {
     async fn add_torrent(
         &self,
         torrent_base64: String,
-        _uris: Option<Vec<String>>,
+        uris: Option<Vec<String>>,
         options: Option<RpcOptions>,
+        position: Option<i32>,
     ) -> RpcResult<String> {
         use base64::Engine as Base64Engine;
-        use raria_core::job::{Gid, Job};
+        use raria_core::job::Job;
 
         // Decode base64 → torrent bytes.
         let torrent_bytes = base64::engine::general_purpose::STANDARD
@@ -295,12 +319,10 @@ impl Aria2RpcServer for RpcHandler {
         if torrent_bytes.is_empty() {
             return Err(rpc_err(1, "empty torrent data"));
         }
-
         // Store the raw torrent bytes as a base64 data URI so the daemon
         // can retrieve them when it activates this job.
         let torrent_uri = format!("torrent:base64:{torrent_base64}");
 
-        let _gid = Gid::new();
         let out_path = self.engine.config.dir.join("bt_download");
         let mut job = Job::new_bt(vec![torrent_uri], out_path);
         if let Some(select_file) = options
@@ -321,6 +343,9 @@ impl Aria2RpcServer for RpcHandler {
         {
             job.options.bt_trackers = Some(trackers);
         }
+        if let Some(web_seed_uris) = uris.filter(|uris| !uris.is_empty()) {
+            job.options.bt_web_seed_uris = Some(web_seed_uris);
+        }
         if let Some(seed_ratio) = options
             .as_ref()
             .and_then(|opts| opts.seed_ratio.as_deref())
@@ -337,13 +362,9 @@ impl Aria2RpcServer for RpcHandler {
         }
         let actual_gid = job.gid;
 
-        self.engine.cancel_registry.register(actual_gid);
         self.engine
-            .registry
-            .insert(job)
+            .submit_job(job, parse_queue_position(position)?)
             .map_err(|e| rpc_err(1, &e.to_string()))?;
-        self.engine.scheduler.enqueue(actual_gid);
-        self.engine.work_notify().notify_one();
 
         let gid_str = format!("{:016x}", actual_gid.as_raw());
         debug!(gid = %gid_str, "addTorrent: BT job created");
@@ -354,6 +375,7 @@ impl Aria2RpcServer for RpcHandler {
         &self,
         metalink_base64: String,
         options: Option<RpcOptions>,
+        position: Option<i32>,
     ) -> RpcResult<Vec<String>> {
         use base64::Engine as Base64Engine;
         use raria_core::engine::AddUriSpec;
@@ -382,6 +404,7 @@ impl Aria2RpcServer for RpcHandler {
         // Create a job for each file in the metalink.
         let mut gids = Vec::new();
         let mut created = Vec::new();
+        let mut next_position = parse_queue_position(position)?;
         for seed in seeds {
             if seed.uris.is_empty() {
                 continue;
@@ -404,7 +427,7 @@ impl Aria2RpcServer for RpcHandler {
                 connections,
             };
 
-            match self.engine.add_uri(&spec) {
+            match self.engine.add_uri_with_position(&spec, next_position) {
                 Ok(handle) => {
                     self.engine.registry.update(handle.gid, |job| {
                         apply_common_rpc_job_options(job, &opts);
@@ -425,6 +448,7 @@ impl Aria2RpcServer for RpcHandler {
                     debug!(gid = %gid_str, name = %seed.filename, "metalink: added job");
                     gids.push(gid_str);
                     created.push(handle.gid);
+                    next_position = next_position.map(|value| value + 1);
                 }
                 Err(e) => {
                     warn!(name = %seed.filename, error = %e, "metalink: failed to add job");
@@ -882,6 +906,28 @@ impl Aria2RpcServer for RpcHandler {
         Ok(new_pos as i64)
     }
 
+    async fn change_uri(
+        &self,
+        gid: String,
+        file_index: u32,
+        del_uris: Vec<String>,
+        add_uris: Vec<String>,
+        position: Option<i32>,
+    ) -> RpcResult<Vec<i64>> {
+        let parsed_gid = parse_gid(&gid)?;
+        let (deleted, added) = self
+            .engine
+            .change_uris(
+                parsed_gid,
+                file_index as usize,
+                &del_uris,
+                &add_uris,
+                parse_queue_position(position)?,
+            )
+            .map_err(|e| rpc_err(1, &e.to_string()))?;
+        Ok(vec![deleted as i64, added as i64])
+    }
+
     // ── Session management ───────────────────────────────────────────
 
     async fn purge_download_result(&self) -> RpcResult<String> {
@@ -937,6 +983,14 @@ fn internal_error(msg: &str) -> jsonrpsee::types::ErrorObjectOwned {
 
 fn rpc_err(code: i32, msg: &str) -> jsonrpsee::types::ErrorObjectOwned {
     jsonrpsee::types::ErrorObjectOwned::owned(code, msg.to_string(), None::<()>)
+}
+
+fn parse_queue_position(position: Option<i32>) -> RpcResult<Option<usize>> {
+    match position {
+        Some(value) if value < 0 => Err(rpc_err(1, "position must be >= 0")),
+        Some(value) => Ok(Some(value as usize)),
+        None => Ok(None),
+    }
 }
 
 fn parse_select_file_spec(spec: &str) -> anyhow::Result<Vec<usize>> {
@@ -1081,7 +1135,7 @@ mod tests {
         let handler = RpcHandler::new(Arc::clone(&engine));
 
         let gid_str = handler
-            .add_uri(vec!["https://example.com/file.zip".into()], None)
+            .add_uri(vec!["https://example.com/file.zip".into()], None, None)
             .await
             .unwrap();
 
@@ -1103,7 +1157,11 @@ mod tests {
         };
 
         let gid_str = handler
-            .add_uri(vec!["https://example.com/file.zip".into()], Some(opts))
+            .add_uri(
+                vec!["https://example.com/file.zip".into()],
+                Some(opts),
+                None,
+            )
             .await
             .unwrap();
 
@@ -1150,7 +1208,7 @@ mod tests {
         let engine = test_engine();
         let handler = RpcHandler::new(Arc::clone(&engine));
         let gid = handler
-            .add_torrent("bWFnbmV0Oj94dD11cm46YnRpaDphYmM=".into(), None, None)
+            .add_torrent("bWFnbmV0Oj94dD11cm46YnRpaDphYmM=".into(), None, None, None)
             .await
             .expect("add_torrent should create bt job");
         let parsed_gid = parse_gid(&gid).unwrap();
@@ -1180,7 +1238,7 @@ mod tests {
         let handler = RpcHandler::new(Arc::clone(&engine));
 
         let gid_str = handler
-            .add_uri(vec!["https://example.com/f.zip".into()], None)
+            .add_uri(vec!["https://example.com/f.zip".into()], None, None)
             .await
             .unwrap();
 
@@ -1202,7 +1260,7 @@ mod tests {
         let handler = RpcHandler::new(Arc::clone(&engine));
 
         let gid_str = handler
-            .add_uri(vec!["https://example.com/f.zip".into()], None)
+            .add_uri(vec!["https://example.com/f.zip".into()], None, None)
             .await
             .unwrap();
 
@@ -1220,15 +1278,15 @@ mod tests {
         let handler = RpcHandler::new(Arc::clone(&engine));
 
         handler
-            .add_uri(vec!["https://a.com/1".into()], None)
+            .add_uri(vec!["https://a.com/1".into()], None, None)
             .await
             .unwrap();
         handler
-            .add_uri(vec!["https://a.com/2".into()], None)
+            .add_uri(vec!["https://a.com/2".into()], None, None)
             .await
             .unwrap();
         handler
-            .add_uri(vec!["https://a.com/3".into()], None)
+            .add_uri(vec!["https://a.com/3".into()], None, None)
             .await
             .unwrap();
 
@@ -1269,11 +1327,11 @@ mod tests {
         let handler = RpcHandler::new(Arc::clone(&engine));
 
         handler
-            .add_uri(vec!["https://a.com/1".into()], None)
+            .add_uri(vec!["https://a.com/1".into()], None, None)
             .await
             .unwrap();
         handler
-            .add_uri(vec!["https://a.com/2".into()], None)
+            .add_uri(vec!["https://a.com/2".into()], None, None)
             .await
             .unwrap();
 
@@ -1291,11 +1349,11 @@ mod tests {
         let handler = RpcHandler::new(Arc::clone(&engine));
 
         let g1 = handler
-            .add_uri(vec!["https://a.com/1".into()], None)
+            .add_uri(vec!["https://a.com/1".into()], None, None)
             .await
             .unwrap();
         let g2 = handler
-            .add_uri(vec!["https://a.com/2".into()], None)
+            .add_uri(vec!["https://a.com/2".into()], None, None)
             .await
             .unwrap();
 
@@ -1317,7 +1375,7 @@ mod tests {
         let handler = RpcHandler::new(Arc::clone(&engine));
 
         let gid_str = handler
-            .add_uri(vec!["https://example.com/f.zip".into()], None)
+            .add_uri(vec!["https://example.com/f.zip".into()], None, None)
             .await
             .unwrap();
 
@@ -1338,6 +1396,7 @@ mod tests {
             .add_uri(
                 vec!["https://a.com/f".into(), "https://b.com/f".into()],
                 None,
+                None,
             )
             .await
             .unwrap();
@@ -1354,7 +1413,7 @@ mod tests {
         let handler = RpcHandler::new(Arc::clone(&engine));
 
         let gid_str = handler
-            .add_uri(vec!["https://example.com/data.zip".into()], None)
+            .add_uri(vec!["https://example.com/data.zip".into()], None, None)
             .await
             .unwrap();
 
@@ -1410,7 +1469,7 @@ mod tests {
         let handler = RpcHandler::new(Arc::clone(&engine));
 
         let gid_str = handler
-            .add_uri(vec!["https://example.com/f".into()], None)
+            .add_uri(vec!["https://example.com/f".into()], None, None)
             .await
             .unwrap();
 
@@ -1424,7 +1483,7 @@ mod tests {
         let handler = RpcHandler::new(Arc::clone(&engine));
 
         let gid_str = handler
-            .add_uri(vec!["magnet:?xt=urn:btih:abc123".into()], None)
+            .add_uri(vec!["magnet:?xt=urn:btih:abc123".into()], None, None)
             .await
             .unwrap();
 
@@ -1455,7 +1514,7 @@ mod tests {
         let handler = RpcHandler::new(Arc::clone(&engine));
 
         let gid_str = handler
-            .add_uri(vec!["https://example.com/f".into()], None)
+            .add_uri(vec!["https://example.com/f".into()], None, None)
             .await
             .unwrap();
 
@@ -1487,7 +1546,7 @@ mod tests {
         let handler = RpcHandler::new(Arc::clone(&engine));
 
         let gid_str = handler
-            .add_uri(vec!["https://example.com/f".into()], None)
+            .add_uri(vec!["https://example.com/f".into()], None, None)
             .await
             .unwrap();
 
@@ -1502,15 +1561,15 @@ mod tests {
         let handler = RpcHandler::new(Arc::clone(&engine));
 
         let _g1 = handler
-            .add_uri(vec!["https://a.com/1".into()], None)
+            .add_uri(vec!["https://a.com/1".into()], None, None)
             .await
             .unwrap();
         let _g2 = handler
-            .add_uri(vec!["https://a.com/2".into()], None)
+            .add_uri(vec!["https://a.com/2".into()], None, None)
             .await
             .unwrap();
         let g3 = handler
-            .add_uri(vec!["https://a.com/3".into()], None)
+            .add_uri(vec!["https://a.com/3".into()], None, None)
             .await
             .unwrap();
 
@@ -1527,7 +1586,7 @@ mod tests {
         let handler = RpcHandler::new(Arc::clone(&engine));
 
         let g1 = handler
-            .add_uri(vec!["https://a.com/1".into()], None)
+            .add_uri(vec!["https://a.com/1".into()], None, None)
             .await
             .unwrap();
         assert!(
@@ -1544,7 +1603,7 @@ mod tests {
         let handler = RpcHandler::new(Arc::clone(&engine));
 
         let gid_str = handler
-            .add_uri(vec!["https://example.com/f".into()], None)
+            .add_uri(vec!["https://example.com/f".into()], None, None)
             .await
             .unwrap();
         let parsed_gid = parse_gid(&gid_str).unwrap();
@@ -1561,7 +1620,7 @@ mod tests {
         let handler = RpcHandler::new(Arc::clone(&engine));
 
         let gid_str = handler
-            .add_uri(vec!["https://example.com/f".into()], None)
+            .add_uri(vec!["https://example.com/f".into()], None, None)
             .await
             .unwrap();
         let parsed_gid = parse_gid(&gid_str).unwrap();
@@ -1589,9 +1648,100 @@ mod tests {
         let handler = RpcHandler::new(engine);
         assert!(
             handler
-                .add_torrent("base64data".into(), None, None)
+                .add_torrent("base64data".into(), None, None, None)
                 .await
                 .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn add_uri_position_inserts_into_queue() {
+        let engine = test_engine();
+        let handler = RpcHandler::new(Arc::clone(&engine));
+
+        let first = handler
+            .add_uri(vec!["https://a.com/1".into()], None, None)
+            .await
+            .unwrap();
+        let second = handler
+            .add_uri(vec!["https://a.com/2".into()], None, None)
+            .await
+            .unwrap();
+        let inserted = handler
+            .add_uri(vec!["https://a.com/3".into()], None, Some(1))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            engine.scheduler.waiting_queue(),
+            vec![
+                parse_gid(&first).unwrap(),
+                parse_gid(&inserted).unwrap(),
+                parse_gid(&second).unwrap()
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn change_uri_returns_deleted_and_added_counts() {
+        let engine = test_engine();
+        let handler = RpcHandler::new(Arc::clone(&engine));
+
+        let gid = handler
+            .add_uri(
+                vec![
+                    "https://mirror-1.example/file.iso".into(),
+                    "https://mirror-2.example/file.iso".into(),
+                ],
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+
+        let result = handler
+            .change_uri(
+                gid.clone(),
+                1,
+                vec!["https://mirror-1.example/file.iso".into()],
+                vec!["https://mirror-new.example/file.iso".into()],
+                Some(0),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(result, vec![1, 1]);
+        let uris = handler.get_uris(gid).await.unwrap();
+        assert_eq!(uris[0]["uri"], "https://mirror-new.example/file.iso");
+        assert_eq!(uris[1]["uri"], "https://mirror-2.example/file.iso");
+    }
+
+    #[tokio::test]
+    async fn add_torrent_accepts_web_seed_uris_and_persists_them_on_job() {
+        let engine = test_engine();
+        let handler = RpcHandler::new(Arc::clone(&engine));
+
+        let gid = handler
+            .add_torrent(
+                "bWFnbmV0Oj94dD11cm46YnRpaDphYmM=".into(),
+                Some(vec![
+                    "https://webseed.example/file.iso".into(),
+                    "http://mirror.example/file.iso".into(),
+                ]),
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+
+        let gid = parse_gid(&gid).expect("gid");
+        let job = engine.registry.get(gid).expect("job");
+        assert_eq!(
+            job.options.bt_web_seed_uris,
+            Some(vec![
+                "https://webseed.example/file.iso".into(),
+                "http://mirror.example/file.iso".into(),
+            ])
         );
     }
 }
