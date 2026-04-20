@@ -12,7 +12,7 @@
 // - Each open_from() creates a new FTP connection. This is correct because FTP
 //   is stateful and each data transfer requires its own control connection.
 // - probe() creates a throwaway connection just for SIZE.
-// - FTPS (TLS) is auto-negotiated via suppaftp's native-tls backend.
+// - FTPS (TLS) is auto-negotiated via suppaftp's rustls backend.
 
 use anyhow::{Context, Result};
 use async_trait::async_trait;
@@ -20,7 +20,7 @@ use raria_range::backend::{ByteSourceBackend, ByteStream, FileProbe, OpenContext
 use std::path::PathBuf;
 use std::pin::Pin;
 use std::task::{self, Poll};
-use suppaftp::tokio::AsyncNativeTlsFtpStream;
+use suppaftp::tokio::{AsyncRustlsConnector, AsyncRustlsFtpStream};
 use suppaftp::types::FileType;
 use tokio::io::AsyncRead;
 use tokio::net::TcpStream;
@@ -37,13 +37,13 @@ use url::Url;
 /// TCP socket and associated resources.
 struct FtpOwnedStream<S: AsyncRead + Unpin> {
     /// The FTP control connection. Kept alive while data is being read.
-    _ftp: AsyncNativeTlsFtpStream,
+    _ftp: AsyncRustlsFtpStream,
     /// The data stream from RETR.
     data: S,
 }
 
 impl<S: AsyncRead + Unpin> FtpOwnedStream<S> {
-    fn new(ftp: AsyncNativeTlsFtpStream, data: S) -> Self {
+    fn new(ftp: AsyncRustlsFtpStream, data: S) -> Self {
         Self { _ftp: ftp, data }
     }
 }
@@ -61,13 +61,13 @@ impl<S: AsyncRead + Unpin> AsyncRead for FtpOwnedStream<S> {
 }
 
 // SAFETY: FtpOwnedStream is Send because:
-// 1. `_ftp` (AsyncNativeTlsFtpStream) is exclusively owned and never accessed
+// 1. `_ftp` (AsyncRustlsFtpStream) is exclusively owned and never accessed
 //    after construction — it exists solely to keep the FTP control socket alive.
 //    No references to `_ftp` escape this struct, so no concurrent access is possible.
 // 2. `data` (S) is required to be Send by the bound `S: AsyncRead + Unpin + Send`.
-// 3. suppaftp does not implement Send on AsyncNativeTlsFtpStream due to internal
-//    use of Rc/RefCell in its async TLS path; however, our usage pattern (create,
-//    store in struct, drop together) is single-owner and never shared across threads.
+// 3. suppaftp does not implement Send on AsyncRustlsFtpStream due to internal
+//    generics; however, our usage pattern (create, store in struct, drop together)
+//    is single-owner and never shared across threads.
 unsafe impl<S: AsyncRead + Unpin + Send> Send for FtpOwnedStream<S> {}
 
 /// FTP/FTPS download backend.
@@ -172,45 +172,118 @@ async fn connect_tcp(addr: &str, host: &str, config: &FtpBackendConfig) -> Resul
         .with_context(|| format!("failed to connect to FTP server at {addr}"))
 }
 
+/// Build a rustls `ClientConfig` for FTPS connections.
+fn build_rustls_config(config: &FtpBackendConfig) -> Result<rustls::ClientConfig> {
+    let mut root_store = rustls::RootCertStore::empty();
+
+    // Load custom CA certificate if provided.
+    if let Some(ca_path) = config.ca_certificate.as_ref() {
+        let pem = std::fs::read(ca_path).with_context(|| {
+            format!(
+                "failed to read FTPS CA certificate from {}",
+                ca_path.display()
+            )
+        })?;
+        let mut cursor = std::io::Cursor::new(&pem);
+        let certs: Vec<_> = rustls_pemfile::certs(&mut cursor)
+            .filter_map(|r| r.ok())
+            .collect();
+        if certs.is_empty() {
+            anyhow::bail!("no valid PEM certificates found in {}", ca_path.display());
+        }
+        for cert in certs {
+            root_store
+                .add(cert)
+                .with_context(|| format!("failed to add CA cert from {}", ca_path.display()))?;
+        }
+    } else {
+        // Fall back to platform-native root certificates.
+        for cert in rustls_native_certs::load_native_certs().expect("load native certs") {
+            root_store.add(cert).ok();
+        }
+    }
+
+    if !config.check_certificate {
+        // Danger: skip server certificate verification entirely.
+        let provider = rustls::crypto::ring::default_provider();
+        let mut tls_config = rustls::ClientConfig::builder_with_provider(provider.into())
+            .with_safe_default_protocol_versions()
+            .context("failed to set TLS protocol versions")?
+            .dangerous()
+            .with_custom_certificate_verifier(std::sync::Arc::new(NoVerifier))
+            .with_no_client_auth();
+        tls_config.enable_sni = true;
+        return Ok(tls_config);
+    }
+
+    Ok(rustls::ClientConfig::builder()
+        .with_root_certificates(root_store)
+        .with_no_client_auth())
+}
+
+/// A certificate verifier that accepts any server certificate.
+/// Used only when `check_certificate = false`.
+#[derive(Debug)]
+struct NoVerifier;
+
+impl rustls::client::danger::ServerCertVerifier for NoVerifier {
+    fn verify_server_cert(
+        &self,
+        _end_entity: &rustls::pki_types::CertificateDer<'_>,
+        _intermediates: &[rustls::pki_types::CertificateDer<'_>],
+        _server_name: &rustls::pki_types::ServerName<'_>,
+        _ocsp_response: &[u8],
+        _now: rustls::pki_types::UnixTime,
+    ) -> Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
+        Ok(rustls::client::danger::ServerCertVerified::assertion())
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        _message: &[u8],
+        _cert: &rustls::pki_types::CertificateDer<'_>,
+        _dss: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        _message: &[u8],
+        _cert: &rustls::pki_types::CertificateDer<'_>,
+        _dss: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
+        rustls::crypto::ring::default_provider()
+            .signature_verification_algorithms
+            .supported_schemes()
+    }
+}
+
 /// Create an authenticated FTP connection.
 async fn connect_ftp(
     uri: &Url,
     config: &FtpBackendConfig,
-) -> Result<(AsyncNativeTlsFtpStream, String)> {
+) -> Result<(AsyncRustlsFtpStream, String)> {
     let (addr, user, password, path) = parse_ftp_url(uri)?;
     let host = uri.host_str().context("FTP URL missing host")?;
 
     debug!(addr = %addr, user = %user, "connecting to FTP server");
     let stream = connect_tcp(&addr, host, config).await?;
-    let mut ftp: AsyncNativeTlsFtpStream = AsyncNativeTlsFtpStream::connect_with_stream(stream)
+    let mut ftp: AsyncRustlsFtpStream = AsyncRustlsFtpStream::connect_with_stream(stream)
         .await
         .with_context(|| format!("failed to initialize FTP stream for {addr}"))?;
 
     if uri.scheme() == "ftps" {
-        let mut tls_connector = suppaftp::async_native_tls::TlsConnector::new()
-            .danger_accept_invalid_certs(!config.check_certificate)
-            .danger_accept_invalid_hostnames(!config.check_certificate);
-        if let Some(ca_path) = config.ca_certificate.as_ref() {
-            let pem = std::fs::read(ca_path).with_context(|| {
-                format!(
-                    "failed to read FTPS CA certificate from {}",
-                    ca_path.display()
-                )
-            })?;
-            let cert =
-                suppaftp::async_native_tls::Certificate::from_pem(&pem).with_context(|| {
-                    format!(
-                        "failed to parse FTPS CA certificate from {}",
-                        ca_path.display()
-                    )
-                })?;
-            tls_connector = tls_connector.add_root_certificate(cert);
-        }
+        let tls_config = build_rustls_config(config)?;
+        let connector = AsyncRustlsConnector::from(tokio_rustls::TlsConnector::from(
+            std::sync::Arc::new(tls_config),
+        ));
         ftp = ftp
-            .into_secure(
-                suppaftp::tokio::AsyncNativeTlsConnector::from(tls_connector),
-                host,
-            )
+            .into_secure(connector, host)
             .await
             .with_context(|| format!("failed to switch FTP connection to TLS for {host}"))?;
     }
