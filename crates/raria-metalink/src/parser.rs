@@ -201,36 +201,32 @@ pub fn parse_metalink(xml: &str) -> Result<RawMetalink> {
                             files.push(file);
                         }
                     }
-                    "url" | "metaurl" => {
-                        if in_url {
-                            if let Some(ref mut file) = current_file {
-                                let url_text = text_buf.trim().to_string();
-                                if !url_text.is_empty() {
-                                    file.urls.push(MetalinkUrl {
-                                        url: url_text,
-                                        priority: current_url_priority,
-                                        location: current_url_location.take(),
-                                    });
-                                }
+                    "url" | "metaurl" if in_url => {
+                        if let Some(ref mut file) = current_file {
+                            let url_text = text_buf.trim().to_string();
+                            if !url_text.is_empty() {
+                                file.urls.push(MetalinkUrl {
+                                    url: url_text,
+                                    priority: current_url_priority,
+                                    location: current_url_location.take(),
+                                });
                             }
-                            in_url = false;
                         }
+                        in_url = false;
                     }
-                    "hash" => {
-                        if in_hash {
-                            let hash_val = text_buf.trim().to_string();
-                            if !hash_val.is_empty() {
-                                if let Some(ref mut pieces) = current_pieces {
-                                    pieces.hashes.push(hash_val);
-                                } else if let Some(ref mut file) = current_file {
-                                    file.hashes.push(MetalinkHash {
-                                        algo: current_hash_algo.clone(),
-                                        value: hash_val.clone(),
-                                    });
-                                }
+                    "hash" if in_hash => {
+                        let hash_val = text_buf.trim().to_string();
+                        if !hash_val.is_empty() {
+                            if let Some(ref mut pieces) = current_pieces {
+                                pieces.hashes.push(hash_val);
+                            } else if let Some(ref mut file) = current_file {
+                                file.hashes.push(MetalinkHash {
+                                    algo: current_hash_algo.clone(),
+                                    value: hash_val.clone(),
+                                });
                             }
-                            in_hash = false;
                         }
+                        in_hash = false;
                     }
                     "pieces" => {
                         if let Some(pieces) = current_pieces.take() {
@@ -239,24 +235,20 @@ pub fn parse_metalink(xml: &str) -> Result<RawMetalink> {
                             }
                         }
                     }
-                    "size" => {
-                        if in_size {
-                            if let Some(ref mut file) = current_file {
-                                file.size = text_buf.trim().parse().ok();
-                            }
-                            in_size = false;
+                    "size" if in_size => {
+                        if let Some(ref mut file) = current_file {
+                            file.size = text_buf.trim().parse().ok();
                         }
+                        in_size = false;
                     }
-                    "name" => {
-                        if in_name {
-                            if let Some(ref mut file) = current_file {
-                                let name = text_buf.trim().to_string();
-                                if !name.is_empty() {
-                                    file.name = name;
-                                }
+                    "name" if in_name => {
+                        if let Some(ref mut file) = current_file {
+                            let name = text_buf.trim().to_string();
+                            if !name.is_empty() {
+                                file.name = name;
                             }
-                            in_name = false;
                         }
+                        in_name = false;
                     }
                     _ => {}
                 }
