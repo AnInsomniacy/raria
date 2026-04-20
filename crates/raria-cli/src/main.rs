@@ -433,6 +433,7 @@ enum Commands {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    #[allow(unused_variables)]
     let raw_args: Vec<OsString> = std::env::args_os().collect();
     let cli = Cli::parse();
 

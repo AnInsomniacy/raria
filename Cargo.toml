@@ -29,7 +29,7 @@ pin-project-lite = "0.2"
 async-trait = "0.1"
 
 # === HTTP ===
-reqwest = { version = "0.12", features = [
+reqwest = { version = "0.12", default-features = false, features = [
     "stream", "gzip", "brotli", "cookies", "socks", "rustls-tls"
 ] }
 reqwest_cookie_store = "0.8"
