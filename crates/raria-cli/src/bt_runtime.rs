@@ -273,13 +273,67 @@ pub(crate) async fn run_bt_download(
 
     let web_seed_uris = derive_bt_web_seed_uris(&job, uri_str);
 
+    // WebSeed pre-download: if URIs are available and we have torrent bytes,
+    // download files via HTTP/FTP/SFTP before librqbit starts so that its
+    // initial_check discovers them as already-complete pieces on disk.
+    if let Some(ws_uris) = &web_seed_uris {
+        let torrent_bytes_opt = match &source {
+            BtSource::TorrentBytes(bytes) => Some(bytes.clone()),
+            BtSource::TorrentFile(path) => match std::fs::read(path) {
+                Ok(b) => Some(b),
+                Err(e) => {
+                    warn!(%gid, error = %e, "could not read torrent file for WebSeed, skipping pre-download");
+                    None
+                }
+            },
+            BtSource::Magnet(_) => {
+                // Magnet URIs don't carry torrent metadata yet — skip WebSeed.
+                None
+            }
+        };
+
+        if let Some(torrent_bytes) = torrent_bytes_opt {
+            match raria_bt::torrent_meta::TorrentMeta::from_bytes(&torrent_bytes) {
+                Ok(mut meta) => {
+                    meta.merge_web_seed_uris(ws_uris);
+                    if !meta.web_seed_uris.is_empty() {
+                        let ws_config = raria_bt::webseed::WebSeedConfig {
+                            max_connections: 4,
+                            timeout: Duration::from_secs(60),
+                            cancel: cancel.clone(),
+                        };
+                        let output_dir = bt_service.output_dir().clone();
+                        info!(%gid, uris = meta.web_seed_uris.len(), "starting WebSeed pre-download");
+                        match raria_bt::webseed::pre_download(&meta, &output_dir, &ws_config).await
+                        {
+                            Ok(result) => {
+                                info!(
+                                    %gid,
+                                    verified = result.pieces_verified,
+                                    failed = result.pieces_failed,
+                                    bytes = result.bytes_downloaded,
+                                    "WebSeed pre-download complete"
+                                );
+                            }
+                            Err(e) => {
+                                warn!(%gid, error = %e, "WebSeed pre-download failed, continuing with BT only");
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    warn!(%gid, error = %e, "failed to parse torrent for WebSeed, skipping pre-download");
+                }
+            }
+        }
+    }
+
     let handle = bt_service
         .add(
             source,
             gid,
             job.options.bt_selected_files.clone(),
             job.options.bt_trackers.clone(),
-            web_seed_uris,
         )
         .await
         .context("failed to add torrent to BtService")?;

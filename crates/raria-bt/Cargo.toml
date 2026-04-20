@@ -9,8 +9,14 @@ rust-version.workspace = true
 
 [dependencies]
 raria-core = { workspace = true }
+raria-range = { workspace = true }
+raria-http = { workspace = true }
+raria-ftp = { workspace = true }
+raria-sftp = { workspace = true }
 librqbit = "8"
+librqbit-bencode = "3"
 tokio = { workspace = true }
+tokio-util = { workspace = true }
 anyhow = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
@@ -18,11 +24,14 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 hex = { workspace = true }
 parking_lot = { workspace = true }
+url = { workspace = true }
+sha1_smol = "1"
 
 [dev-dependencies]
 librqbit-dht = "5"
 tempfile = { workspace = true }
 tokio-test = { workspace = true }
+tokio-util = { workspace = true }
 serial_test = "3"
 wiremock = { workspace = true }
 russh = "0.51"

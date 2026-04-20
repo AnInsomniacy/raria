@@ -258,4 +258,3 @@ mod tests {
         cancel.cancel();
     }
 }
-

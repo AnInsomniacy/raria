@@ -108,6 +108,3 @@ lto = true
 codegen-units = 1
 strip = true
 
-[patch.crates-io]
-librqbit = { path = "vendor/librqbit" }
-librqbit-dht = { path = "vendor/librqbit-dht" }

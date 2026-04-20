@@ -23,8 +23,56 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tracing::{debug, info, warn};
 
-pub use librqbit::PieceSelectionStrategy;
-pub use librqbit::{PeerEncryptionMinLevel, PeerEncryptionMode, PeerEncryptionPolicy};
+// These types were vendor-specific additions to librqbit.
+// Upstream 8.1.1 does not expose them, so we define them locally to
+// preserve raria-bt's public config API.
+
+/// Piece selection strategy for BitTorrent downloads.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum PieceSelectionStrategy {
+    /// Download the rarest pieces first across all peers.
+    #[default]
+    RarestFirst,
+    /// Download pieces in order (sequential).
+    Current,
+}
+
+/// Minimum cryptographic level for peer encryption.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum PeerEncryptionMinLevel {
+    /// No encryption minimum.
+    #[default]
+    Plain,
+    /// RC4/ARC4 stream cipher minimum.
+    Arc4,
+}
+
+/// Peer encryption negotiation mode.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum PeerEncryptionMode {
+    /// Prefer encryption but allow plaintext.
+    #[default]
+    Prefer,
+    /// Require encryption — reject unencrypted peers.
+    Require,
+    /// Disable encryption negotiation entirely.
+    Disable,
+}
+
+/// Peer transport encryption policy.
+///
+/// Note: upstream librqbit 8.1.1 does not support MSE/PE natively.
+/// This struct is retained for raria configuration compatibility and future use.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PeerEncryptionPolicy {
+    /// Encryption negotiation mode.
+    pub mode: PeerEncryptionMode,
+    /// Minimum acceptable cryptographic level.
+    pub min_crypto_level: PeerEncryptionMinLevel,
+}
 
 fn is_selected_file(selected_files: Option<&[usize]>, file_index: usize) -> bool {
     selected_files
@@ -61,10 +109,10 @@ fn bt_session_options(output_dir: &Path, config: &BtServiceConfig) -> SessionOpt
     SessionOptions {
         disable_dht: config.disable_dht,
         disable_dht_persistence: config.disable_dht_persistence,
-        peer_opts: Some(librqbit::PeerConnectionOptions {
-            encryption_policy: Some(config.peer_encryption_policy),
-            ..Default::default()
-        }),
+        // Note: upstream PeerConnectionOptions only has timeout fields.
+        // Encryption policy is stored in BtServiceConfig but not forwarded
+        // because upstream librqbit 8.1.1 does not support MSE/PE.
+        peer_opts: None,
         dht_config: config.dht_config_filename.as_ref().map(|path| {
             librqbit::dht::PersistentDhtConfig {
                 dump_interval: None,
@@ -268,7 +316,6 @@ impl BtService {
         gid: raria_core::job::Gid,
         selected_files: Option<Vec<usize>>,
         trackers: Option<Vec<String>>,
-        web_seed_uris: Option<Vec<String>>,
     ) -> Result<BtHandle> {
         let session = self.ensure_session().await?;
 
@@ -287,9 +334,7 @@ impl BtService {
             output_folder: Some(self.output_dir.clone().to_string_lossy().to_string()),
             only_files: selected_files,
             initial_peers: self.config.initial_peers.clone(),
-            piece_selection_strategy: self.config.piece_selection_strategy,
             trackers,
-            web_seed_uris,
             ..Default::default()
         };
 
@@ -490,25 +535,15 @@ impl BtService {
         &self.output_dir
     }
 
-    fn persist_dht_snapshot(&self, session: &Session) -> Result<()> {
+    fn persist_dht_snapshot(&self, _session: &Session) -> Result<()> {
         if self.config.disable_dht || self.config.disable_dht_persistence {
             return Ok(());
         }
 
-        let dht = match session.get_dht() {
-            Some(dht) => dht,
-            None => return Ok(()),
-        };
-
-        librqbit::dht::PersistentDht::dump_now(dht, self.config.dht_config_filename.clone())
-            .context("failed to persist upstream DHT shutdown snapshot")?;
-        let config_filename = self
-            .config
-            .dht_config_filename
-            .clone()
-            .map(Ok)
-            .unwrap_or_else(librqbit::dht::PersistentDht::default_persistence_filename)?;
-        info!(path = %config_filename.display(), "persisted BT DHT shutdown snapshot");
+        // Upstream librqbit 8.1.1 does not expose PersistentDht::dump_now.
+        // DHT state is persisted automatically by the session's own
+        // PersistentDhtConfig.dump_interval when configured.
+        debug!("DHT persistence delegated to librqbit session config");
         Ok(())
     }
 
@@ -743,13 +778,8 @@ mod tests {
             options.socks_proxy_url.as_deref(),
             Some("socks5://127.0.0.1:1080")
         );
-        assert_eq!(
-            options.peer_opts.expect("peer opts").encryption_policy,
-            Some(PeerEncryptionPolicy {
-                mode: PeerEncryptionMode::Require,
-                min_crypto_level: PeerEncryptionMinLevel::Arc4,
-            })
-        );
+        // Upstream PeerConnectionOptions has no encryption_policy field.
+        assert!(options.peer_opts.is_none());
         assert!(options.disable_dht);
         assert!(options.disable_dht_persistence);
         assert_eq!(
