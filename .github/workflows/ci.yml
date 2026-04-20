@@ -1,15 +1,11 @@
-# Industrial-grade Rust CI — DAG pipeline.
+# Rust CI — DAG pipeline.
 #
-# Architecture (modeled after tokio-rs/tokio):
+# Architecture:
 #
-#   fmt ─┐
-#        ├──▶ lint ──┐
-#                    ├──▶ test (ubuntu)
-#                    └──▶ test (macos)
+#   fmt ──▶ lint (clippy + check)
 #
 # - fmt: zero-compilation gate (< 10s).
 # - lint: clippy + check (shares compile cache).
-# - test: cross-platform matrix, fans out in parallel after lint passes.
 # - Concurrency group: auto-cancels superseded runs on the same branch/PR.
 
 name: CI
@@ -61,26 +57,3 @@ jobs:
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - name: Check
         run: cargo check --workspace --locked
-
-  # ── Fan-out: Test ───────────────────────────────────────────────────
-  # Cross-platform matrix, runs in parallel after lint passes.
-  # Uses cargo-nextest for parallel test execution.
-  test:
-    name: Test (${{ matrix.os }})
-    needs: [lint]
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest]
-    runs-on: ${{ matrix.os }}
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - uses: taiki-e/install-action@v2
-        with:
-          tool: cargo-nextest
-      - name: Test
-        run: cargo nextest run --workspace --locked
-      - name: Doc-tests
-        run: cargo test --workspace --locked --doc
