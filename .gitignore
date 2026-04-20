@@ -24,3 +24,6 @@
 
 # Legacy aria2 source (local reference only)
 aria2-legacy/
+
+# Vendor crates have their own lockfiles (separate workspaces)
+vendor/**/Cargo.lock

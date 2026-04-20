@@ -744,10 +744,7 @@ mod tests {
             Some("socks5://127.0.0.1:1080")
         );
         assert_eq!(
-            options
-                .peer_opts
-                .expect("peer opts")
-                .encryption_policy,
+            options.peer_opts.expect("peer opts").encryption_policy,
             Some(PeerEncryptionPolicy {
                 mode: PeerEncryptionMode::Require,
                 min_crypto_level: PeerEncryptionMinLevel::Arc4,

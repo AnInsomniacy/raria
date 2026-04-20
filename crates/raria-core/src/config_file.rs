@@ -909,7 +909,10 @@ user-agent=raria/1.0
         let mut map = HashMap::new();
         map.insert("bt-piece-strategy".into(), "zigzag".into());
         let result = apply_config_map_with_mode(&mut config, &map, ConfigParseMode::Strict);
-        assert!(result.is_err(), "strict mode must reject invalid BT strategy");
+        assert!(
+            result.is_err(),
+            "strict mode must reject invalid BT strategy"
+        );
         let err_msg = format!("{}", result.unwrap_err());
         assert!(err_msg.contains("bt-piece-strategy"));
     }

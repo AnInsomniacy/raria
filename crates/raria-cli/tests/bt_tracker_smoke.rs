@@ -359,7 +359,10 @@ async fn daemon_shutdown_persists_bt_dht_snapshot_before_periodic_dump_window() 
         .await
         .expect("parse addTorrent response");
     assert!(
-        add_resp.get("result").and_then(|value| value.as_str()).is_some(),
+        add_resp
+            .get("result")
+            .and_then(|value| value.as_str())
+            .is_some(),
         "daemon should accept BT job before shutdown: {add_resp}"
     );
     assert!(

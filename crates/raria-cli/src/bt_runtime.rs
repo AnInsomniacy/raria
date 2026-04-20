@@ -387,8 +387,8 @@ pub(crate) async fn run_bt_download(
 #[cfg(test)]
 mod tests {
     use super::{
-        BtCompletionAction, bt_service_config, handle_bt_cancellation, map_bt_files, map_bt_peers,
-        derive_bt_web_seed_uris, should_stop_seeding, sync_bt_job_from_status,
+        BtCompletionAction, bt_service_config, derive_bt_web_seed_uris, handle_bt_cancellation,
+        map_bt_files, map_bt_peers, should_stop_seeding, sync_bt_job_from_status,
         sync_bt_status_into_job,
     };
     use crate::bt_runtime::PieceSelectionStrategy;

@@ -690,15 +690,15 @@ async fn main() -> Result<()> {
                 config.bt_dht_config_file = bt_dht_config_file;
             }
             if let Some(bt_piece_strategy) = bt_piece_strategy {
-                config.bt_piece_strategy =
-                    raria_core::config::BtPieceStrategy::parse(&bt_piece_strategy).ok_or_else(
-                        || {
-                            anyhow::anyhow!(
-                                "invalid --bt-piece-strategy '{}': expected 'current' or 'rarest-first'",
-                                bt_piece_strategy
-                            )
-                        },
-                    )?;
+                config.bt_piece_strategy = raria_core::config::BtPieceStrategy::parse(
+                    &bt_piece_strategy,
+                )
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "invalid --bt-piece-strategy '{}': expected 'current' or 'rarest-first'",
+                        bt_piece_strategy
+                    )
+                })?;
             }
             if let Some(bt_require_crypto) = bt_require_crypto {
                 config.bt_require_crypto = bt_require_crypto;

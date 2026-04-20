@@ -14,17 +14,17 @@ mod tests {
         AddTorrent, AddTorrentOptions, CreateTorrentOptions, PeerConnectionOptions, Session,
         SessionOptions, create_torrent,
     };
+    use raria_bt::service::{
+        BtService, BtServiceConfig, BtSource, PeerEncryptionMinLevel, PeerEncryptionMode,
+        PeerEncryptionPolicy,
+    };
+    use raria_core::job::Gid;
     use russh::keys::ssh_key::rand_core::OsRng;
     use russh::server::{Auth, Msg, Server as _, Session as RusshSession};
     use russh::{Channel, ChannelId};
     use russh_sftp::protocol::{
         Attrs, Data, FileAttributes, Handle, Name, OpenFlags, Status, StatusCode, Version,
     };
-    use raria_bt::service::{
-        BtService, BtServiceConfig, BtSource, PeerEncryptionMinLevel, PeerEncryptionMode,
-        PeerEncryptionPolicy,
-    };
-    use raria_core::job::Gid;
     use std::collections::HashMap;
     use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener as StdTcpListener};
     use std::sync::Arc;
@@ -46,7 +46,9 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn bt_mse_pse_encryption() -> Result<()> {
-        let payload: Vec<u8> = (0..2 * 1024 * 1024).map(|idx| ((idx * 29) % 251) as u8).collect();
+        let payload: Vec<u8> = (0..2 * 1024 * 1024)
+            .map(|idx| ((idx * 29) % 251) as u8)
+            .collect();
         let source_root = tempdir().context("seed source tempdir")?;
         let session_root = tempdir().context("seed session tempdir")?;
         let file_name = "encrypted-fixture.bin";
@@ -181,10 +183,7 @@ mod tests {
         let torrent = librqbit::create_torrent(&source_path, Default::default())
             .await
             .context("create torrent")?;
-        Ok(torrent
-            .as_bytes()
-            .context("serialize torrent")?
-            .to_vec())
+        Ok(torrent.as_bytes().context("serialize torrent")?.to_vec())
     }
 
     async fn run_bt_webseed_download(
@@ -328,9 +327,7 @@ mod tests {
             .await
             .context("bind ftp listener")?;
         let port = listener.local_addr().context("control addr")?.port();
-        let url = format!(
-            "ftp://{FTP_TEST_USER}:{FTP_TEST_PASSWORD}@127.0.0.1:{port}{file_path}",
-        );
+        let url = format!("ftp://{FTP_TEST_USER}:{FTP_TEST_PASSWORD}@127.0.0.1:{port}{file_path}",);
 
         tokio::spawn(async move {
             loop {
@@ -660,11 +657,9 @@ mod tests {
         let port = listener.local_addr().context("sftp local addr")?.port();
         drop(listener);
 
-        let host_key = russh::keys::PrivateKey::random(
-            &mut OsRng,
-            russh::keys::ssh_key::Algorithm::Ed25519,
-        )
-        .context("generate ssh host key")?;
+        let host_key =
+            russh::keys::PrivateKey::random(&mut OsRng, russh::keys::ssh_key::Algorithm::Ed25519)
+                .context("generate ssh host key")?;
 
         let config = russh::server::Config {
             auth_rejection_time: Duration::from_secs(1),
@@ -712,8 +707,13 @@ mod tests {
         let file_path = "/payload.bin".to_string();
 
         let ftp_fixture = spawn_ftp_server(file_path.clone(), Arc::clone(&payload)).await?;
-        run_bt_webseed_download(&torrent_bytes, payload.as_ref(), vec![ftp_fixture.url.clone()], 903)
-            .await?;
+        run_bt_webseed_download(
+            &torrent_bytes,
+            payload.as_ref(),
+            vec![ftp_fixture.url.clone()],
+            903,
+        )
+        .await?;
 
         let sftp_fixture = spawn_sftp_server(file_path, Arc::clone(&payload)).await?;
         run_bt_webseed_download(

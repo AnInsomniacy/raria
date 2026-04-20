@@ -160,8 +160,7 @@ mod tests {
         assert!(json.get("error").is_none(), "listMethods error: {json}");
 
         let actual: Vec<String> = serde_json::from_value(json["result"].clone()).unwrap();
-        let expected =
-            read_generated_manifest(".omx/parity/generated/live-rpc-methods.json");
+        let expected = read_generated_manifest(".omx/parity/generated/live-rpc-methods.json");
         assert_eq!(
             actual, expected,
             "system.listMethods must match the generated live RPC method manifest"
@@ -197,8 +196,7 @@ mod tests {
         );
 
         let actual: Vec<String> = serde_json::from_value(json["result"].clone()).unwrap();
-        let expected =
-            read_generated_manifest(".omx/parity/generated/live-rpc-notifications.json");
+        let expected = read_generated_manifest(".omx/parity/generated/live-rpc-notifications.json");
         assert_eq!(
             actual, expected,
             "system.listNotifications must match the generated live notification manifest"
