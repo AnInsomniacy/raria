@@ -516,12 +516,12 @@ impl BtService {
             .into_iter()
             .map(|(addr, stats)| {
                 let (ip, port) = parse_peer_addr(&addr);
-                let download_speed = if stats.counters.total_piece_download_ms > 0 {
-                    stats.counters.fetched_bytes.saturating_mul(1000)
-                        / stats.counters.total_piece_download_ms
-                } else {
-                    0
-                };
+                let download_speed = stats
+                    .counters
+                    .fetched_bytes
+                    .saturating_mul(1000)
+                    .checked_div(stats.counters.total_piece_download_ms)
+                    .unwrap_or(0);
                 BtPeerInfo {
                     addr,
                     ip,
