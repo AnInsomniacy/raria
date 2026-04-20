@@ -13,8 +13,9 @@ raria-range = { workspace = true }
 raria-http = { workspace = true }
 raria-ftp = { workspace = true }
 raria-sftp = { workspace = true }
-librqbit = "8"
-librqbit-bencode = "3"
+librqbit = { version = "8", default-features = false, features = ["rust-tls", "http-api-client"] }
+librqbit-bencode = { version = "3", default-features = false, features = ["sha1-ring"] }
+librqbit-dht = { version = "5", default-features = false, features = ["sha1-ring"] }
 tokio = { workspace = true }
 tokio-util = { workspace = true }
 anyhow = { workspace = true }
@@ -28,7 +29,6 @@ url = { workspace = true }
 sha1_smol = "1"
 
 [dev-dependencies]
-librqbit-dht = "5"
 tempfile = { workspace = true }
 tokio-test = { workspace = true }
 tokio-util = { workspace = true }

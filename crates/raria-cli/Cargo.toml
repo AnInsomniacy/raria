@@ -34,10 +34,6 @@ base64 = { workspace = true }
 chrono = { workspace = true }
 serde_json = { workspace = true }
 
-# librqbit transitively pulls reqwest with default features (native-tls → openssl-sys).
-# Vendored openssl builds from source so cross-compilation does not need system headers.
-openssl = { version = "0.10", features = ["vendored"] }
-
 [dev-dependencies]
 tempfile = { workspace = true }
 wiremock = { workspace = true }
@@ -51,4 +47,4 @@ tokio-rustls = { workspace = true }
 rcgen = { workspace = true }
 russh = "0.51"
 russh-sftp = "2"
-librqbit = "8.1.1"
+librqbit = { version = "8.1.1", default-features = false, features = ["rust-tls"] }
