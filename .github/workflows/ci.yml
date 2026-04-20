@@ -1,3 +1,17 @@
+# Industrial-grade Rust CI pipeline.
+#
+# Architecture: Linear gate pipeline — each stage blocks the next.
+#
+#   fmt ──▶ lint ──▶ test (matrix: ubuntu + macos)
+#
+# Design decisions:
+# - Linear `needs` chain: fail fast on cheap checks before expensive compilation.
+# - Single `lint` job combines clippy + check: avoids duplicate compilation.
+# - `cargo nextest` for parallel test execution with better output.
+# - `Swatinem/rust-cache` on all compilation jobs for dependency caching.
+# - `fail-fast: false` on test matrix: see all platform failures, not just the first.
+# - `--locked` everywhere: CI must match the committed Cargo.lock.
+
 name: CI
 
 on:
@@ -5,16 +19,17 @@ on:
     branches: [main]
   pull_request:
 
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
-  # Disable incremental compilation — no benefit in CI, hurts cache reliability.
   CARGO_INCREMENTAL: 0
-  # Print full backtrace on panic for easier debugging.
   RUST_BACKTRACE: 1
 
 jobs:
-  # ── Format ───────────────────────────────────────────────────────────
-  # Fastest gate — reject style violations before spending time on compilation.
+  # ── Stage 1: Format ─────────────────────────────────────────────────
+  # Zero-compilation gate. Rejects style violations in < 10s.
   fmt:
     name: Rustfmt
     runs-on: ubuntu-latest
@@ -25,9 +40,12 @@ jobs:
           components: rustfmt
       - run: cargo fmt --all --check
 
-  # ── Lint ─────────────────────────────────────────────────────────────
-  clippy:
-    name: Clippy
+  # ── Stage 2: Lint ───────────────────────────────────────────────────
+  # Clippy + workspace check in a single job (shares compilation artifacts).
+  # Blocked on fmt — no point linting unformatted code.
+  lint:
+    name: Lint
+    needs: [fmt]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -35,28 +53,31 @@ jobs:
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
-      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Clippy (all targets)
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: Check (workspace)
+        run: cargo check --workspace --locked
 
-  # ── Compile ──────────────────────────────────────────────────────────
-  check:
-    name: Check
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - run: cargo check --workspace --locked
-
-  # ── Test ─────────────────────────────────────────────────────────────
+  # ── Stage 3: Test ───────────────────────────────────────────────────
+  # Cross-platform test matrix. Blocked on lint — no point testing broken code.
+  # Uses cargo-nextest for parallel execution and cleaner output.
   test:
     name: Test (${{ matrix.os }})
-    needs: [fmt]
-    runs-on: ${{ matrix.os }}
+    needs: [lint]
     strategy:
+      fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - run: cargo test --workspace --locked
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+      - name: Run tests
+        run: cargo nextest run --workspace --locked
+      # doc-tests are not supported by nextest; run them separately.
+      - name: Run doc-tests
+        run: cargo test --workspace --locked --doc

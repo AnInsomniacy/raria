@@ -69,9 +69,7 @@ impl TorrentMeta {
         };
 
         // Extract "info" dict.
-        let info_val = top
-            .get(b"info".as_slice())
-            .context("missing 'info' key")?;
+        let info_val = top.get(b"info".as_slice()).context("missing 'info' key")?;
         let BencodeValue::Dict(info) = info_val else {
             bail!("'info' is not a dict");
         };
