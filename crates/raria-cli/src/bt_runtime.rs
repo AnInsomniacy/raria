@@ -334,6 +334,7 @@ pub(crate) async fn run_bt_download(
             gid,
             job.options.bt_selected_files.clone(),
             job.options.bt_trackers.clone(),
+            web_seed_uris.is_some(),
         )
         .await
         .context("failed to add torrent to BtService")?;

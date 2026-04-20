@@ -133,6 +133,7 @@ mod tests {
                 Gid::from_raw(901),
                 None,
                 None,
+                false,
             )
             .await
             .context("add encrypted torrent to BtService")?;
@@ -208,8 +209,9 @@ mod tests {
             .context("webseed pre-download")?;
         assert!(
             ws_result.pieces_failed == 0,
-            "all webseed pieces should verify: {} failed",
-            ws_result.pieces_failed
+            "all webseed pieces should verify: {} failed (verified={})",
+            ws_result.pieces_failed,
+            ws_result.pieces_verified,
         );
 
         // Phase 2: librqbit verifies via hash-check and completes instantly.
@@ -229,6 +231,7 @@ mod tests {
                 Gid::from_raw(gid_raw),
                 None,
                 None,
+                true,
             )
             .await
             .context("add torrent")?;
@@ -256,13 +259,18 @@ mod tests {
         Ok(())
     }
 
-    fn parse_range_header(header: &str) -> Option<(usize, usize)> {
-        // Expected: bytes=start-end (inclusive).
+    fn parse_range_header(header: &str, total_len: usize) -> Option<(usize, usize)> {
+        // Expected: bytes=start-end (inclusive) or bytes=start- (open-ended).
         let header = header.trim();
         let value = header.strip_prefix("bytes=")?;
         let (start, end) = value.split_once('-')?;
         let start = start.parse::<u64>().ok()?;
-        let end = end.parse::<u64>().ok()?;
+        let end = if end.is_empty() {
+            // Open-ended range: bytes=N- means from N to end of file.
+            total_len as u64 - 1
+        } else {
+            end.parse::<u64>().ok()?
+        };
         if end < start {
             return None;
         }
@@ -273,13 +281,17 @@ mod tests {
         fn respond(&self, request: &Request) -> ResponseTemplate {
             let total_len = self.data.len();
 
+            // If no Range header, return full content (offset=0 case).
             let Some(range) = request
                 .headers
                 .get("range")
                 .and_then(|v| v.to_str().ok())
-                .and_then(parse_range_header)
+                .and_then(|h| parse_range_header(h, total_len))
             else {
-                return ResponseTemplate::new(416);
+                return ResponseTemplate::new(200)
+                    .insert_header("accept-ranges", "bytes")
+                    .insert_header("content-length", total_len.to_string())
+                    .set_body_bytes(self.data.as_ref().clone());
             };
 
             let (start, end) = range;

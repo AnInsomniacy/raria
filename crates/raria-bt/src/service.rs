@@ -115,7 +115,7 @@ fn bt_session_options(output_dir: &Path, config: &BtServiceConfig) -> SessionOpt
         peer_opts: None,
         dht_config: config.dht_config_filename.as_ref().map(|path| {
             librqbit::dht::PersistentDhtConfig {
-                dump_interval: None,
+                dump_interval: Some(std::time::Duration::from_secs(1)),
                 config_filename: Some(path.clone()),
             }
         }),
@@ -310,12 +310,17 @@ impl BtService {
     }
 
     /// Add a new torrent download.
+    ///
+    /// Set `overwrite` to `true` when files have been pre-downloaded
+    /// (e.g. via WebSeed) and librqbit should overwrite/validate them
+    /// rather than failing with "file exists".
     pub async fn add(
         &self,
         source: BtSource,
         gid: raria_core::job::Gid,
         selected_files: Option<Vec<usize>>,
         trackers: Option<Vec<String>>,
+        overwrite: bool,
     ) -> Result<BtHandle> {
         let session = self.ensure_session().await?;
 
@@ -335,6 +340,7 @@ impl BtService {
             only_files: selected_files,
             initial_peers: self.config.initial_peers.clone(),
             trackers,
+            overwrite,
             ..Default::default()
         };
 
@@ -535,15 +541,61 @@ impl BtService {
         &self.output_dir
     }
 
-    fn persist_dht_snapshot(&self, _session: &Session) -> Result<()> {
+    fn persist_dht_snapshot(&self, session: &Session) -> Result<()> {
         if self.config.disable_dht || self.config.disable_dht_persistence {
             return Ok(());
         }
 
-        // Upstream librqbit 8.1.1 does not expose PersistentDht::dump_now.
-        // DHT state is persisted automatically by the session's own
-        // PersistentDhtConfig.dump_interval when configured.
-        debug!("DHT persistence delegated to librqbit session config");
+        let config_path = match self.config.dht_config_filename.as_ref() {
+            Some(path) => path,
+            None => {
+                debug!("no DHT config filename configured, skipping snapshot");
+                return Ok(());
+            }
+        };
+
+        let dht = match session.get_dht() {
+            Some(dht) => dht,
+            None => {
+                debug!("no DHT instance available, skipping snapshot");
+                return Ok(());
+            }
+        };
+
+        // Replicate upstream dump_dht: serialize addr + routing table + peer store.
+        // Note: dht.peer_store is pub(crate) in upstream, so we include a
+        // placeholder to maintain JSON schema compatibility.
+        let addr = dht.listen_addr();
+        let snapshot = dht.with_routing_table(|table| {
+            serde_json::json!({
+                "addr": addr.to_string(),
+                "table": table,
+                "peer_store": {},
+            })
+        });
+
+        // Atomic write: write to temp file, then rename.
+        let temp_path = {
+            let mut tmp = config_path.clone();
+            tmp.set_file_name(format!("dht.json.tmp.{}", std::process::id()));
+            tmp
+        };
+        if let Some(parent) = config_path.parent() {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("create DHT config dir: {}", parent.display()))?;
+        }
+        let file = std::fs::OpenOptions::new()
+            .truncate(true)
+            .create(true)
+            .write(true)
+            .open(&temp_path)
+            .with_context(|| format!("open DHT temp file: {}", temp_path.display()))?;
+        serde_json::to_writer(std::io::BufWriter::new(file), &snapshot)
+            .context("serialize DHT snapshot")?;
+        std::fs::rename(&temp_path, config_path)
+            .with_context(|| format!("rename DHT temp to {}", config_path.display()))?;
+
+        info!(path = %config_path.display(), "persisted DHT shutdown snapshot");
         Ok(())
     }
 
@@ -554,10 +606,12 @@ impl BtService {
             guard.clone()
         };
         if let Some(session) = session {
-            session.stop().await;
+            // Persist DHT state BEFORE stopping the session, because stop()
+            // cancels the DHT task and may invalidate the DHT handle.
             if let Err(error) = self.persist_dht_snapshot(&session) {
                 warn!(error = %error, "failed to persist BT DHT shutdown snapshot");
             }
+            session.stop().await;
             info!("librqbit session stopped");
         }
     }

@@ -221,7 +221,13 @@ async fn wait_for_bt_completion(
     torrent_bytes: Vec<u8>,
 ) -> raria_bt::service::BtHandle {
     let handle = service
-        .add(BtSource::TorrentBytes(torrent_bytes), gid, None, None)
+        .add(
+            BtSource::TorrentBytes(torrent_bytes),
+            gid,
+            None,
+            None,
+            false,
+        )
         .await
         .expect("add torrent to BtService");
 
@@ -246,7 +252,13 @@ async fn wait_for_partial_bt_download(
     torrent_bytes: Vec<u8>,
 ) -> (raria_bt::service::BtHandle, u64) {
     let handle = service
-        .add(BtSource::TorrentBytes(torrent_bytes), gid, None, None)
+        .add(
+            BtSource::TorrentBytes(torrent_bytes),
+            gid,
+            None,
+            None,
+            false,
+        )
         .await
         .expect("add torrent to BtService");
 
@@ -476,6 +488,7 @@ async fn bt_service_status_exposes_reachable_bt_metadata_fields() {
             Gid::from_raw(22),
             None,
             Some(vec![tracker_url.clone()]),
+            false,
         )
         .await
         .expect("add torrent to BtService");
@@ -552,6 +565,7 @@ async fn bt_service_persists_fastresume_state_and_restores_progress_after_restar
             Gid::from_raw(4),
             None,
             None,
+            false,
         )
         .await
         .expect("re-add torrent after restart");
@@ -603,6 +617,7 @@ async fn bt_service_status_exposes_real_bt_metadata_fields() {
             Gid::from_raw(5),
             None,
             Some(vec![tracker.clone()]),
+            false,
         )
         .await
         .expect("add torrent to BtService");
