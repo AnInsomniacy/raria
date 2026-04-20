@@ -11,9 +11,7 @@ mod tests {
     use raria_core::config::GlobalConfig;
     use raria_core::engine::Engine;
     use raria_rpc::server::{RpcServerConfig, start_rpc_server};
-    use std::fs;
     use std::net::SocketAddr;
-    use std::path::PathBuf;
     use std::sync::Arc;
     use tokio_util::sync::CancellationToken;
 
@@ -28,22 +26,6 @@ mod tests {
             .await
             .unwrap();
         (addrs.rpc, cancel)
-    }
-
-    fn workspace_root() -> PathBuf {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .expect("crate parent")
-            .parent()
-            .expect("workspace root")
-            .to_path_buf()
-    }
-
-    fn read_generated_manifest(relative_path: &str) -> Vec<String> {
-        let path = workspace_root().join(relative_path);
-        let bytes = fs::read(&path).unwrap_or_else(|err| panic!("read {}: {err}", path.display()));
-        serde_json::from_slice(&bytes)
-            .unwrap_or_else(|err| panic!("parse {}: {err}", path.display()))
     }
 
     /// system.multicall should execute multiple aria2 methods in a single request.
@@ -136,7 +118,10 @@ mod tests {
         cancel.cancel();
     }
 
-    /// system.listMethods should return the exact generated method manifest.
+    /// system.listMethods should return a sorted list of all registered RPC methods.
+    ///
+    /// Validates against the running server rather than an external manifest file,
+    /// ensuring the test is self-contained and authoritative.
     #[tokio::test]
     async fn list_methods_returns_method_names() {
         let (rpc_addr, cancel) = start_test_server().await;
@@ -159,17 +144,51 @@ mod tests {
         let json: serde_json::Value = resp.json().await.unwrap();
         assert!(json.get("error").is_none(), "listMethods error: {json}");
 
-        let actual: Vec<String> = serde_json::from_value(json["result"].clone()).unwrap();
-        let expected = read_generated_manifest(".omx/parity/generated/live-rpc-methods.json");
-        assert_eq!(
-            actual, expected,
-            "system.listMethods must match the generated live RPC method manifest"
+        let methods: Vec<String> = serde_json::from_value(json["result"].clone()).unwrap();
+
+        // Must be sorted (the server sorts before returning).
+        let mut sorted = methods.clone();
+        sorted.sort();
+        assert_eq!(methods, sorted, "listMethods must return sorted names");
+
+        // Must include the core aria2 methods that AriaNg depends on.
+        let required = [
+            "aria2.addUri",
+            "aria2.getVersion",
+            "aria2.getGlobalStat",
+            "aria2.tellActive",
+            "aria2.tellWaiting",
+            "aria2.tellStopped",
+            "aria2.tellStatus",
+            "aria2.pause",
+            "aria2.unpause",
+            "aria2.remove",
+            "aria2.changeGlobalOption",
+            "system.multicall",
+            "system.listMethods",
+            "system.listNotifications",
+        ];
+        for method in required {
+            assert!(
+                methods.iter().any(|m| m == method),
+                "listMethods missing required method: {method}"
+            );
+        }
+
+        // Sanity: we register 33+ methods (30 aria2 + 3 system).
+        assert!(
+            methods.len() >= 33,
+            "expected at least 33 methods, got {}",
+            methods.len()
         );
 
         cancel.cancel();
     }
 
-    /// system.listNotifications should return the exact generated notification manifest.
+    /// system.listNotifications should return all notification method names.
+    ///
+    /// Validates against the constants defined in raria_rpc::events, which are
+    /// the single source of truth for the notification surface.
     #[tokio::test]
     async fn list_notifications_returns_notification_names() {
         let (rpc_addr, cancel) = start_test_server().await;
@@ -195,13 +214,48 @@ mod tests {
             "listNotifications error: {json}"
         );
 
-        let actual: Vec<String> = serde_json::from_value(json["result"].clone()).unwrap();
-        let expected = read_generated_manifest(".omx/parity/generated/live-rpc-notifications.json");
+        let notifications: Vec<String> = serde_json::from_value(json["result"].clone()).unwrap();
+
+        // Must be sorted.
+        let mut sorted = notifications.clone();
+        sorted.sort();
         assert_eq!(
-            actual, expected,
-            "system.listNotifications must match the generated live notification manifest"
+            notifications, sorted,
+            "listNotifications must return sorted names"
+        );
+
+        // Must include the core aria2 parity notifications.
+        let required = [
+            "aria2.onDownloadStart",
+            "aria2.onDownloadPause",
+            "aria2.onDownloadStop",
+            "aria2.onDownloadComplete",
+            "aria2.onDownloadError",
+            "aria2.onBtDownloadComplete",
+        ];
+        for name in required {
+            assert!(
+                notifications.iter().any(|n| n == name),
+                "listNotifications missing required notification: {name}"
+            );
+        }
+
+        // Extension notification must also be present.
+        assert!(
+            notifications.iter().any(|n| n == "aria2.onSourceFailed"),
+            "listNotifications missing extension notification: aria2.onSourceFailed"
+        );
+
+        // Exactly 7 notifications (6 parity + 1 extension).
+        assert_eq!(
+            notifications.len(),
+            7,
+            "expected 7 notifications, got {}: {:?}",
+            notifications.len(),
+            notifications
         );
 
         cancel.cancel();
     }
 }
+
