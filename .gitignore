@@ -11,7 +11,6 @@
 
 # Rust
 **/*.rs.bk
-Cargo.lock
 
 # Session / Database files (generated at runtime)
 *.redb
@@ -25,4 +24,3 @@ Cargo.lock
 
 # Legacy aria2 source (local reference only)
 aria2-legacy/
-.omx/
