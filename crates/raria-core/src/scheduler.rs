@@ -4,6 +4,7 @@
 // and handles the waiting → active state transitions.
 
 use crate::job::{Gid, Status};
+use crate::native::TaskId;
 use crate::registry::JobRegistry;
 use parking_lot::RwLock;
 use std::collections::VecDeque;
@@ -15,8 +16,8 @@ use std::sync::atomic::{AtomicU32, Ordering};
 pub struct Scheduler {
     /// Maximum number of concurrently active jobs.
     max_concurrent: AtomicU32,
-    /// Ordered queue of waiting GIDs. Front = next to activate.
-    queue: Arc<RwLock<VecDeque<Gid>>>,
+    /// Ordered queue of waiting native task ids. Front = next to activate.
+    queue: Arc<RwLock<VecDeque<TaskId>>>,
 }
 
 impl Clone for Scheduler {
@@ -39,22 +40,37 @@ impl Scheduler {
 
     /// Enqueue a job GID at the back of the waiting queue.
     pub fn enqueue(&self, gid: Gid) {
+        self.enqueue_task(TaskId::from_migration_gid(gid.as_raw()));
+    }
+
+    /// Enqueue a native task id at the back of the waiting queue.
+    pub fn enqueue_task(&self, task_id: TaskId) {
         let mut queue = self.queue.write();
-        queue.push_back(gid);
+        queue.push_back(task_id);
     }
 
     /// Enqueue a job GID at a specific position (0-indexed).
     /// If `position` exceeds the queue length, it is appended to the end.
     pub fn enqueue_at(&self, gid: Gid, position: usize) {
+        self.enqueue_task_at(TaskId::from_migration_gid(gid.as_raw()), position);
+    }
+
+    /// Enqueue a native task id at a specific position.
+    pub fn enqueue_task_at(&self, task_id: TaskId, position: usize) {
         let mut queue = self.queue.write();
         let pos = position.min(queue.len());
-        queue.insert(pos, gid);
+        queue.insert(pos, task_id);
     }
 
     /// Remove a GID from the waiting queue.
     pub fn dequeue(&self, gid: Gid) -> bool {
+        self.dequeue_task(&TaskId::from_migration_gid(gid.as_raw()))
+    }
+
+    /// Remove a native task id from the waiting queue.
+    pub fn dequeue_task(&self, task_id: &TaskId) -> bool {
         let mut queue = self.queue.write();
-        if let Some(pos) = queue.iter().position(|g| *g == gid) {
+        if let Some(pos) = queue.iter().position(|queued| queued == task_id) {
             queue.remove(pos);
             true
         } else {
@@ -62,10 +78,16 @@ impl Scheduler {
         }
     }
 
+    /// Return the current native task queue.
+    pub fn waiting_task_queue(&self) -> Vec<TaskId> {
+        let queue = self.queue.read();
+        queue.iter().cloned().collect()
+    }
+
     /// Return the current queue (in order).
     pub fn waiting_queue(&self) -> Vec<Gid> {
         let queue = self.queue.read();
-        queue.iter().copied().collect()
+        queue.iter().filter_map(task_id_to_migration_gid).collect()
     }
 
     /// The number of jobs in the waiting queue.
@@ -90,9 +112,10 @@ impl Scheduler {
     ) -> anyhow::Result<usize> {
         use crate::engine::PositionHow;
         let mut queue = self.queue.write();
+        let task_id = TaskId::from_migration_gid(gid.as_raw());
         let cur_pos = queue
             .iter()
-            .position(|g| *g == gid)
+            .position(|queued| *queued == task_id)
             .ok_or_else(|| anyhow::anyhow!("GID {gid} not in queue"))?;
         queue.remove(cur_pos);
         let len = queue.len();
@@ -107,7 +130,7 @@ impl Scheduler {
                 target.max(0).min(len as i64) as usize
             }
         };
-        queue.insert(new_pos, gid);
+        queue.insert(new_pos, task_id);
         Ok(new_pos)
     }
 
@@ -125,7 +148,30 @@ impl Scheduler {
 
         let slots = (max - active_count) as usize;
         let queue = self.queue.read();
-        queue.iter().take(slots).copied().collect()
+        queue
+            .iter()
+            .take(slots)
+            .filter_map(task_id_to_migration_gid)
+            .collect()
+    }
+
+    /// Determine which native task ids should be promoted from queued to running.
+    pub fn native_tasks_to_activate(&self, registry: &JobRegistry) -> Vec<TaskId> {
+        let max = self.max_concurrent.load(Ordering::Relaxed);
+        let active_count = (registry.by_status(Status::Active).len()
+            + registry.by_status(Status::Seeding).len()) as u32;
+        if active_count >= max {
+            return Vec::new();
+        }
+
+        let slots = (max - active_count) as usize;
+        let queue = self.queue.read();
+        queue
+            .iter()
+            .take(slots)
+            .filter(|task_id| registry.get_by_task_id(task_id).is_some())
+            .cloned()
+            .collect()
     }
 
     /// The maximum number of concurrent downloads.
@@ -138,6 +184,14 @@ impl Scheduler {
     pub fn set_max_concurrent(&self, max: u32) {
         self.max_concurrent.store(max.max(1), Ordering::Relaxed);
     }
+}
+
+fn task_id_to_migration_gid(task_id: &TaskId) -> Option<Gid> {
+    task_id
+        .as_str()
+        .strip_prefix("task_migration_")
+        .and_then(|raw| u64::from_str_radix(raw, 16).ok())
+        .map(Gid::from_raw)
 }
 
 #[cfg(test)]
@@ -333,6 +387,22 @@ mod tests {
 
         let to_activate = sched.jobs_to_activate(&reg);
         assert!(to_activate.is_empty());
+    }
+
+    #[test]
+    fn native_tasks_to_activate_returns_task_ids_without_stale_queue_entries() {
+        let sched = Scheduler::new(3);
+        let reg = JobRegistry::new();
+        let job = make_job("https://example.test/file.bin");
+        let task_id = job.task_id.clone();
+
+        reg.insert(job).unwrap();
+        sched.enqueue_task(TaskId::from_migration_gid(999));
+        sched.enqueue_task(task_id.clone());
+
+        let to_activate = sched.native_tasks_to_activate(&reg);
+
+        assert_eq!(to_activate, vec![task_id]);
     }
 
     #[test]

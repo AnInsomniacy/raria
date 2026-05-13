@@ -19,6 +19,7 @@ use crate::config::JobOptions;
 use crate::job::{Gid, Job, Status};
 use crate::limiter::SharedRateLimiter;
 use crate::logging::emit_structured_log;
+use crate::native::{NativeTaskIndex, NativeTaskRow, NativeTaskSummary, TaskId};
 use crate::persist::Store;
 use crate::progress::{DownloadEvent, EventBus};
 use crate::registry::JobRegistry;
@@ -53,6 +54,19 @@ pub struct JobHandle {
     pub gid: Gid,
 }
 
+/// Runtime activation handle for a native task.
+#[derive(Debug)]
+pub struct NativeActivation {
+    /// Public native task id.
+    pub task_id: TaskId,
+    /// Temporary executor bridge id.
+    pub runtime_gid: Gid,
+    /// Current backend kind.
+    pub kind: crate::job::JobKind,
+    /// Cancellation token for this activation.
+    pub cancel: CancellationToken,
+}
+
 /// The download engine.
 pub struct Engine {
     /// Thread-safe job index (read/write job metadata by GID).
@@ -69,6 +83,8 @@ pub struct Engine {
     pub global_rate_limiter: Arc<SharedRateLimiter>,
     /// Per-job limiter handles layered on top of the global limiter.
     job_rate_limiters: Mutex<HashMap<Gid, Arc<SharedRateLimiter>>>,
+    /// Native task id index for the current migration runtime.
+    native_task_index: Mutex<NativeTaskIndex>,
     /// Unique session identifier (random hex, persisted for lifetime of process).
     pub session_id: String,
     store: Option<Arc<Store>>,
@@ -92,6 +108,7 @@ impl Engine {
             config,
             global_rate_limiter,
             job_rate_limiters: Mutex::new(HashMap::new()),
+            native_task_index: Mutex::new(NativeTaskIndex::default()),
             session_id: format!("{:016x}", rand::random::<u64>()),
             store: None,
             shutdown: CancellationToken::new(),
@@ -113,6 +130,7 @@ impl Engine {
             config,
             global_rate_limiter,
             job_rate_limiters: Mutex::new(HashMap::new()),
+            native_task_index: Mutex::new(NativeTaskIndex::default()),
             session_id: format!("{:016x}", rand::random::<u64>()),
             store: Some(store),
             shutdown: CancellationToken::new(),
@@ -142,13 +160,39 @@ impl Engine {
             .as_ref()
             .context("restore called without a store")?;
 
-        let jobs = store
-            .list_jobs()
-            .context("failed to list jobs from store")?;
-        let count = jobs.len();
+        let native_rows = store
+            .list_native_tasks()
+            .context("failed to list native task rows from store")?;
+        let jobs_with_task_ids = if native_rows.is_empty() {
+            store
+                .list_jobs()
+                .context("failed to list jobs from store")?
+                .into_iter()
+                .map(|job| (job, None))
+                .collect::<Vec<_>>()
+        } else {
+            native_rows
+                .iter()
+                .map(|row| {
+                    row.to_job_for_migration()
+                        .map(|job| (job, Some(row.task_id.clone())))
+                })
+                .collect::<std::result::Result<Vec<_>, _>>()
+                .context("failed to restore native task rows")?
+        };
+        let count = jobs_with_task_ids.len();
 
-        for mut job in jobs {
+        for (mut job, task_id) in jobs_with_task_ids {
             let gid = job.gid;
+            if let Some(task_id) = task_id {
+                job.task_id = task_id.clone();
+                self.native_task_index.lock().register(task_id, gid);
+            } else {
+                self.native_task_index
+                    .lock()
+                    .register(job.task_id.clone(), gid);
+            }
+            let task_id_for_queue = job.task_id.clone();
             match job.status {
                 Status::Active | Status::Seeding => {
                     // Process crashed while downloading or seeding — demote to Waiting.
@@ -162,12 +206,12 @@ impl Engine {
                     job.status = Status::Waiting;
                     self.registry.load_from(vec![job]);
                     self.cancel_registry.register(gid);
-                    self.scheduler.enqueue(gid);
+                    self.scheduler.enqueue_task(task_id_for_queue);
                 }
                 Status::Waiting => {
                     self.registry.load_from(vec![job]);
                     self.cancel_registry.register(gid);
-                    self.scheduler.enqueue(gid);
+                    self.scheduler.enqueue_task(task_id_for_queue);
                 }
                 Status::Paused => {
                     // Paused jobs stay paused but are available for unpause.
@@ -191,22 +235,134 @@ impl Engine {
         Ok(count)
     }
 
+    /// Resolve a native task id to the current runtime job id.
+    pub fn gid_for_task_id(&self, task_id: &TaskId) -> Option<Gid> {
+        self.registry
+            .gid_for_task_id(task_id)
+            .or_else(|| self.native_task_index.lock().gid_for_task_id(task_id))
+    }
+
+    /// Register an existing runtime job under a native task id during migration.
+    pub fn register_native_task_id_for_migration(&self, task_id: TaskId, gid: Gid) -> bool {
+        if self.registry.get(gid).is_none() {
+            return false;
+        }
+        self.registry.update(gid, |job| {
+            job.task_id = task_id.clone();
+        });
+        self.native_task_index.lock().register(task_id.clone(), gid);
+        true
+    }
+
+    /// Resolve a runtime job id to the native task id.
+    pub fn task_id_for_gid(&self, gid: Gid) -> Option<TaskId> {
+        self.native_task_index.lock().task_id_for_gid(gid)
+    }
+
+    /// Return a native task projection by native task id.
+    pub fn native_task_summary(&self, task_id: &TaskId) -> Result<NativeTaskSummary> {
+        let gid = self
+            .registry
+            .gid_for_task_id(task_id)
+            .or_else(|| self.native_task_index.lock().gid_for_task_id(task_id))
+            .context("native task not found")?;
+        let job = self
+            .registry
+            .get_by_task_id(task_id)
+            .or_else(|| self.registry.get(gid))
+            .context("native task not found")?;
+        Ok(self.native_task_summary_from_job(&job))
+    }
+
+    /// Return all native task projections.
+    pub fn native_task_summaries(&self) -> Vec<NativeTaskSummary> {
+        self.registry
+            .snapshot()
+            .iter()
+            .map(|job| self.native_task_summary_from_job(job))
+            .collect()
+    }
+
+    /// Submit a new task through the native task facade.
+    pub fn add_native_task(&self, spec: &AddUriSpec) -> Result<NativeTaskSummary> {
+        let task_id = TaskId::new();
+        let _handle = self.add_uri_with_task_id(spec, None, Some(task_id.clone()))?;
+        self.native_task_summary(&task_id)
+    }
+
+    /// Pause a task through the native task facade.
+    pub fn pause_native_task(&self, task_id: &TaskId) -> Result<NativeTaskSummary> {
+        let gid = self
+            .gid_for_task_id(task_id)
+            .context("native task not found")?;
+        self.pause(gid)?;
+        self.native_task_summary(task_id)
+    }
+
+    /// Resume a task through the native task facade.
+    pub fn resume_native_task(&self, task_id: &TaskId) -> Result<NativeTaskSummary> {
+        let gid = self
+            .gid_for_task_id(task_id)
+            .context("native task not found")?;
+        self.unpause(gid)?;
+        self.native_task_summary(task_id)
+    }
+
+    /// Remove a task through the native task facade.
+    pub fn remove_native_task(&self, task_id: &TaskId) -> Result<NativeTaskSummary> {
+        let gid = self
+            .gid_for_task_id(task_id)
+            .context("native task not found")?;
+        self.force_remove(gid)?;
+        self.native_task_summary(task_id)
+    }
+
+    /// Restart a task through the native task facade.
+    pub fn restart_native_task(&self, task_id: &TaskId) -> Result<NativeTaskSummary> {
+        let gid = self
+            .gid_for_task_id(task_id)
+            .context("native task not found")?;
+        self.registry
+            .update(gid, |job| {
+                job.status = Status::Waiting;
+                job.error_msg = None;
+                job.downloaded = 0;
+                job.download_speed = 0;
+                job.upload_speed = 0;
+            })
+            .context("native task not found")?;
+        self.cancel_registry.register(gid);
+        self.scheduler.enqueue_task(task_id.clone());
+        self.persist_job_by_gid(gid);
+        self.event_bus.publish(DownloadEvent::Started { gid });
+        self.work_notify.notify_one();
+        self.native_task_summary(task_id)
+    }
+
+    fn native_task_summary_from_job(&self, job: &Job) -> NativeTaskSummary {
+        let mut summary = NativeTaskSummary::from_job_for_migration(job);
+        summary.task_id = job.task_id.clone();
+        summary
+    }
+
     /// Insert a prepared job into the engine and waiting queue.
     pub fn submit_job(&self, job: Job, queue_position: Option<usize>) -> Result<JobHandle> {
         let gid = job.gid;
+        let task_id = job.task_id.clone();
 
         // Persist BEFORE in-memory state so crash-safe.
         self.persist_job(&job);
 
         self.cancel_registry.register(gid);
+        self.native_task_index.lock().register(task_id.clone(), gid);
         self.registry
             .insert(job)
             .map_err(|e| anyhow::anyhow!("{e}"))
             .context("failed to insert job into registry")?;
         if let Some(position) = queue_position {
-            self.scheduler.enqueue_at(gid, position);
+            self.scheduler.enqueue_task_at(task_id, position);
         } else {
-            self.scheduler.enqueue(gid);
+            self.scheduler.enqueue_task(task_id);
         }
 
         self.event_bus.publish(DownloadEvent::Started { gid });
@@ -240,6 +396,15 @@ impl Engine {
         spec: &AddUriSpec,
         queue_position: Option<usize>,
     ) -> Result<JobHandle> {
+        self.add_uri_with_task_id(spec, queue_position, None)
+    }
+
+    fn add_uri_with_task_id(
+        &self,
+        spec: &AddUriSpec,
+        queue_position: Option<usize>,
+        task_id: Option<TaskId>,
+    ) -> Result<JobHandle> {
         let filename = spec
             .filename
             .clone()
@@ -265,14 +430,16 @@ impl Engine {
         let is_bt = spec.uris.iter().any(|u| u.starts_with("magnet:"));
         let options = JobOptions {
             out: spec.filename.clone(),
+            max_connections: spec.connections.max(1),
             ..JobOptions::default()
         };
 
-        let job = if is_bt {
+        let mut job = if is_bt {
             Job::new_bt_with_options(spec.uris.clone(), out_path, options)
         } else {
             Job::new_range_with_options(spec.uris.clone(), out_path, options)
         };
+        job.task_id = task_id.unwrap_or_else(|| TaskId::from_migration_gid(job.gid.as_raw()));
         self.submit_job(job, queue_position)
     }
 
@@ -287,7 +454,9 @@ impl Engine {
             .context("pause failed")?;
 
         self.cancel_registry.cancel(gid);
-        self.scheduler.dequeue(gid);
+        if let Some(task_id) = self.task_id_for_gid(gid) {
+            self.scheduler.dequeue_task(&task_id);
+        }
 
         self.persist_job_by_gid(gid);
         self.event_bus.publish(DownloadEvent::Paused { gid });
@@ -312,7 +481,9 @@ impl Engine {
             .context("unpause failed")?;
 
         self.cancel_registry.register(gid);
-        self.scheduler.enqueue(gid);
+        if let Some(task_id) = self.task_id_for_gid(gid) {
+            self.scheduler.enqueue_task(task_id);
+        }
 
         self.persist_job_by_gid(gid);
         self.work_notify.notify_one();
@@ -330,7 +501,9 @@ impl Engine {
     /// Remove a job (any state → Removed).
     pub fn remove(&self, gid: Gid) -> Result<()> {
         self.cancel_registry.cancel(gid);
-        self.scheduler.dequeue(gid);
+        if let Some(task_id) = self.task_id_for_gid(gid) {
+            self.scheduler.dequeue_task(&task_id);
+        }
 
         self.registry
             .update(gid, |job| {
@@ -358,6 +531,26 @@ impl Engine {
         self.scheduler.jobs_to_activate(&self.registry)
     }
 
+    /// Get the native task ids eligible for activation.
+    pub fn activatable_native_tasks(&self) -> Vec<TaskId> {
+        self.scheduler.native_tasks_to_activate(&self.registry)
+    }
+
+    /// Transition a native task from queued to running.
+    pub fn activate_native_task(&self, task_id: &TaskId) -> Result<NativeActivation> {
+        let gid = self
+            .gid_for_task_id(task_id)
+            .context("native task not found")?;
+        let cancel = self.activate_job(gid)?;
+        let job = self.registry.get(gid).context("native task not found")?;
+        Ok(NativeActivation {
+            task_id: job.task_id,
+            runtime_gid: gid,
+            kind: job.kind,
+            cancel,
+        })
+    }
+
     /// Transition a job from Waiting → Active.
     ///
     /// Returns the CancellationToken for this job so the caller can pass it
@@ -371,7 +564,9 @@ impl Engine {
             .context("job not found")?
             .context("activation failed")?;
 
-        self.scheduler.dequeue(gid);
+        if let Some(task_id) = self.task_id_for_gid(gid) {
+            self.scheduler.dequeue_task(&task_id);
+        }
         self.persist_job_by_gid(gid);
         self.event_bus.publish(DownloadEvent::Started { gid });
         debug!(%gid, "job activated");
@@ -576,6 +771,68 @@ impl Engine {
         self.shutdown.cancel();
     }
 
+    /// Cancel currently running native tasks while leaving task state persistence to shutdown flow.
+    pub fn cancel_active_native_tasks(&self) -> usize {
+        let active = self.registry.by_status(Status::Active);
+        let seeding = self.registry.by_status(Status::Seeding);
+        let mut count = 0;
+        for job in active.iter().chain(seeding.iter()) {
+            if self.cancel_registry.cancel(job.gid) {
+                count += 1;
+            }
+        }
+        count
+    }
+
+    /// Update progress through a native task id.
+    pub fn update_native_progress(&self, task_id: &TaskId, bytes: u64) -> Result<()> {
+        let gid = self
+            .gid_for_task_id(task_id)
+            .context("native task not found")?;
+        self.update_progress(gid, bytes);
+        Ok(())
+    }
+
+    /// Set runtime connection count through a native task id.
+    pub fn set_native_runtime_connections(&self, task_id: &TaskId, connections: u32) -> Result<()> {
+        let gid = self
+            .gid_for_task_id(task_id)
+            .context("native task not found")?;
+        self.registry
+            .update(gid, |job| {
+                job.connections = connections;
+            })
+            .context("native task not found")?;
+        Ok(())
+    }
+
+    /// Complete a native task after executor success.
+    pub fn complete_native_task(&self, task_id: &TaskId, downloaded: u64) -> Result<()> {
+        let gid = self
+            .gid_for_task_id(task_id)
+            .context("native task not found")?;
+        self.registry
+            .update(gid, |job| {
+                job.downloaded = downloaded;
+                job.connections = 0;
+            })
+            .context("native task not found")?;
+        self.complete_job(gid)
+    }
+
+    /// Fail a native task after executor failure.
+    pub fn fail_native_task(&self, task_id: &TaskId, error_msg: &str) -> Result<()> {
+        let gid = self
+            .gid_for_task_id(task_id)
+            .context("native task not found")?;
+        self.registry
+            .update(gid, |job| {
+                job.connections = 0;
+            })
+            .context("native task not found")?;
+        self.fail_job(gid, error_msg)
+    }
+
     /// Get the work notifier for the run loop.
     pub fn work_notify(&self) -> Arc<Notify> {
         Arc::clone(&self.work_notify)
@@ -652,7 +909,9 @@ impl Engine {
     pub fn force_remove(&self, gid: Gid) -> Result<()> {
         // Cancel first — even if the task is still running.
         self.cancel_registry.cancel(gid);
-        self.scheduler.dequeue(gid);
+        if let Some(task_id) = self.task_id_for_gid(gid) {
+            self.scheduler.dequeue_task(&task_id);
+        }
         self.clear_job_rate_limiter(gid);
 
         // Force transition to Removed regardless of current state.
@@ -749,6 +1008,13 @@ impl Engine {
             store
                 .put_job(job)
                 .with_context(|| format!("failed to persist job {}", job.gid))?;
+            let mut row = NativeTaskRow::from_job_for_migration(job);
+            if let Some(task_id) = self.task_id_for_gid(job.gid) {
+                row.task_id = task_id;
+            }
+            store
+                .put_native_task(&row)
+                .with_context(|| format!("failed to persist native task row {}", job.gid))?;
         }
         info!(count = jobs.len(), "session saved");
         Ok(())
@@ -816,6 +1082,104 @@ mod tests {
         assert_eq!(job.kind, JobKind::Range);
         assert!(!job.uris.is_empty());
         assert_eq!(engine.scheduler.queue_len(), 1);
+        let task_id = engine.task_id_for_gid(handle.gid).expect("task id");
+        assert_eq!(engine.gid_for_task_id(&task_id), Some(handle.gid));
+    }
+
+    #[test]
+    fn register_native_task_id_for_migration_requires_existing_job() {
+        let engine = Engine::new(default_config());
+        let task_id = TaskId::new();
+
+        assert!(!engine.register_native_task_id_for_migration(task_id.clone(), Gid::from_raw(404)));
+
+        let handle = engine.add_uri(&default_spec()).unwrap();
+        assert!(engine.register_native_task_id_for_migration(task_id.clone(), handle.gid));
+        assert_eq!(engine.gid_for_task_id(&task_id), Some(handle.gid));
+    }
+
+    #[test]
+    fn native_task_facade_creates_opaque_task_and_controls_lifecycle() {
+        let engine = Engine::new(default_config());
+
+        let created = engine.add_native_task(&default_spec()).unwrap();
+        assert!(created.task_id.as_str().starts_with("task_"));
+        assert!(!created.task_id.as_str().starts_with("task_migration_"));
+        assert_eq!(created.lifecycle, crate::native::TaskLifecycle::Queued);
+
+        let paused = engine.pause_native_task(&created.task_id).unwrap();
+        assert_eq!(paused.lifecycle, crate::native::TaskLifecycle::Paused);
+
+        let resumed = engine.resume_native_task(&created.task_id).unwrap();
+        assert_eq!(resumed.lifecycle, crate::native::TaskLifecycle::Queued);
+
+        let restarted = engine.restart_native_task(&created.task_id).unwrap();
+        assert_eq!(restarted.lifecycle, crate::native::TaskLifecycle::Queued);
+
+        let removed = engine.remove_native_task(&created.task_id).unwrap();
+        assert_eq!(removed.lifecycle, crate::native::TaskLifecycle::Removed);
+    }
+
+    #[test]
+    fn native_activation_uses_task_id_with_runtime_bridge() {
+        let engine = Engine::new(default_config());
+        let created = engine.add_native_task(&default_spec()).unwrap();
+
+        let activatable = engine.activatable_native_tasks();
+        assert_eq!(activatable, vec![created.task_id.clone()]);
+
+        let activation = engine.activate_native_task(&created.task_id).unwrap();
+        assert_eq!(activation.task_id, created.task_id);
+        assert_eq!(activation.kind, JobKind::Range);
+        assert!(!activation.cancel.is_cancelled());
+
+        let job = engine.registry.get(activation.runtime_gid).unwrap();
+        assert_eq!(job.status, Status::Active);
+    }
+
+    #[test]
+    fn cancel_active_native_tasks_cancels_running_tokens_without_public_gid_access() {
+        let engine = Engine::new(default_config());
+        let created = engine.add_native_task(&default_spec()).unwrap();
+        let activation = engine.activate_native_task(&created.task_id).unwrap();
+
+        engine.cancel_active_native_tasks();
+
+        assert!(activation.cancel.is_cancelled());
+    }
+
+    #[test]
+    fn native_runtime_helpers_update_progress_and_terminal_state() {
+        let engine = Engine::new(default_config());
+        let created = engine.add_native_task(&default_spec()).unwrap();
+        let activation = engine.activate_native_task(&created.task_id).unwrap();
+
+        engine
+            .update_native_progress(&created.task_id, 128)
+            .unwrap();
+        engine
+            .set_native_runtime_connections(&created.task_id, 2)
+            .unwrap();
+        engine.complete_native_task(&created.task_id, 512).unwrap();
+
+        let job = engine.registry.get(activation.runtime_gid).unwrap();
+        assert_eq!(job.downloaded, 512);
+        assert_eq!(job.connections, 0);
+        assert_eq!(job.status, Status::Complete);
+    }
+
+    #[test]
+    fn add_uri_applies_requested_connection_count_to_job_options() {
+        let engine = Engine::new(default_config());
+        let handle = engine
+            .add_uri(&AddUriSpec {
+                connections: 3,
+                ..default_spec()
+            })
+            .unwrap();
+
+        let job = engine.registry.get(handle.gid).unwrap();
+        assert_eq!(job.options.max_connections, 3);
     }
 
     #[test]
@@ -1237,6 +1601,39 @@ mod tests {
     }
 
     #[test]
+    fn engine_restore_prefers_native_task_rows_when_available() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("native-restore.redb");
+        let store = Arc::new(Store::open(&db_path).unwrap());
+        let engine1 = Engine::with_store(default_config(), Arc::clone(&store));
+        let handle = engine1.add_uri(&default_spec()).unwrap();
+        let gid = handle.gid;
+        let mut native_row =
+            NativeTaskRow::from_job_for_migration(&engine1.registry.get(gid).expect("job"));
+        native_row.sources = vec!["https://native.example/file.bin".into()];
+        native_row.output_path = PathBuf::from("/tmp/native/file.bin");
+        native_row.completed_bytes = 512;
+        native_row.total_bytes = Some(2048);
+        native_row.segments = 3;
+        store.put_native_task(&native_row).unwrap();
+        drop(engine1);
+
+        let engine2 = Engine::with_store(default_config(), Arc::clone(&store));
+        let count = engine2.restore().unwrap();
+
+        assert_eq!(count, 1);
+        let restored = engine2.registry.get(gid).expect("restored job");
+        assert_eq!(restored.uris, vec!["https://native.example/file.bin"]);
+        assert_eq!(restored.out_path, PathBuf::from("/tmp/native/file.bin"));
+        assert_eq!(restored.downloaded, 512);
+        assert_eq!(restored.total_size, Some(2048));
+        assert_eq!(restored.options.max_connections, 3);
+        let task_id = engine2.task_id_for_gid(gid).expect("task id");
+        assert_eq!(task_id, native_row.task_id);
+        assert_eq!(engine2.gid_for_task_id(&task_id), Some(gid));
+    }
+
+    #[test]
     fn engine_restore_demotes_active_to_waiting() {
         let dir = tempfile::tempdir().unwrap();
         let db_path = dir.path().join("crash.redb");
@@ -1559,6 +1956,45 @@ mod tests {
         let store = engine.store.as_ref().unwrap();
         assert!(store.get_job(h1.gid).unwrap().is_some());
         assert!(store.get_job(h2.gid).unwrap().is_some());
+    }
+
+    #[test]
+    fn save_session_persists_native_task_rows() {
+        let (engine, _dir) = engine_with_store();
+        let h1 = engine.add_uri(&default_spec()).unwrap();
+        let h2 = engine.add_uri(&default_spec()).unwrap();
+        engine.pause(h2.gid).unwrap();
+
+        engine.save_session().unwrap();
+
+        let store = engine.store.as_ref().unwrap();
+        let rows = store.list_native_tasks().unwrap();
+        assert_eq!(rows.len(), 2);
+        assert!(rows.iter().any(|row| {
+            row.task_id.as_str() == format!("task_migration_{:016x}", h1.gid.as_raw())
+                && row.lifecycle == crate::native::TaskLifecycle::Queued
+        }));
+        assert!(rows.iter().any(|row| {
+            row.task_id.as_str() == format!("task_migration_{:016x}", h2.gid.as_raw())
+                && row.lifecycle == crate::native::TaskLifecycle::Paused
+        }));
+    }
+
+    #[test]
+    fn save_session_preserves_registered_native_task_ids() {
+        let (engine, _dir) = engine_with_store();
+        let handle = engine.add_uri(&default_spec()).unwrap();
+        let task_id = TaskId::new();
+        assert!(engine.register_native_task_id_for_migration(task_id.clone(), handle.gid));
+
+        engine.save_session().unwrap();
+
+        let store = engine.store.as_ref().unwrap();
+        let row = store
+            .get_native_task(&task_id)
+            .unwrap()
+            .expect("native task row");
+        assert_eq!(row.task_id, task_id);
     }
 
     #[test]

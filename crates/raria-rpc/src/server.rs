@@ -12,6 +12,7 @@
 // while the transport contract is owned explicitly here so we can provide
 // aria2-compatible same-socket notifications.
 
+use crate::api::native_api_router;
 use crate::events::{all_notification_method_names, event_to_notification_method};
 use crate::methods::{Aria2RpcServer, RpcHandler};
 use anyhow::{Context, Result};
@@ -161,7 +162,11 @@ pub async fn start_rpc_server(
         .route("/", post(handle_http_rpc).get(handle_ws_rpc))
         .route("/jsonrpc", post(handle_http_rpc).get(handle_ws_rpc))
         .route("/health", get(handle_health))
-        .with_state(app_state);
+        .with_state(app_state)
+        .merge(native_api_router(
+            Arc::clone(&engine),
+            engine.config.api_auth_token.clone(),
+        ));
     if engine.config.rpc_allow_origin_all {
         let cors = CorsLayer::new()
             .allow_origin(Any)

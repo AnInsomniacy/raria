@@ -11,7 +11,7 @@ use clap::{Parser, Subcommand};
 use raria_core::config::{BtMinCryptoLevel, GlobalConfig};
 use std::ffi::OsString;
 use std::path::PathBuf;
-use tracing::{error, info, warn};
+use tracing::{error, info};
 use tracing_subscriber::EnvFilter;
 
 #[cfg(unix)]
@@ -73,6 +73,16 @@ mod tests {
         };
         assert_eq!(bt_require_crypto, Some(false));
     }
+
+    #[test]
+    fn daemon_accepts_native_api_port_name() {
+        let cli = Cli::try_parse_from(["raria", "daemon", "--api-port", "7777"])
+            .expect("parse native API port");
+        let Commands::Daemon { api_port, .. } = cli.command else {
+            panic!("expected daemon command");
+        };
+        assert_eq!(api_port, 7777);
+    }
 }
 
 #[derive(Parser)]
@@ -97,7 +107,7 @@ struct Cli {
     #[arg(long, short = 'q', default_value_t = false, global = true)]
     quiet: bool,
 
-    /// Path to configuration file (aria2-compatible format)
+    /// Path to native raria.toml configuration file.
     #[arg(long, global = true)]
     conf_path: Option<PathBuf>,
 }
@@ -239,7 +249,7 @@ enum Commands {
         sftp_private_key_passphrase: Option<String>,
     },
 
-    /// Run as a persistent daemon with RPC server
+    /// Run as a persistent daemon with native API server.
     Daemon {
         /// Output directory for downloads
         #[arg(short = 'd', long, default_value = ".")]
@@ -257,9 +267,9 @@ enum Commands {
         #[arg(long)]
         save_session_interval: Option<u64>,
 
-        /// RPC listen port
-        #[arg(long, default_value_t = 6800)]
-        rpc_port: u16,
+        /// Native API listen port.
+        #[arg(long = "api-port", alias = "rpc-port", default_value_t = 6800)]
+        api_port: u16,
 
         /// Maximum download speed (bytes/sec, 0 = unlimited)
         #[arg(long, default_value_t = 0)]
@@ -361,11 +371,11 @@ enum Commands {
         #[arg(long)]
         on_download_error: Option<PathBuf>,
 
-        /// RPC secret token for authentication
+        /// Legacy JSON-RPC secret token for migration-only authentication.
         #[arg(long)]
         rpc_secret: Option<String>,
 
-        /// Allow browser clients from any origin to access HTTP JSON-RPC.
+        /// Allow browser clients from any origin to access the legacy JSON-RPC route.
         #[arg(long, default_value_t = false)]
         rpc_allow_origin_all: bool,
 
@@ -497,27 +507,20 @@ async fn main() -> Result<()> {
 
     let mut base_config = GlobalConfig::default();
     if let Some(ref conf_path) = cli.conf_path {
-        use raria_core::config_file::{ConfigParseMode, load_config_file_with_mode};
-        // Daemon mode: fail-fast on invalid config values.
-        // Single download: tolerate invalid values for aria2 compatibility.
-        let mode = if matches!(&cli.command, Commands::Daemon { .. }) {
-            ConfigParseMode::Strict
-        } else {
-            ConfigParseMode::Lenient
-        };
-        match load_config_file_with_mode(&mut base_config, conf_path, mode) {
-            Ok(()) => info!(path = %conf_path.display(), "loaded configuration file"),
-            Err(e) if mode == ConfigParseMode::Strict => {
+        match raria_core::native_config::RariaConfig::from_toml_file(conf_path)
+            .and_then(|config| config.to_global_config())
+        {
+            Ok(config) => {
+                base_config = config;
+                info!(path = %conf_path.display(), "loaded native raria configuration file");
+            }
+            Err(e) => {
                 error!(
                     path = %conf_path.display(), error = %e,
-                    "invalid configuration — daemon mode requires valid config"
+                    "invalid native raria configuration"
                 );
                 std::process::exit(1);
             }
-            Err(e) => warn!(
-                path = %conf_path.display(), error = %e,
-                "failed to load configuration file"
-            ),
         }
     }
 
@@ -601,7 +604,7 @@ async fn main() -> Result<()> {
             session_file,
             daemonize,
             save_session_interval,
-            rpc_port,
+            api_port,
             max_download_limit,
             max_tries,
             retry_wait,
@@ -650,7 +653,7 @@ async fn main() -> Result<()> {
             config.max_concurrent_downloads = cli.max_concurrent;
             config.max_overall_download_limit = max_download_limit;
             config.quiet = cli.quiet;
-            config.rpc_listen_port = rpc_port;
+            config.rpc_listen_port = api_port;
             config.enable_rpc = true;
             config.session_file = session_file.clone();
             if let Some(max_tries) = max_tries {

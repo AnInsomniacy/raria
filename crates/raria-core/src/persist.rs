@@ -5,6 +5,7 @@
 
 use crate::config::JobOptions;
 use crate::job::{Gid, Job};
+use crate::native::{NativeStoreMetadata, NativeTaskRow, TaskId};
 use crate::segment::SegmentState;
 use anyhow::{Context, Result};
 use redb::{Database, ReadableTable, TableDefinition};
@@ -22,6 +23,16 @@ const JOB_OPTIONS_TABLE: TableDefinition<u64, &str> = TableDefinition::new("job_
 
 /// Table: global_state — stores global key-value pairs (e.g., "next_gid", "config").
 const GLOBAL_STATE_TABLE: TableDefinition<&str, &str> = TableDefinition::new("global_state");
+
+/// Table: native_metadata — stores versioned native store metadata.
+const NATIVE_METADATA_TABLE: TableDefinition<&str, &str> = TableDefinition::new("native_metadata");
+
+/// Table: native_tasks — stores versioned native task rows keyed by task id.
+const NATIVE_TASKS_TABLE: TableDefinition<&str, &str> = TableDefinition::new("native_tasks");
+
+/// Table: native_segments — stores SegmentState keyed by native task id and segment id.
+const NATIVE_SEGMENTS_TABLE: TableDefinition<(&str, u32), &str> =
+    TableDefinition::new("native_segments");
 
 /// Persistent storage for raria state.
 #[derive(Clone)]
@@ -41,6 +52,14 @@ impl Store {
             let _ = write_txn.open_table(SEGMENTS_TABLE)?;
             let _ = write_txn.open_table(JOB_OPTIONS_TABLE)?;
             let _ = write_txn.open_table(GLOBAL_STATE_TABLE)?;
+            let mut metadata = write_txn.open_table(NATIVE_METADATA_TABLE)?;
+            if metadata.get("store")?.is_none() {
+                let row = NativeStoreMetadata::new(format!("store_{:016x}", rand::random::<u64>()));
+                let json = serde_json::to_string(&row)?;
+                metadata.insert("store", json.as_str())?;
+            }
+            let _ = write_txn.open_table(NATIVE_TASKS_TABLE)?;
+            let _ = write_txn.open_table(NATIVE_SEGMENTS_TABLE)?;
         }
         write_txn.commit()?;
 
@@ -169,6 +188,82 @@ impl Store {
         Ok(count)
     }
 
+    /// Insert or update a segment state by native task id.
+    pub fn put_native_segment(
+        &self,
+        task_id: &TaskId,
+        seg_id: u32,
+        state: &SegmentState,
+    ) -> Result<()> {
+        let json = serde_json::to_string(state)?;
+        let write_txn = self.db.begin_write()?;
+        {
+            let mut table = write_txn.open_table(NATIVE_SEGMENTS_TABLE)?;
+            table.insert((task_id.as_str(), seg_id), json.as_str())?;
+        }
+        write_txn.commit()?;
+        Ok(())
+    }
+
+    /// Retrieve a segment state by native task id.
+    pub fn get_native_segment(
+        &self,
+        task_id: &TaskId,
+        seg_id: u32,
+    ) -> Result<Option<SegmentState>> {
+        let read_txn = self.db.begin_read()?;
+        let table = read_txn.open_table(NATIVE_SEGMENTS_TABLE)?;
+        match table.get((task_id.as_str(), seg_id))? {
+            Some(guard) => {
+                let state: SegmentState = serde_json::from_str(guard.value())?;
+                Ok(Some(state))
+            }
+            None => Ok(None),
+        }
+    }
+
+    /// List all segments for a native task.
+    pub fn list_native_segments(&self, task_id: &TaskId) -> Result<Vec<(u32, SegmentState)>> {
+        let read_txn = self.db.begin_read()?;
+        let table = read_txn.open_table(NATIVE_SEGMENTS_TABLE)?;
+        let mut segments = Vec::new();
+        for entry in table.iter()? {
+            let (key, value) = entry?;
+            let (row_task_id, seg_id) = key.value();
+            if row_task_id == task_id.as_str() {
+                let state: SegmentState = serde_json::from_str(value.value())?;
+                segments.push((seg_id, state));
+            }
+        }
+        Ok(segments)
+    }
+
+    /// Remove all segments for a native task.
+    pub fn remove_native_segments(&self, task_id: &TaskId) -> Result<u32> {
+        let write_txn = self.db.begin_write()?;
+        let mut count = 0u32;
+        {
+            let mut table = write_txn.open_table(NATIVE_SEGMENTS_TABLE)?;
+            let keys: Vec<(String, u32)> = {
+                let mut keys = Vec::new();
+                for entry in table.iter()? {
+                    let (key, _) = entry?;
+                    let (row_task_id, seg_id) = key.value();
+                    if row_task_id == task_id.as_str() {
+                        keys.push((row_task_id.to_string(), seg_id));
+                    }
+                }
+                keys
+            };
+            for (row_task_id, seg_id) in keys {
+                table.remove((row_task_id.as_str(), seg_id))?;
+                count += 1;
+            }
+        }
+        write_txn.commit()?;
+        Ok(count)
+    }
+
     // ── Job Options ───────────────────────────────────────────────────
 
     /// Insert or update job options.
@@ -218,12 +313,70 @@ impl Store {
             None => Ok(None),
         }
     }
+
+    // ── Native Store Schema ──────────────────────────────────────────
+
+    /// Return the native store metadata row.
+    pub fn native_metadata(&self) -> Result<NativeStoreMetadata> {
+        let read_txn = self.db.begin_read()?;
+        let table = read_txn.open_table(NATIVE_METADATA_TABLE)?;
+        let value = table
+            .get("store")?
+            .context("native store metadata is missing")?;
+        let metadata: NativeStoreMetadata = serde_json::from_str(value.value())?;
+        Ok(metadata)
+    }
+
+    /// Insert or update a native task row.
+    pub fn put_native_task(&self, row: &NativeTaskRow) -> Result<()> {
+        row.validate_version()
+            .context("unsupported native task row version")?;
+        let json = serde_json::to_string(row)?;
+        let write_txn = self.db.begin_write()?;
+        {
+            let mut table = write_txn.open_table(NATIVE_TASKS_TABLE)?;
+            table.insert(row.task_id.as_str(), json.as_str())?;
+        }
+        write_txn.commit()?;
+        Ok(())
+    }
+
+    /// Retrieve a native task row by task id.
+    pub fn get_native_task(&self, task_id: &TaskId) -> Result<Option<NativeTaskRow>> {
+        let read_txn = self.db.begin_read()?;
+        let table = read_txn.open_table(NATIVE_TASKS_TABLE)?;
+        match table.get(task_id.as_str())? {
+            Some(guard) => {
+                let row: NativeTaskRow = serde_json::from_str(guard.value())?;
+                row.validate_version()
+                    .context("unsupported native task row version")?;
+                Ok(Some(row))
+            }
+            None => Ok(None),
+        }
+    }
+
+    /// List all native task rows.
+    pub fn list_native_tasks(&self) -> Result<Vec<NativeTaskRow>> {
+        let read_txn = self.db.begin_read()?;
+        let table = read_txn.open_table(NATIVE_TASKS_TABLE)?;
+        let mut rows = Vec::new();
+        for entry in table.iter()? {
+            let (_, value) = entry?;
+            let row: NativeTaskRow = serde_json::from_str(value.value())?;
+            row.validate_version()
+                .context("unsupported native task row version")?;
+            rows.push(row);
+        }
+        Ok(rows)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::job::Gid;
+    use crate::native::TaskLifecycle;
     use crate::segment::SegmentStatus;
     use std::path::PathBuf;
 
@@ -390,6 +543,7 @@ mod tests {
     fn put_get_segment_roundtrips() {
         let (store, _dir) = temp_store();
         let gid = Gid::from_raw(1);
+        let task_id = TaskId::new();
         let seg = SegmentState {
             start: 0,
             end: 1000,
@@ -405,6 +559,41 @@ mod tests {
         assert_eq!(recovered.end, 1000);
         assert_eq!(recovered.downloaded, 500);
         assert_eq!(recovered.etag.as_deref(), Some("abc"));
+
+        store.put_native_segment(&task_id, 0, &seg).unwrap();
+        let native_recovered = store
+            .get_native_segment(&task_id, 0)
+            .unwrap()
+            .expect("native segment exists");
+        assert_eq!(native_recovered.start, 0);
+        assert_eq!(native_recovered.end, 1000);
+        assert_eq!(native_recovered.downloaded, 500);
+        assert_eq!(native_recovered.etag.as_deref(), Some("abc"));
+    }
+
+    #[test]
+    fn native_segments_are_keyed_by_task_id() {
+        let (store, _dir) = temp_store();
+        let task_a = TaskId::new();
+        let task_b = TaskId::new();
+
+        let seg = SegmentState {
+            start: 0,
+            end: 100,
+            downloaded: 0,
+            etag: None,
+            status: SegmentStatus::Pending,
+        };
+
+        store.put_native_segment(&task_a, 0, &seg).unwrap();
+        store.put_native_segment(&task_a, 1, &seg).unwrap();
+        store.put_native_segment(&task_b, 0, &seg).unwrap();
+
+        assert_eq!(store.list_native_segments(&task_a).unwrap().len(), 2);
+        assert_eq!(store.list_native_segments(&task_b).unwrap().len(), 1);
+        assert_eq!(store.remove_native_segments(&task_a).unwrap(), 2);
+        assert!(store.list_native_segments(&task_a).unwrap().is_empty());
+        assert_eq!(store.list_native_segments(&task_b).unwrap().len(), 1);
     }
 
     #[test]
@@ -496,6 +685,51 @@ mod tests {
         store.put_global("key", "v2").unwrap();
         let val = store.get_global("key").unwrap().unwrap();
         assert_eq!(val, "v2");
+    }
+
+    #[test]
+    fn native_metadata_is_created_when_store_opens() {
+        let (store, _dir) = temp_store();
+
+        let metadata = store.native_metadata().unwrap();
+
+        assert_eq!(
+            metadata.schema_version,
+            NativeStoreMetadata::CURRENT_SCHEMA_VERSION
+        );
+        assert!(metadata.store_id.starts_with("store_"));
+    }
+
+    #[test]
+    fn native_task_rows_roundtrip_by_task_id() {
+        let (store, _dir) = temp_store();
+        let task_id = TaskId::new();
+        let row = NativeTaskRow::new(task_id.clone(), TaskLifecycle::Queued);
+
+        store.put_native_task(&row).unwrap();
+        let recovered = store
+            .get_native_task(&task_id)
+            .unwrap()
+            .expect("native task row");
+
+        assert_eq!(recovered.task_id, task_id);
+        assert_eq!(recovered.lifecycle, TaskLifecycle::Queued);
+        assert_eq!(recovered.row_version, NativeTaskRow::CURRENT_ROW_VERSION);
+    }
+
+    #[test]
+    fn list_native_task_rows_returns_all_rows() {
+        let (store, _dir) = temp_store();
+        let first = NativeTaskRow::new(TaskId::new(), TaskLifecycle::Queued);
+        let second = NativeTaskRow::new(TaskId::new(), TaskLifecycle::Paused);
+
+        store.put_native_task(&first).unwrap();
+        store.put_native_task(&second).unwrap();
+
+        let rows = store.list_native_tasks().unwrap();
+        assert_eq!(rows.len(), 2);
+        assert!(rows.iter().any(|row| row.task_id == first.task_id));
+        assert!(rows.iter().any(|row| row.task_id == second.task_id));
     }
 
     /// Integration test: simulate checkpoint + resume cycle.

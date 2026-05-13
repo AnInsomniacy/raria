@@ -498,8 +498,6 @@ impl SegmentExecutor {
                 }
             }
 
-            on_progress(seg_id, n as u64);
-
             if lowest_speed_limit_bps > 0 && attempt_started_at.elapsed() >= lowest_speed_grace {
                 let elapsed_secs = attempt_started_at.elapsed().as_secs_f64().max(0.001);
                 let avg_bps = (bytes_this_attempt as f64 / elapsed_secs) as u64;
@@ -517,6 +515,8 @@ impl SegmentExecutor {
                 }
                 bytes_since_checkpoint = 0;
             }
+
+            on_progress(seg_id, n as u64);
         }
 
         file.flush().await?;

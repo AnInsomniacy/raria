@@ -3,9 +3,9 @@
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/rust-1.85%2B-orange.svg)](https://www.rust-lang.org/)
 
-`raria` is a Rust download engine focused on backend correctness, honest capability projection, and practical aria2-style interoperability.
+`raria` is a modern Rust download manager focused on backend correctness, durable task state, protocol coverage, and a native control model.
 
-It is not a nostalgia project and it is not trying to reproduce every historical aria2 quirk. The target is a production-grade Rust downloader with a usable aria2-style JSON-RPC and WebSocket control surface, explicit stop-lines where parity is not worth forcing, and repository documentation that matches the code.
+The project uses aria2 as a feature reference, not as an API, storage, or configuration compatibility target. The long-term public surface is native raria: `raria.toml`, `/api/v1` JSON resources, `/api/v1/events` WebSocket events, versioned persistence schemas, and CLI names that describe raria concepts directly.
 
 ## Current Status
 
@@ -13,11 +13,11 @@ The current tree is a real backend, not a skeleton:
 
 - multi-protocol downloads across HTTP, HTTPS, FTP, FTPS, SFTP, BitTorrent, and Metalink
 - segmented range downloads, restart and resume, session persistence, and restore
-- aria2-style JSON-RPC daemon behavior with WebSocket notifications
+- native HTTP JSON daemon routes with a WebSocket event stream
 - checksum enforcement, conditional GET, mirror failover, and daemon-path Metalink execution
 - structured JSON file logging for the highest-value runtime surfaces
 
-The repository uses explicit stop-lines instead of pretending unsupported parity exists.
+The migration is still in progress. Several internal paths and tests continue to use the old JSON-RPC layer as a temporary regression harness while native equivalents are being built.
 
 ## Implemented Capabilities
 
@@ -28,8 +28,8 @@ The repository uses explicit stop-lines instead of pretending unsupported parity
 | SFTP                  | Password and key auth, strict known-host verification, proxy support                                                                                                                   |
 | BitTorrent            | Magnet and torrent ingestion, file selection intent, metadata projection, tracker override support, peer projection, `Active -> Seeding -> Complete`, one-shot BT completion semantics |
 | Metalink              | XML parsing, normalization, mirror priority handling, checksum and piece-checksum wiring, relation projection, daemon-path mirror failover                                             |
-| Daemon control plane  | aria2-style JSON-RPC methods, multicall, session info, global stat, option mutation, health endpoint, WebSocket notifications                                                          |
-| Runtime observability | Structured JSON file logs, session correlation, daemon lifecycle events, mirror/source failure events, BT lifecycle events, restore events, RPC control and WS emission logs           |
+| Daemon control plane  | Native `/api/v1` health, config, task, stats, task-control, and event routes, with remaining JSON-RPC code used as a migration harness                                                 |
+| Runtime observability | Structured JSON file logs, session correlation, daemon lifecycle events, mirror/source failure events, BT lifecycle events, restore events, native control events, and WS emission logs |
 | Persistence           | `redb`-backed job/session persistence and restore across daemon restart                                                                                                                |
 
 ## Verified Runtime Behaviors
@@ -40,7 +40,7 @@ These behaviors are backed by repository tests and current code:
 - throttled active downloads respond correctly to runtime limit changes
 - signal-driven daemon shutdown cancels throttled active downloads promptly
 - mirror failover emits non-terminal `SourceFailed` events before eventual completion
-- `SourceFailed` is available as the extension-style notification `aria2.onSourceFailed`; it is not currently counted as confirmed legacy aria2 parity
+- source-failure events are available through the native event model and older migration notification path
 - terminal checksum and piece-integrity failures reject invalid output instead of leaving corrupt files behind
 - structured log files redact obvious secrets and credential-bearing URLs on covered paths
 
@@ -48,34 +48,25 @@ The durable verification contract lives in [`docs/verification-contract.md`](doc
 
 ## Control Surface
 
-`raria` provides an aria2-style JSON-RPC and WebSocket control plane intended for downstream clients that already understand the aria2 model.
+The native daemon control surface is an HTTP JSON API under `/api/v1`.
 
-Current surface highlights:
+Current native routes include:
 
-- `aria2.addUri`
-- `aria2.addTorrent`
-- `aria2.addMetalink`
-- `aria2.tellStatus`, `aria2.tellActive`, `aria2.tellWaiting`, `aria2.tellStopped`
-- `aria2.getFiles`, `aria2.getUris`, `aria2.getPeers`, `aria2.getServers`
-- `aria2.getOption`, `aria2.changeOption`
-- `aria2.getGlobalOption`, `aria2.changeGlobalOption`
-- `aria2.pause`, `aria2.unpause`, `aria2.pauseAll`, `aria2.unpauseAll`
-- `aria2.remove`, `aria2.forceRemove`, `aria2.removeDownloadResult`, `aria2.purgeDownloadResult`
-- `aria2.shutdown`, `aria2.saveSession`, `aria2.getVersion`, `aria2.getSessionInfo`
-- `system.multicall`, `system.listMethods`, `system.listNotifications`
+- `GET /api/v1/health`
+- `GET /api/v1/config`
+- `GET /api/v1/stats`
+- `GET /api/v1/tasks`
+- `POST /api/v1/tasks`
+- `GET /api/v1/tasks/{taskId}`
+- `DELETE /api/v1/tasks/{taskId}`
+- `POST /api/v1/tasks/{taskId}/pause`
+- `POST /api/v1/tasks/{taskId}/resume`
+- `POST /api/v1/tasks/{taskId}/restart`
+- `GET /api/v1/tasks/{taskId}/files`
+- `GET /api/v1/tasks/{taskId}/sources`
+- `GET /api/v1/events`
 
-Current WebSocket notification coverage includes confirmed parity surfaces:
-
-- `aria2.onDownloadStart`
-- `aria2.onDownloadPause`
-- `aria2.onDownloadStop`
-- `aria2.onDownloadComplete`
-- `aria2.onDownloadError`
-- `aria2.onBtDownloadComplete`
-
-Current extension surface includes:
-
-- extension notification `aria2.onSourceFailed`
+The event stream uses stable raria event names such as `task.started`, `task.progress`, `task.paused`, `task.completed`, `task.failed`, `task.removed`, and `task.source.failed`.
 
 ## Structured Logging
 
@@ -85,7 +76,7 @@ The bounded logging contract currently covers:
 
 - daemon lifecycle and download loop
 - core task lifecycle and failure paths
-- RPC mutation and WebSocket notification emission
+- control-plane mutation and WebSocket event emission
 
 See [`docs/logging-contract.md`](docs/logging-contract.md) for the exact contract and non-goals.
 
@@ -110,20 +101,39 @@ raria download https://example.com/file.iso --checksum sha-256=<hex>
 ### Daemon
 
 ```bash
-raria daemon -d ~/Downloads --rpc-port 6800
+raria daemon -d ~/Downloads --api-port 6800
 ```
 
-### JSON-RPC Example
+### Native API Example
 
 ```bash
-curl -X POST http://127.0.0.1:6800/ \
+curl -X POST http://127.0.0.1:6800/api/v1/tasks \
   -H "Content-Type: application/json" \
   -d '{
-    "jsonrpc": "2.0",
-    "id": "1",
-    "method": "aria2.addUri",
-    "params": [["https://example.com/file.iso"], {"dir": "/tmp"}]
+    "sources": ["https://example.com/file.iso"],
+    "downloadDir": "/tmp",
+    "filename": "file.iso",
+    "segments": 8
   }'
+```
+
+### Native Configuration
+
+```toml
+[daemon]
+download_dir = "~/Downloads"
+session_path = "raria.session.redb"
+max_active_tasks = 5
+
+[api]
+host = "127.0.0.1"
+port = 6800
+auth_token_file = "raria.token"
+
+[downloads]
+default_segments = 5
+min_segment_size = 0
+retry_max_attempts = 5
 ```
 
 ## Repository Layout
@@ -137,9 +147,10 @@ crates/
   raria-sftp      SFTP backend
   raria-bt        BitTorrent service layer
   raria-metalink  Metalink parser and normalizer
-  raria-rpc       aria2-style JSON-RPC, events, server, facade
+  raria-rpc       native HTTP JSON API, event stream, migration control harness
   raria-cli       CLI and daemon runtime wiring
 docs/
+  modernization/
   practical-maturity.md
   verification-contract.md
   bt-stop-lines.md

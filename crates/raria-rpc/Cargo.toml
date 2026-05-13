@@ -1,6 +1,6 @@
 [package]
 name = "raria-rpc"
-description = "JSON-RPC/WebSocket server for raria (aria2-compatible)"
+description = "Native HTTP JSON API and event stream for raria"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

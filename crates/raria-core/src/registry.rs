@@ -4,6 +4,7 @@
 // and supports filtering by status.
 
 use crate::job::{Gid, Job, Status};
+use crate::native::TaskId;
 use parking_lot::RwLock;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -17,6 +18,7 @@ pub struct JobRegistry {
 #[derive(Debug, Default)]
 struct RegistryInner {
     jobs: HashMap<Gid, Job>,
+    by_task_id: HashMap<TaskId, Gid>,
 }
 
 impl JobRegistry {
@@ -34,6 +36,7 @@ impl JobRegistry {
         if inner.jobs.contains_key(&gid) {
             return Err(RegistryError::DuplicateGid(gid));
         }
+        inner.by_task_id.insert(job.task_id.clone(), gid);
         inner.jobs.insert(gid, job);
         Ok(gid)
     }
@@ -44,10 +47,28 @@ impl JobRegistry {
         inner.jobs.get(&gid).cloned()
     }
 
+    /// Look up a job by native task id. Returns a clone.
+    pub fn get_by_task_id(&self, task_id: &TaskId) -> Option<Job> {
+        let inner = self.inner.read();
+        inner
+            .by_task_id
+            .get(task_id)
+            .and_then(|gid| inner.jobs.get(gid))
+            .cloned()
+    }
+
+    /// Resolve a native task id to the runtime bridge id.
+    pub fn gid_for_task_id(&self, task_id: &TaskId) -> Option<Gid> {
+        let inner = self.inner.read();
+        inner.by_task_id.get(task_id).copied()
+    }
+
     /// Remove a job from the registry. Returns the removed job if it existed.
     pub fn remove(&self, gid: Gid) -> Option<Job> {
         let mut inner = self.inner.write();
-        inner.jobs.remove(&gid)
+        let removed = inner.jobs.remove(&gid)?;
+        inner.by_task_id.remove(&removed.task_id);
+        Some(removed)
     }
 
     /// Update a job in the registry by applying a closure.
@@ -58,7 +79,15 @@ impl JobRegistry {
         F: FnOnce(&mut Job) -> R,
     {
         let mut inner = self.inner.write();
-        inner.jobs.get_mut(&gid).map(f)
+        let job = inner.jobs.get_mut(&gid)?;
+        let old_task_id = job.task_id.clone();
+        let result = f(job);
+        let new_task_id = job.task_id.clone();
+        if old_task_id != new_task_id {
+            inner.by_task_id.remove(&old_task_id);
+            inner.by_task_id.insert(new_task_id, gid);
+        }
+        Some(result)
     }
 
     /// Return the number of jobs in the registry.
@@ -99,6 +128,7 @@ impl JobRegistry {
     pub fn load_from(&self, jobs: Vec<Job>) {
         let mut inner = self.inner.write();
         for job in jobs {
+            inner.by_task_id.insert(job.task_id.clone(), job.gid);
             inner.jobs.insert(job.gid, job);
         }
     }
@@ -140,6 +170,7 @@ mod tests {
         let reg = JobRegistry::new();
         let job = make_job("https://a.com/f");
         let gid = job.gid;
+        let task_id = job.task_id.clone();
 
         reg.insert(job).unwrap();
         assert_eq!(reg.len(), 1);
@@ -147,6 +178,35 @@ mod tests {
         let retrieved = reg.get(gid).expect("job should exist");
         assert_eq!(retrieved.gid, gid);
         assert_eq!(retrieved.uris[0], "https://a.com/f");
+        assert_eq!(reg.gid_for_task_id(&task_id), Some(gid));
+        assert_eq!(reg.get_by_task_id(&task_id).expect("task").gid, gid);
+    }
+
+    #[test]
+    fn task_id_index_updates_on_update_remove_and_load() {
+        let reg = JobRegistry::new();
+        let first = make_job("https://a.com/f");
+        let first_gid = first.gid;
+        let first_task_id = first.task_id.clone();
+        let replacement_task_id = crate::native::TaskId::new();
+
+        reg.insert(first).unwrap();
+        reg.update(first_gid, |job| {
+            job.task_id = replacement_task_id.clone();
+        });
+
+        assert_eq!(reg.gid_for_task_id(&first_task_id), None);
+        assert_eq!(reg.gid_for_task_id(&replacement_task_id), Some(first_gid));
+
+        reg.remove(first_gid).expect("removed");
+        assert_eq!(reg.gid_for_task_id(&replacement_task_id), None);
+
+        let loaded = make_job("https://b.com/f");
+        let loaded_gid = loaded.gid;
+        let loaded_task_id = loaded.task_id.clone();
+        reg.load_from(vec![loaded]);
+
+        assert_eq!(reg.gid_for_task_id(&loaded_task_id), Some(loaded_gid));
     }
 
     #[test]

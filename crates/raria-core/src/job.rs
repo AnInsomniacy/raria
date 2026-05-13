@@ -5,6 +5,7 @@
 // as a `Job` with a unique `Gid` and tracked through a `Status` state machine.
 
 use crate::config::JobOptions;
+use crate::native::TaskId;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -185,6 +186,9 @@ pub struct PieceChecksum {
 /// A download job with all metadata needed for scheduling and persistence.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Job {
+    /// Native raria task identifier.
+    #[serde(default)]
+    pub task_id: TaskId,
     /// Unique identifier.
     pub gid: Gid,
     /// The kind of download backend.
@@ -249,6 +253,7 @@ impl Job {
         options: JobOptions,
     ) -> Self {
         Self {
+            task_id: TaskId::new(),
             gid: Gid::new(),
             kind: JobKind::Range,
             status: Status::Waiting,
@@ -280,6 +285,7 @@ impl Job {
     /// Create a new BitTorrent job with custom options.
     pub fn new_bt_with_options(uris: Vec<String>, out_path: PathBuf, options: JobOptions) -> Self {
         Self {
+            task_id: TaskId::new(),
             gid: Gid::new(),
             kind: JobKind::Bt,
             status: Status::Waiting,
@@ -460,6 +466,18 @@ mod tests {
         let display = format!("{}", gid);
         assert_eq!(display.len(), 16);
         assert_eq!(display, "00000000000000ff");
+    }
+
+    #[test]
+    fn job_carries_opaque_native_task_id() {
+        let job = Job::new_range(
+            vec!["https://example.com/file.iso".into()],
+            PathBuf::from("/tmp/file.iso"),
+        );
+
+        assert!(job.task_id.as_str().starts_with("task_"));
+        assert!(!job.task_id.as_str().starts_with("task_migration_"));
+        assert_ne!(job.task_id.as_str(), job.gid.to_string());
     }
 
     #[test]

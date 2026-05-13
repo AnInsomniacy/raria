@@ -9,6 +9,7 @@ use raria_core::config::GlobalConfig;
 use raria_core::engine::{AddUriSpec, Engine};
 use raria_core::input_file::InputFileEntry;
 use raria_core::job::Gid;
+use raria_core::native::TaskId;
 use raria_core::persist::Store;
 use raria_core::segment::{SegmentStatus, init_segment_states, plan_segments};
 use raria_range::backend::{ByteSourceBackend, Credentials, ProbeContext};
@@ -183,7 +184,7 @@ pub(crate) async fn run_daemon_with_config(
     info!(rpc = %rpc_addrs.rpc, "RPC server ready");
     if !config.quiet {
         println!(
-            "raria daemon running — RPC at http://{}/jsonrpc",
+            "raria daemon running — API at http://{}/api/v1",
             rpc_addrs.rpc
         );
     }
@@ -200,30 +201,36 @@ pub(crate) async fn run_daemon_with_config(
             break;
         }
 
-        let to_activate = engine.activatable_jobs();
+        let to_activate = engine.activatable_native_tasks();
 
-        for gid in to_activate {
-            let token = match engine.activate_job(gid) {
-                Ok(t) => t,
+        for task_id in to_activate {
+            let activation = match engine.activate_native_task(&task_id) {
+                Ok(activation) => activation,
                 Err(e) => {
-                    warn!(%gid, error = %e, "failed to activate job");
+                    warn!(%task_id, error = %e, "failed to activate task");
                     continue;
                 }
             };
+            let gid = activation.runtime_gid;
+            let token = activation.cancel;
+            let range_context = RangeExecutionContext {
+                task_id: activation.task_id.clone(),
+                runtime_gid: gid,
+            };
 
             let engine_ref = Arc::clone(&engine);
-            let job_kind = engine
-                .registry
-                .get(gid)
-                .map(|j| j.kind)
-                .unwrap_or(raria_core::job::JobKind::Range);
 
-            match job_kind {
+            match activation.kind {
                 raria_core::job::JobKind::Range => {
                     let default_headers = default_headers.clone();
                     tokio::spawn(async move {
-                        if let Err(e) =
-                            run_job_download(engine_ref, gid, token, default_headers.clone()).await
+                        if let Err(e) = run_job_download(
+                            engine_ref,
+                            range_context,
+                            token,
+                            default_headers.clone(),
+                        )
+                        .await
                         {
                             error!(%gid, error = %e, "job download task failed");
                         }
@@ -260,9 +267,7 @@ pub(crate) async fn run_daemon_with_config(
     }
 
     info!("daemon shutting down...");
-    for job in engine.registry.by_status(raria_core::job::Status::Active) {
-        engine.cancel_registry.cancel(job.gid);
-    }
+    engine.cancel_active_native_tasks();
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
     bt_service.shutdown().await;
     match engine.save_session() {
@@ -380,6 +385,11 @@ fn emit_integrity_failure_log(gid: Gid, uri: &str, error_msg: &str, cached: bool
 
 fn cleanup_segment_checkpoints(engine: &Engine, gid: Gid) {
     if let Some(store) = engine.store() {
+        if let Some(job) = engine.registry.get(gid) {
+            if let Err(e) = store.remove_native_segments(&job.task_id) {
+                tracing::warn!(%gid, task_id = %job.task_id, error = %e, "failed to clean up native segment checkpoints");
+            }
+        }
         if let Err(e) = store.remove_segments(gid) {
             tracing::warn!(%gid, error = %e, "failed to clean up segment checkpoints");
         }
@@ -487,6 +497,12 @@ fn resolve_output_path(
 /// Callback invoked after each segment completes a checkpoint.
 type CheckpointFn = Arc<dyn Fn(u32, u64) + Send + Sync>;
 
+#[derive(Debug, Clone)]
+struct RangeExecutionContext {
+    task_id: TaskId,
+    runtime_gid: Gid,
+}
+
 /// Plan download segments and restore checkpoint progress from persistent store.
 ///
 /// Returns `(connections, segments, checkpoint_callback)`.
@@ -526,7 +542,17 @@ fn plan_download_segments(
 
     // Restore checkpoint progress from persistent store.
     if let Some(store) = engine.store() {
-        match store.list_segments(gid) {
+        let persisted_result =
+            store
+                .list_native_segments(&job.task_id)
+                .and_then(|native_segments| {
+                    if native_segments.is_empty() {
+                        store.list_segments(gid)
+                    } else {
+                        Ok(native_segments)
+                    }
+                });
+        match persisted_result {
             Ok(persisted) if !persisted.is_empty() => {
                 for (seg_id, persisted_state) in &persisted {
                     if let Some(seg) = resolved_segments.get_mut(*seg_id as usize) {
@@ -552,6 +578,7 @@ fn plan_download_segments(
 
     let on_checkpoint: Option<CheckpointFn> = engine.store().map(|store| {
         let store = Arc::clone(store);
+        let task_id = job.task_id.clone();
         let seg_ranges: Vec<(u64, u64)> =
             resolved_segments.iter().map(|s| (s.start, s.end)).collect();
         Arc::new(move |seg_id: u32, bytes_downloaded: u64| {
@@ -563,8 +590,8 @@ fn plan_download_segments(
                 etag: None,
                 status: raria_core::segment::SegmentStatus::Active,
             };
-            if let Err(e) = store.put_segment(gid, seg_id, &seg) {
-                tracing::warn!(%gid, seg_id, error = %e, "failed to checkpoint segment progress");
+            if let Err(e) = store.put_native_segment(&task_id, seg_id, &seg) {
+                tracing::warn!(%gid, task_id = %task_id, seg_id, error = %e, "failed to checkpoint native segment progress");
             }
         }) as CheckpointFn
     });
@@ -611,11 +638,10 @@ async fn verify_download_integrity(
 
 /// Finalize a completed download: update registry, clean up checkpoints, log.
 async fn finalize_complete(engine: &Engine, gid: Gid, downloaded: u64) -> Result<()> {
-    engine.registry.update(gid, |job| {
-        job.downloaded = downloaded;
-        job.connections = 0;
-    });
-    engine.complete_job(gid)?;
+    let task_id = engine
+        .task_id_for_gid(gid)
+        .context("native task id not found during completion")?;
+    engine.complete_native_task(&task_id, downloaded)?;
     cleanup_segment_checkpoints(engine, gid);
     info!(%gid, bytes = downloaded, "daemon: download complete");
     Ok(())
@@ -686,9 +712,12 @@ fn persist_interrupted_segments(
         job.connections = 0;
     });
     if let Some(store) = engine.store() {
+        let task_id = engine.registry.get(gid).map(|job| job.task_id);
         for (seg_id, seg) in segments.iter().enumerate() {
-            if let Err(e) = store.put_segment(gid, seg_id as u32, seg) {
-                tracing::warn!(%gid, seg_id, error = %e, "failed to persist interrupted segment state");
+            if let Some(task_id) = &task_id {
+                if let Err(e) = store.put_native_segment(task_id, seg_id as u32, seg) {
+                    tracing::warn!(%gid, task_id = %task_id, seg_id, error = %e, "failed to persist interrupted native segment state");
+                }
             }
         }
     }
@@ -697,21 +726,29 @@ fn persist_interrupted_segments(
 
 async fn run_job_download(
     engine: Arc<Engine>,
-    gid: Gid,
+    context: RangeExecutionContext,
     cancel: CancellationToken,
     default_headers: Vec<(String, String)>,
 ) -> Result<()> {
+    let gid = context.runtime_gid;
     let job = engine
         .registry
         .get(gid)
         .context("job not found in registry")?;
+    anyhow::ensure!(
+        job.task_id == context.task_id,
+        "runtime bridge does not match native task id"
+    );
     let rate_limiter = Some(engine.job_rate_limiter(gid, job.options.max_download_limit));
 
     let ctx = build_download_context(&engine, &job, &default_headers);
 
     let engine_ref = Arc::clone(&engine);
+    let task_id_for_progress = context.task_id.clone();
     let on_progress: Arc<dyn Fn(u32, u64) + Send + Sync> = Arc::new(move |_seg_id, bytes| {
-        engine_ref.update_progress(gid, bytes);
+        if let Err(error) = engine_ref.update_native_progress(&task_id_for_progress, bytes) {
+            warn!(%gid, error = %error, "failed to update native task progress");
+        }
     });
 
     let mut out_path: Option<std::path::PathBuf> = None;
@@ -912,11 +949,11 @@ async fn run_job_download(
                 continue;
             }
 
-            engine.registry.update(gid, |job| {
-                job.connections = 0;
-            });
-            engine.fail_job(
-                gid,
+            let task_id = engine
+                .task_id_for_gid(gid)
+                .context("native task id not found during failure")?;
+            engine.fail_native_task(
+                &task_id,
                 last_error
                     .as_deref()
                     .unwrap_or("transient error: mirror failed"),
@@ -928,11 +965,11 @@ async fn run_job_download(
         return Ok(());
     }
 
-    engine.registry.update(gid, |job| {
-        job.connections = 0;
-    });
-    engine.fail_job(
-        gid,
+    let task_id = engine
+        .task_id_for_gid(gid)
+        .context("native task id not found during failure")?;
+    engine.fail_native_task(
+        &task_id,
         last_error
             .as_deref()
             .unwrap_or("transient error: all mirrors failed"),
@@ -1052,6 +1089,81 @@ mod tests {
         assert_eq!(next.as_deref(), Some("https://mirror.example/file.iso"));
     }
 
+    #[test]
+    fn interrupted_segment_persistence_does_not_create_legacy_rows_without_runtime_job() {
+        let dir = tempdir().expect("tempdir");
+        let store_path = dir.path().join("session.redb");
+        let store = Arc::new(Store::open(&store_path).expect("store"));
+        let engine = Engine::with_store(GlobalConfig::default(), Arc::clone(&store));
+        let missing_gid = Gid::from_raw(0xfeed);
+        let segments = vec![raria_core::segment::SegmentState {
+            start: 0,
+            end: 1024,
+            downloaded: 512,
+            etag: None,
+            status: SegmentStatus::Active,
+        }];
+
+        persist_interrupted_segments(&engine, missing_gid, &segments, 512);
+
+        assert!(
+            store
+                .list_segments(missing_gid)
+                .expect("legacy segments")
+                .is_empty(),
+            "native checkpointing must not create legacy gid segment rows"
+        );
+    }
+
+    #[test]
+    fn legacy_gid_segment_rows_remain_read_fallback_for_resume() {
+        let dir = tempdir().expect("tempdir");
+        let store_path = dir.path().join("session.redb");
+        let store = Arc::new(Store::open(&store_path).expect("store"));
+        let engine = Engine::with_store(GlobalConfig::default(), Arc::clone(&store));
+        let handle = engine
+            .add_uri(&AddUriSpec {
+                uris: vec!["https://example.test/file.bin".to_string()],
+                dir: dir.path().to_path_buf(),
+                filename: Some("file.bin".to_string()),
+                connections: 2,
+            })
+            .expect("add uri");
+        let job = engine.registry.get(handle.gid).expect("job");
+        let legacy_segment = raria_core::segment::SegmentState {
+            start: 0,
+            end: 2048,
+            downloaded: 1024,
+            etag: None,
+            status: SegmentStatus::Active,
+        };
+        store
+            .put_segment(handle.gid, 0, &legacy_segment)
+            .expect("legacy segment");
+        let probe = raria_range::backend::FileProbe {
+            size: Some(4096),
+            supports_range: true,
+            etag: None,
+            last_modified: None,
+            content_type: None,
+            suggested_filename: None,
+            not_modified: false,
+        };
+
+        let (_connections, segments, _checkpoint) =
+            plan_download_segments(&engine, handle.gid, &job, &probe);
+
+        assert_eq!(segments[0].downloaded, 1024);
+        assert_eq!(segments[0].status, SegmentStatus::Pending);
+        assert!(
+            store
+                .list_native_segments(&job.task_id)
+                .expect("native segments")
+                .is_empty(),
+            "legacy fallback reads must not synthesize native rows"
+        );
+    }
+
     #[tokio::test]
     async fn mirror_failover_publishes_source_failed_event_before_completion() {
         let server = MockServer::start().await;
@@ -1085,9 +1197,18 @@ mod tests {
         let mut rx = engine.event_bus.subscribe();
         let cancel = engine.activate_job(handle.gid).expect("activate job");
 
-        run_job_download(Arc::clone(&engine), handle.gid, cancel, Vec::new())
-            .await
-            .expect("download should succeed after failover");
+        let job = engine.registry.get(handle.gid).expect("job");
+        run_job_download(
+            Arc::clone(&engine),
+            RangeExecutionContext {
+                task_id: job.task_id,
+                runtime_gid: handle.gid,
+            },
+            cancel,
+            Vec::new(),
+        )
+        .await
+        .expect("download should succeed after failover");
 
         let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(1);
         let mut saw_source_failed = false;

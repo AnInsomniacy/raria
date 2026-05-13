@@ -118,6 +118,8 @@ pub struct GlobalConfig {
     /// RPC secret token (aria2: --rpc-secret). When set, all RPC
     /// requests must include `token:<secret>` as the first parameter.
     pub rpc_secret: Option<String>,
+    /// Native HTTP API bearer token.
+    pub api_auth_token: Option<String>,
     /// Allow browsers from any origin to call the HTTP JSON-RPC endpoint.
     pub rpc_allow_origin_all: bool,
     /// File allocation strategy (aria2: --file-allocation).
@@ -211,6 +213,7 @@ impl Default for GlobalConfig {
             cookie_file: None,
             save_cookie_file: None,
             rpc_secret: None,
+            api_auth_token: None,
             rpc_allow_origin_all: false,
             file_allocation: FileAllocation::None,
             max_connection_per_server: 16,
