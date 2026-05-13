@@ -286,7 +286,7 @@ mod native_projection_tests {
         assert_eq!(piece.id, "piece_1");
         assert_eq!(piece.hash_algorithm, "sha-256");
         assert_eq!(piece.expected_hash, "abc123");
-        assert_eq!(piece.verified, false);
+        assert!(!piece.verified);
     }
 
     #[test]

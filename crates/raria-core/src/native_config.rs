@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
 /// Top-level native raria configuration.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RariaConfig {
     /// Daemon process settings.
@@ -77,20 +77,6 @@ impl RariaConfig {
         };
         let token = std::fs::read_to_string(path)?;
         Ok(Some(token.trim().to_string()))
-    }
-}
-
-impl Default for RariaConfig {
-    fn default() -> Self {
-        Self {
-            daemon: DaemonConfig::default(),
-            api: ApiConfig::default(),
-            downloads: DownloadsConfig::default(),
-            network: NetworkConfig::default(),
-            bittorrent: BitTorrentConfig::default(),
-            storage: StorageConfig::default(),
-            logging: LoggingConfig::default(),
-        }
     }
 }
 
