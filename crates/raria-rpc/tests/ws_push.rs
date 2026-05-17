@@ -48,6 +48,10 @@ mod tests {
             filename: Some("test.zip".into()),
             dir: std::path::PathBuf::from("/tmp"),
             connections: 1,
+            headers: Vec::new(),
+            http_user: None,
+            http_password: None,
+            checksum: None,
         };
         let _handle = engine.add_uri(&spec).unwrap();
 
@@ -94,6 +98,10 @@ mod tests {
             filename: Some("source-failed.bin".into()),
             dir: std::path::PathBuf::from("/tmp"),
             connections: 1,
+            headers: Vec::new(),
+            http_user: None,
+            http_password: None,
+            checksum: None,
         };
         let handle = engine.add_uri(&spec).unwrap();
 
@@ -192,6 +200,10 @@ mod tests {
             filename: None,
             dir: std::path::PathBuf::from("/tmp"),
             connections: 1,
+            headers: Vec::new(),
+            http_user: None,
+            http_password: None,
+            checksum: None,
         };
         let _handle = engine.add_uri(&spec).unwrap();
 
@@ -332,6 +344,10 @@ mod tests {
             filename: Some("secret.bin".into()),
             dir: std::path::PathBuf::from("/tmp"),
             connections: 1,
+            headers: Vec::new(),
+            http_user: None,
+            http_password: None,
+            checksum: None,
         };
         let _handle = engine.add_uri(&spec).unwrap();
 
@@ -395,6 +411,10 @@ mod tests {
             filename: Some("authenticated.bin".into()),
             dir: std::path::PathBuf::from("/tmp"),
             connections: 1,
+            headers: Vec::new(),
+            http_user: None,
+            http_password: None,
+            checksum: None,
         };
         let _handle = engine.add_uri(&spec).unwrap();
 
@@ -525,6 +545,10 @@ mod tests {
             filename: Some("origin-secret.bin".into()),
             dir: std::path::PathBuf::from("/tmp"),
             connections: 1,
+            headers: Vec::new(),
+            http_user: None,
+            http_password: None,
+            checksum: None,
         };
         let _handle = engine.add_uri(&spec).unwrap();
 

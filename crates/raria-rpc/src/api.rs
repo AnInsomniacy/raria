@@ -18,6 +18,7 @@ use raria_core::native::{
 };
 use raria_core::progress::DownloadEvent;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -510,9 +511,18 @@ struct CreateTaskRequest {
     download_dir: PathBuf,
     filename: Option<String>,
     segments: Option<u32>,
+    headers: Option<BTreeMap<String, String>>,
+    auth: Option<CreateTaskAuth>,
     checksum: Option<String>,
     metalink: Option<CreateMetalinkTaskOptions>,
     bt: Option<CreateBtTaskOptions>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CreateTaskAuth {
+    username: String,
+    password: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -557,6 +567,21 @@ async fn handle_create_task(
     if sources.is_empty() {
         return Err(NativeApiError::InvalidRequest);
     }
+    let request_headers = request
+        .headers
+        .unwrap_or_default()
+        .into_iter()
+        .map(|(name, value)| {
+            let name = name.trim().to_string();
+            anyhow::ensure!(!name.is_empty(), "header name must not be empty");
+            Ok((name, value))
+        })
+        .collect::<Result<Vec<_>>>()
+        .map_err(|_| NativeApiError::InvalidRequest)?;
+    let (http_user, http_password) = request
+        .auth
+        .map(|auth| (Some(auth.username), auth.password))
+        .unwrap_or((None, None));
     let bt_options = request.bt.as_ref();
     let bt_selected_files = bt_options
         .and_then(|bt| {
@@ -575,6 +600,9 @@ async fn handle_create_task(
             dir: request.download_dir,
             filename: request.filename,
             connections: request.segments.unwrap_or(1).max(1),
+            headers: request_headers,
+            http_user,
+            http_password,
             checksum: request.checksum,
         })
         .map_err(|_| NativeApiError::InvalidRequest)?;
@@ -688,6 +716,9 @@ fn create_task_from_metalink_seed(
             dir: download_dir,
             filename: Some(seed.filename.clone()),
             connections,
+            headers: Vec::new(),
+            http_user: None,
+            http_password: None,
             checksum: seed
                 .checksum
                 .as_ref()

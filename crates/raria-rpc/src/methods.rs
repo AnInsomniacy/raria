@@ -259,6 +259,18 @@ impl Aria2RpcServer for RpcHandler {
             dir,
             filename: opts.filename.clone(),
             connections,
+            headers: opts
+                .header
+                .clone()
+                .unwrap_or_default()
+                .into_iter()
+                .filter_map(|header| {
+                    let (name, value) = header.split_once(':')?;
+                    Some((name.trim().to_string(), value.trim().to_string()))
+                })
+                .collect(),
+            http_user: opts.http_user.clone(),
+            http_password: opts.http_passwd.clone(),
             checksum: opts.checksum.clone(),
         };
 

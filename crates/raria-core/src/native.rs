@@ -774,6 +774,8 @@ pub struct NativeTaskSummary {
     pub total_bytes: Option<u64>,
     /// Current download speed in bytes per second.
     pub download_bytes_per_second: u64,
+    /// Active transport connections currently backing the task.
+    pub active_connections: u32,
     /// Terminal error message when the task failed.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error_message: Option<String>,
@@ -840,6 +842,7 @@ impl NativeTaskSummary {
             completed_bytes: job.downloaded,
             total_bytes: job.total_size,
             download_bytes_per_second: job.download_speed,
+            active_connections: job.connections,
             error_message: job.error_msg.clone(),
         }
     }

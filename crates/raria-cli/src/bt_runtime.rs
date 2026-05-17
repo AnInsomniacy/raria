@@ -1165,6 +1165,10 @@ mod tests {
                 dir: PathBuf::from("/tmp"),
                 filename: Some("torrent".into()),
                 connections: 1,
+                headers: Vec::new(),
+                http_user: None,
+                http_password: None,
+                checksum: None,
             })
             .unwrap();
         engine.pause(handle.gid).unwrap();
@@ -1184,6 +1188,10 @@ mod tests {
                 dir: PathBuf::from("/tmp"),
                 filename: Some("torrent".into()),
                 connections: 1,
+                headers: Vec::new(),
+                http_user: None,
+                http_password: None,
+                checksum: None,
             })
             .unwrap();
         engine.activate_job(handle.gid).unwrap();

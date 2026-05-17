@@ -752,6 +752,426 @@ async fn daemon_native_api_shutdown_stops_daemon_without_json_rpc() {
 }
 
 #[tokio::test]
+async fn daemon_native_task_create_applies_request_headers_to_downloads() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("HEAD"))
+        .and(path("/header.bin"))
+        .and(wiremock::matchers::header("x-native-header", "from-native"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-length", "4")
+                .insert_header("accept-ranges", "bytes"),
+        )
+        .mount(&server)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path("/header.bin"))
+        .and(wiremock::matchers::header("x-native-header", "from-native"))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(b"done"))
+        .mount(&server)
+        .await;
+
+    let temp = tempdir().expect("tempdir");
+    let session_file = temp.path().join("native-header.session.redb");
+    let port = allocate_port();
+    let mut child = spawn_native_daemon(temp.path(), &session_file, port);
+    wait_for_native_api_ready(port, &mut child)
+        .await
+        .expect("native API ready");
+
+    let client = reqwest::Client::new();
+    let created: serde_json::Value = client
+        .post(format!("http://127.0.0.1:{port}/api/v1/tasks"))
+        .json(&serde_json::json!({
+            "sources": [format!("{}/header.bin", server.uri())],
+            "downloadDir": temp.path(),
+            "filename": "header.bin",
+            "segments": 1,
+            "headers": {
+                "X-Native-Header": "from-native"
+            }
+        }))
+        .send()
+        .await
+        .expect("create native header task")
+        .json()
+        .await
+        .expect("native header task json");
+    let task_id = created["taskId"].as_str().expect("task id");
+
+    wait_for_task_lifecycle(port, task_id, "completed").await;
+    assert_eq!(
+        std::fs::read(temp.path().join("header.bin")).expect("read downloaded file"),
+        b"done"
+    );
+    assert!(created.get("gid").is_none());
+}
+
+#[tokio::test]
+async fn daemon_native_task_create_applies_basic_auth_to_downloads() {
+    let server = MockServer::start().await;
+    let auth_value = format!(
+        "Basic {}",
+        base64::engine::general_purpose::STANDARD.encode(b"native-user:native-pass")
+    );
+
+    Mock::given(method("HEAD"))
+        .and(path("/auth.bin"))
+        .and(wiremock::matchers::header(
+            "authorization",
+            auth_value.as_str(),
+        ))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-length", "4")
+                .insert_header("accept-ranges", "bytes"),
+        )
+        .mount(&server)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path("/auth.bin"))
+        .and(wiremock::matchers::header(
+            "authorization",
+            auth_value.as_str(),
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(b"auth"))
+        .mount(&server)
+        .await;
+
+    let temp = tempdir().expect("tempdir");
+    let session_file = temp.path().join("native-auth.session.redb");
+    let port = allocate_port();
+    let mut child = spawn_native_daemon(temp.path(), &session_file, port);
+    wait_for_native_api_ready(port, &mut child)
+        .await
+        .expect("native API ready");
+
+    let client = reqwest::Client::new();
+    let created: serde_json::Value = client
+        .post(format!("http://127.0.0.1:{port}/api/v1/tasks"))
+        .json(&serde_json::json!({
+            "sources": [format!("{}/auth.bin", server.uri())],
+            "downloadDir": temp.path(),
+            "filename": "auth.bin",
+            "segments": 1,
+            "auth": {
+                "username": "native-user",
+                "password": "native-pass"
+            }
+        }))
+        .send()
+        .await
+        .expect("create native auth task")
+        .json()
+        .await
+        .expect("native auth task json");
+    let task_id = created["taskId"].as_str().expect("task id");
+
+    wait_for_task_lifecycle(port, task_id, "completed").await;
+    assert_eq!(
+        std::fs::read(temp.path().join("auth.bin")).expect("read downloaded file"),
+        b"auth"
+    );
+    assert!(created.get("gid").is_none());
+}
+
+#[tokio::test]
+async fn daemon_native_task_reports_effective_active_connections() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("HEAD"))
+        .and(path("/connections.bin"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-length", "1048576")
+                .insert_header("accept-ranges", "bytes"),
+        )
+        .mount(&server)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path("/connections.bin"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_delay(Duration::from_secs(3))
+                .set_body_bytes(vec![b'c'; 1024 * 1024]),
+        )
+        .mount(&server)
+        .await;
+
+    let temp = tempdir().expect("tempdir");
+    let session_file = temp.path().join("native-connections.session.redb");
+    let port = allocate_port();
+    let mut child = spawn_native_daemon(temp.path(), &session_file, port);
+    wait_for_native_api_ready(port, &mut child)
+        .await
+        .expect("native API ready");
+
+    let client = reqwest::Client::new();
+    let created: serde_json::Value = client
+        .post(format!("http://127.0.0.1:{port}/api/v1/tasks"))
+        .json(&serde_json::json!({
+            "sources": [format!("{}/connections.bin", server.uri())],
+            "downloadDir": temp.path(),
+            "filename": "connections.bin",
+            "segments": 4
+        }))
+        .send()
+        .await
+        .expect("create native connection task")
+        .json()
+        .await
+        .expect("native connection task json");
+    let task_id = created["taskId"].as_str().expect("task id");
+
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        let task: serde_json::Value = client
+            .get(format!("http://127.0.0.1:{port}/api/v1/tasks/{task_id}"))
+            .send()
+            .await
+            .expect("task detail request")
+            .json()
+            .await
+            .expect("task detail json");
+        if task["lifecycle"] == "running" && task["activeConnections"] == 4 {
+            assert!(task.get("connections").is_none());
+            assert!(task.get("gid").is_none());
+            break;
+        }
+        if task["lifecycle"] == "completed" {
+            panic!("task completed before exposing active native connections: {task}");
+        }
+
+        assert!(
+            Instant::now() < deadline,
+            "native task never exposed activeConnections=4: {task}"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+#[tokio::test]
+async fn daemon_native_task_stops_after_file_not_found_budget() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("HEAD"))
+        .and(path("/missing.bin"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-length", "1024")
+                .insert_header("accept-ranges", "bytes"),
+        )
+        .mount(&server)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path("/missing.bin"))
+        .respond_with(ResponseTemplate::new(404))
+        .mount(&server)
+        .await;
+
+    let temp = tempdir().expect("tempdir");
+    let session_file = temp.path().join("native-missing.session.redb");
+    let port = allocate_port();
+    let extra_args = vec![
+        std::ffi::OsString::from("--max-file-not-found"),
+        std::ffi::OsString::from("1"),
+        std::ffi::OsString::from("--max-tries"),
+        std::ffi::OsString::from("10"),
+    ];
+    let mut child = spawn_native_daemon_with_args(temp.path(), &session_file, port, &extra_args);
+    wait_for_native_api_ready(port, &mut child)
+        .await
+        .expect("native API ready");
+
+    let client = reqwest::Client::new();
+    let created: serde_json::Value = client
+        .post(format!("http://127.0.0.1:{port}/api/v1/tasks"))
+        .json(&serde_json::json!({
+            "sources": [format!("{}/missing.bin", server.uri())],
+            "downloadDir": temp.path(),
+            "filename": "missing.bin",
+            "segments": 1
+        }))
+        .send()
+        .await
+        .expect("create native missing task")
+        .json()
+        .await
+        .expect("native missing task json");
+    let task_id = created["taskId"].as_str().expect("task id");
+
+    let failed = wait_for_task_lifecycle(port, task_id, "failed").await;
+    assert_eq!(failed["taskId"], task_id);
+    assert!(failed.get("gid").is_none());
+
+    let requests = server.received_requests().await.expect("received requests");
+    let get_count = requests
+        .iter()
+        .filter(|request| request.method.as_str() == "GET" && request.url.path() == "/missing.bin")
+        .count();
+    assert_eq!(get_count, 1);
+}
+
+#[tokio::test]
+async fn daemon_native_log_file_records_redacted_download_context() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("HEAD"))
+        .and(path("/secret.bin"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-length", "4")
+                .insert_header("accept-ranges", "bytes"),
+        )
+        .mount(&server)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path("/secret.bin"))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(b"pass"))
+        .mount(&server)
+        .await;
+
+    let temp = tempdir().expect("tempdir");
+    let session_file = temp.path().join("native-log-redaction.session.redb");
+    let log_path = temp.path().join("native.log");
+    let port = allocate_port();
+    let extra_args = vec![
+        std::ffi::OsString::from("--log"),
+        log_path.as_os_str().to_os_string(),
+    ];
+    let mut child = spawn_native_daemon_with_args(temp.path(), &session_file, port, &extra_args);
+    wait_for_native_api_ready(port, &mut child)
+        .await
+        .expect("native API ready");
+
+    let credentialed = format!(
+        "http://alice:supersecret@127.0.0.1:{}/secret.bin?token=abc",
+        server.address().port()
+    );
+    let client = reqwest::Client::new();
+    let created: serde_json::Value = client
+        .post(format!("http://127.0.0.1:{port}/api/v1/tasks"))
+        .json(&serde_json::json!({
+            "sources": [credentialed],
+            "downloadDir": temp.path(),
+            "filename": "secret.bin",
+            "segments": 1
+        }))
+        .send()
+        .await
+        .expect("create native redaction task")
+        .json()
+        .await
+        .expect("native redaction task json");
+    let task_id = created["taskId"].as_str().expect("task id");
+    wait_for_task_lifecycle(port, task_id, "completed").await;
+
+    let shutdown = client
+        .post(format!("http://127.0.0.1:{port}/api/v1/daemon/shutdown"))
+        .send()
+        .await
+        .expect("native shutdown request");
+    assert!(shutdown.status().is_success());
+    wait_for_child_exit_after_native_shutdown(&mut child).await;
+
+    let log = std::fs::read_to_string(&log_path).expect("read native log file");
+    let entries = log
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("valid JSON log line"))
+        .collect::<Vec<_>>();
+    assert!(
+        entries
+            .iter()
+            .any(|entry| entry["message"] == "daemon: starting download"
+                && entry["fields"]["task_id"] == task_id
+                && entry["fields"]["uri"]
+                    .as_str()
+                    .is_some_and(|uri| uri.contains("/secret.bin"))),
+        "native structured log should retain task and path context"
+    );
+    assert!(!log.contains("supersecret"));
+    assert!(!log.contains("token=abc"));
+    assert!(entries.iter().any(|entry| entry.get("level").is_some()));
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn daemon_flag_detaches_process_and_keeps_native_api_alive() {
+    let temp = tempdir().expect("tempdir");
+    let session_file = temp.path().join("native-daemonize.session.redb");
+    let port = allocate_port();
+
+    let mut child = Command::new(cargo_bin("raria"))
+        .arg("daemon")
+        .arg("-d")
+        .arg(temp.path())
+        .arg("--api-port")
+        .arg(port.to_string())
+        .arg("--session-file")
+        .arg(&session_file)
+        .arg("--daemon")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn daemonize request");
+
+    let exit_deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                assert!(
+                    status.success(),
+                    "daemonizing parent exited unsuccessfully: {status}"
+                );
+                break;
+            }
+            Ok(None) => {
+                assert!(
+                    Instant::now() < exit_deadline,
+                    "daemonizing parent did not exit promptly"
+                );
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            Err(error) => panic!("failed waiting for daemonizing parent: {error}"),
+        }
+    }
+
+    let client = reqwest::Client::new();
+    let ready_deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        if let Ok(resp) = client
+            .get(format!("http://127.0.0.1:{port}/api/v1/health"))
+            .send()
+            .await
+        {
+            if resp.status().is_success() {
+                break;
+            }
+        }
+
+        assert!(
+            Instant::now() < ready_deadline,
+            "background daemon never became native API ready"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+
+    let shutdown = client
+        .post(format!("http://127.0.0.1:{port}/api/v1/daemon/shutdown"))
+        .send()
+        .await
+        .expect("native shutdown request");
+    assert!(shutdown.status().is_success());
+}
+
+#[tokio::test]
 async fn daemon_native_transfer_policy_mutates_runtime_state() {
     let temp = tempdir().expect("tempdir");
     let session_file = temp.path().join("native-transfer-policy.session.redb");

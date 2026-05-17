@@ -101,6 +101,12 @@ pub struct AddUriSpec {
     pub filename: Option<String>,
     /// Number of connections to use.
     pub connections: u32,
+    /// Request headers configured for this task.
+    pub headers: Vec<(String, String)>,
+    /// HTTP Basic auth username for this task.
+    pub http_user: Option<String>,
+    /// HTTP Basic auth password for this task.
+    pub http_password: Option<String>,
     /// Whole-file checksum specification.
     pub checksum: Option<String>,
 }
@@ -693,6 +699,9 @@ impl Engine {
             dir,
             filename,
             connections,
+            headers: Vec::new(),
+            http_user: None,
+            http_password: None,
             checksum: None,
         };
         let handle = self.add_uri_with_task_id(&spec, None, Some(task_id.clone()))?;
@@ -875,6 +884,9 @@ impl Engine {
         let options = JobOptions {
             out: spec.filename.clone(),
             max_connections: spec.connections.max(1),
+            headers: spec.headers.clone(),
+            http_user: spec.http_user.clone(),
+            http_passwd: spec.http_password.clone(),
             checksum: spec.checksum.clone(),
             ..JobOptions::default()
         };
@@ -2025,6 +2037,9 @@ mod tests {
             dir: PathBuf::from("/tmp/downloads"),
             filename: None,
             connections: 16,
+            headers: Vec::new(),
+            http_user: None,
+            http_password: None,
             checksum: None,
         }
     }
@@ -2692,6 +2707,10 @@ mod tests {
         let handle = engine
             .add_uri(&AddUriSpec {
                 connections: 3,
+                headers: Vec::new(),
+                http_user: None,
+                http_password: None,
+                checksum: None,
                 ..default_spec()
             })
             .unwrap();
@@ -2724,6 +2743,10 @@ mod tests {
                 dir: PathBuf::from("/downloads"),
                 filename: None,
                 connections: 4,
+                headers: Vec::new(),
+                http_user: None,
+                http_password: None,
+                checksum: None,
             })
             .unwrap();
 
@@ -2740,6 +2763,10 @@ mod tests {
                 dir: PathBuf::from("/output"),
                 filename: Some("custom.dat".into()),
                 connections: 1,
+                headers: Vec::new(),
+                http_user: None,
+                http_password: None,
+                checksum: None,
             })
             .unwrap();
 

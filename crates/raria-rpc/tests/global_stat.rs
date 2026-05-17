@@ -71,6 +71,10 @@ mod tests {
                 filename: None,
                 dir: std::path::PathBuf::from("/tmp"),
                 connections: 1,
+                headers: Vec::new(),
+                http_user: None,
+                http_password: None,
+                checksum: None,
             };
             engine.add_uri(&spec).unwrap();
         }

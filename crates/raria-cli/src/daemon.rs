@@ -67,6 +67,9 @@ pub(crate) async fn run_daemon_with_config(
                 .get("split")
                 .and_then(|value| value.parse::<u32>().ok())
                 .unwrap_or(1),
+            headers: Vec::new(),
+            http_user: None,
+            http_password: None,
             checksum: entry.options.checksum.clone(),
         };
         match engine.add_uri(&spec) {
@@ -1127,6 +1130,10 @@ mod tests {
                 dir: dir.path().to_path_buf(),
                 filename: Some("file.bin".to_string()),
                 connections: 2,
+                headers: Vec::new(),
+                http_user: None,
+                http_password: None,
+                checksum: None,
             })
             .expect("add uri");
         let task_id = engine.task_id_for_gid(handle.gid).expect("task id");
@@ -1172,6 +1179,10 @@ mod tests {
                 dir: dir.path().to_path_buf(),
                 filename: Some("file.bin".to_string()),
                 connections: 2,
+                headers: Vec::new(),
+                http_user: None,
+                http_password: None,
+                checksum: None,
             })
             .expect("add uri");
         let task_id = engine.task_id_for_gid(handle.gid).expect("task id");
@@ -1229,6 +1240,10 @@ mod tests {
                 dir: dir.path().to_path_buf(),
                 filename: Some("file.bin".to_string()),
                 connections: 1,
+                headers: Vec::new(),
+                http_user: None,
+                http_password: None,
+                checksum: None,
             })
             .expect("add uri");
         let task_id = engine.task_id_for_gid(handle.gid).expect("task id");
@@ -1271,6 +1286,10 @@ mod tests {
             dir: dir.path().to_path_buf(),
             filename: Some("ok.bin".into()),
             connections: 1,
+            headers: Vec::new(),
+            http_user: None,
+            http_password: None,
+            checksum: None,
         };
         let handle = engine.add_uri(&spec).expect("add uri");
         let mut rx = engine.event_bus.subscribe();
@@ -1339,6 +1358,10 @@ mod tests {
                 dir: dir.path().to_path_buf(),
                 filename: Some("file.bin".to_string()),
                 connections: 4,
+                headers: Vec::new(),
+                http_user: None,
+                http_password: None,
+                checksum: None,
             })
             .expect("add uri");
         let task_id = engine.task_id_for_gid(handle.gid).expect("task id");

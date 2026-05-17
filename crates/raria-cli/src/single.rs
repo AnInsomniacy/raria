@@ -186,6 +186,9 @@ pub(crate) async fn run_download(options: SingleDownloadOptions) -> Result<()> {
         dir: options.dir.clone(),
         filename: resolved_filename,
         connections: options.connections,
+        headers: Vec::new(),
+        http_user: None,
+        http_password: None,
         checksum: options.checksum_spec.clone(),
     })?;
 

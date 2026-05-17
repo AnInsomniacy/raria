@@ -49,6 +49,10 @@ mod tests {
                 filename: None,
                 dir: PathBuf::from("/tmp"),
                 connections: 1,
+                headers: Vec::new(),
+                http_user: None,
+                http_password: None,
+                checksum: None,
             })
             .unwrap();
         let seeding = engine
@@ -57,6 +61,10 @@ mod tests {
                 filename: None,
                 dir: PathBuf::from("/tmp"),
                 connections: 1,
+                headers: Vec::new(),
+                http_user: None,
+                http_password: None,
+                checksum: None,
             })
             .unwrap();
         engine.activate_job(seeding.gid).unwrap();

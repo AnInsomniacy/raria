@@ -83,6 +83,10 @@ mod tests {
                 dir: PathBuf::from("/tmp"),
                 filename: Some("file.iso".into()),
                 connections: 4,
+                headers: Vec::new(),
+                http_user: None,
+                http_password: None,
+                checksum: None,
             })
             .expect("add task");
 
@@ -124,6 +128,10 @@ mod tests {
                 dir: PathBuf::from("/tmp"),
                 filename: Some("file.iso".into()),
                 connections: 4,
+                headers: Vec::new(),
+                http_user: None,
+                http_password: None,
+                checksum: None,
             })
             .expect("add task");
 
@@ -202,6 +210,10 @@ mod tests {
                 dir: PathBuf::from("/tmp"),
                 filename: Some("file.iso".into()),
                 connections: 4,
+                headers: Vec::new(),
+                http_user: None,
+                http_password: None,
+                checksum: None,
             })
             .expect("add task");
         let task_id = TaskId::new();
@@ -242,6 +254,10 @@ mod tests {
                 dir: PathBuf::from("/tmp"),
                 filename: Some("file.iso".into()),
                 connections: 4,
+                headers: Vec::new(),
+                http_user: None,
+                http_password: None,
+                checksum: None,
             })
             .expect("add task");
         let task_id = TaskId::new();
@@ -740,6 +756,10 @@ mod tests {
                 dir: PathBuf::from("/tmp"),
                 filename: Some("fixture.iso".into()),
                 connections: 4,
+                headers: Vec::new(),
+                http_user: None,
+                http_password: None,
+                checksum: None,
             })
             .expect("add task");
         let gid = engine
@@ -817,6 +837,10 @@ mod tests {
                 dir: PathBuf::from("/tmp"),
                 filename: Some("fixture.iso".into()),
                 connections: 4,
+                headers: Vec::new(),
+                http_user: None,
+                http_password: None,
+                checksum: None,
             })
             .expect("add task");
         let gid = engine
@@ -912,6 +936,10 @@ mod tests {
                 dir: PathBuf::from("/tmp"),
                 filename: Some("fixture.iso".into()),
                 connections: 4,
+                headers: Vec::new(),
+                http_user: None,
+                http_password: None,
+                checksum: None,
             })
             .expect("add task");
         let gid = engine
@@ -986,6 +1014,10 @@ mod tests {
                 dir: PathBuf::from("/tmp"),
                 filename: Some("fixture.iso".into()),
                 connections: 4,
+                headers: Vec::new(),
+                http_user: None,
+                http_password: None,
+                checksum: None,
             })
             .expect("add task");
         let gid = engine
@@ -1060,6 +1092,10 @@ mod tests {
                 dir: PathBuf::from("/tmp"),
                 filename: Some("fixture.iso".into()),
                 connections: 4,
+                headers: Vec::new(),
+                http_user: None,
+                http_password: None,
+                checksum: None,
             })
             .expect("add task");
         let gid = engine
@@ -1131,6 +1167,10 @@ mod tests {
                 dir: PathBuf::from("/tmp"),
                 filename: Some("fixture.iso".into()),
                 connections: 4,
+                headers: Vec::new(),
+                http_user: None,
+                http_password: None,
+                checksum: None,
             })
             .expect("add task");
         engine
@@ -1201,6 +1241,10 @@ mod tests {
                 dir: PathBuf::from("/tmp"),
                 filename: Some("one.iso".into()),
                 connections: 4,
+                headers: Vec::new(),
+                http_user: None,
+                http_password: None,
+                checksum: None,
             })
             .expect("add first");
         let second = engine
@@ -1209,6 +1253,10 @@ mod tests {
                 dir: PathBuf::from("/tmp"),
                 filename: Some("two.iso".into()),
                 connections: 4,
+                headers: Vec::new(),
+                http_user: None,
+                http_password: None,
+                checksum: None,
             })
             .expect("add second");
         let third = engine
@@ -1217,6 +1265,10 @@ mod tests {
                 dir: PathBuf::from("/tmp"),
                 filename: Some("three.iso".into()),
                 connections: 4,
+                headers: Vec::new(),
+                http_user: None,
+                http_password: None,
+                checksum: None,
             })
             .expect("add third");
 
@@ -1268,6 +1320,10 @@ mod tests {
                 dir: PathBuf::from("/tmp"),
                 filename: Some("fixture.iso".into()),
                 connections: 4,
+                headers: Vec::new(),
+                http_user: None,
+                http_password: None,
+                checksum: None,
             })
             .expect("add task");
         let gid = engine
@@ -1405,6 +1461,10 @@ mod tests {
                 dir: PathBuf::from("/tmp"),
                 filename: Some("file.iso".into()),
                 connections: 4,
+                headers: Vec::new(),
+                http_user: None,
+                http_password: None,
+                checksum: None,
             })
             .expect("add task");
 
@@ -1522,6 +1582,10 @@ mod tests {
                 dir: PathBuf::from("/tmp"),
                 filename: Some("file.iso".into()),
                 connections: 4,
+                headers: Vec::new(),
+                http_user: None,
+                http_password: None,
+                checksum: None,
             })
             .expect("add native task");
         let runtime_gid = engine
@@ -1583,6 +1647,10 @@ mod tests {
                 dir: PathBuf::from("/tmp"),
                 filename: Some("file.iso".into()),
                 connections: 4,
+                headers: Vec::new(),
+                http_user: None,
+                http_password: None,
+                checksum: None,
             })
             .expect("add native task");
         let cancel = CancellationToken::new();
@@ -1641,6 +1709,10 @@ mod tests {
                 dir: PathBuf::from("/tmp"),
                 filename: Some("file.iso".into()),
                 connections: 4,
+                headers: Vec::new(),
+                http_user: None,
+                http_password: None,
+                checksum: None,
             })
             .expect("add native task");
         let cancel = CancellationToken::new();
@@ -1706,6 +1778,10 @@ mod tests {
                 dir: PathBuf::from("/tmp"),
                 filename: Some("file.iso".into()),
                 connections: 4,
+                headers: Vec::new(),
+                http_user: None,
+                http_password: None,
+                checksum: None,
             })
             .expect("add task");
 
@@ -1891,6 +1967,10 @@ mod tests {
                 dir: temp.path().to_path_buf(),
                 filename: Some("file.iso".into()),
                 connections: 4,
+                headers: Vec::new(),
+                http_user: None,
+                http_password: None,
+                checksum: None,
             })
             .expect("add task");
 

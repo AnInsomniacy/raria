@@ -8,7 +8,7 @@ The current branch contains the committed modernization snapshot `b18d3b7`. The 
 
 The project is no longer a skeleton. It has working HTTP/HTTPS, FTP/FTPS, SFTP, Metalink, BitTorrent, segmented downloads, retry, resume, native API routes, native WebSocket events, redb-backed persistence, structured logs, and many daemon smoke tests. The work is not complete because major internals and tests still depend on aria2-shaped JSON-RPC, `Gid`, `Job`, compatibility terminology, and migration adapters.
 
-The most recent completed checkpoint is Checkpoint 97, Native Session Task Creation and Status. The next checkpoint is Checkpoint 98, Native RPC Smoke Replacement. Its purpose is to migrate useful behavior from `rpc_smoke.rs` into native API smoke tests and delete pure JSON-RPC compatibility coverage when native coverage exists.
+The most recent completed checkpoint is Checkpoint 98, Native RPC Smoke Replacement. The next checkpoint is Checkpoint 99, Native Task Status Projection. Its purpose is to finish native status fields and remove remaining public task-shape leakage before the event-stream cleanup.
 
 Current legacy-surface evidence includes remaining references to JSON-RPC methods, `Gid`, `gid`, `task_migration_`, `parity`, `compatibility`, and `legacy` outside the migrated session smoke tests. This is expected during the transition, but it is not acceptable at completion.
 
@@ -149,9 +149,9 @@ Files: `crates/raria-cli/tests/session_smoke.rs`, `crates/raria-rpc/src/api.rs`,
 
 Validation: focused session, native API, and BT tracker tests passed in the prior run; current `cargo check --workspace --locked` also passes.
 
-Evidence: session smoke no longer uses `aria2.shutdown` or `aria2.saveSession` for daemon shutdown/session save, but still uses `aria2.addUri` and `aria2.tellStatus`.
+Evidence: session smoke no longer uses `aria2.shutdown` or `aria2.saveSession` for daemon shutdown/session save.
 
-Remaining: migrate task creation and status polling to native API.
+Remaining: task creation and status polling moved to the next checkpoint.
 
 Next: Checkpoint 97.
 
@@ -167,25 +167,41 @@ Validation: `cargo test -p raria-cli --test session_smoke` passed with 18 tests.
 
 Evidence: `session_smoke.rs` now creates tasks through `POST /api/v1/tasks`, polls task state through `GET /api/v1/tasks/{taskId}` and `GET /api/v1/tasks`, uses `/api/v1/health` for readiness, and no longer calls `aria2.addUri`, `aria2.tellStatus`, `aria2.tellActive`, `aria2.tellWaiting`, `aria2.tellStopped`, or `aria2.getUris`. Hooks receive native task identifiers. Native task creation accepts checksum metadata, and failed native task summaries expose `errorMessage`.
 
-Remaining: migrate `rpc_smoke.rs` behavior into native smoke tests or delete pure compatibility cases.
+Remaining: migrate broader RPC smoke behavior into native smoke tests or delete pure compatibility cases.
 
 Next: Checkpoint 98.
 
 ### Checkpoint 98: Native RPC Smoke Replacement
 
-Status: next
+Status: complete
 
 Scope: replace useful daemon/RPC smoke behavior with native API smoke coverage, then remove pure JSON-RPC compatibility assertions.
 
-Files: `crates/raria-cli/tests/rpc_smoke.rs`, `crates/raria-cli/tests/native_api_smoke.rs`, `crates/raria-rpc/tests/native_api.rs`, native API and daemon code as needed.
+Files: `crates/raria-cli/tests/native_api_smoke.rs`, `crates/raria-core/src/native.rs`, `crates/raria-core/src/engine.rs`, `crates/raria-rpc/src/api.rs`, `crates/raria-rpc/src/methods.rs`, `crates/raria-cli/src/daemon.rs`, `crates/raria-cli/src/single.rs`, `crates/raria-cli/src/bt_runtime.rs`, `crates/raria-cli/tests/rpc_smoke.rs`
 
-Validation: start with focused native smoke tests, then run `cargo test -p raria-cli --test native_api_smoke`, `cargo test -p raria-rpc --test native_api`, and `cargo check --workspace --locked`.
+Validation: focused native smoke tests for native task headers, auth, active connections, file-not-found retry budget, structured log redaction, and daemonize passed. `cargo check --workspace --locked` passed before the final file deletion and must be rerun with the full checkpoint validation ladder after this ledger update.
 
-Evidence target: useful daemon control, task lifecycle, authentication, stats, and task mutation behavior is covered through `/api/v1` resources without JSON-RPC method names, aria2 option names, public `gid`, or compatibility envelopes.
+Evidence: useful behavior from `rpc_smoke.rs` now has native coverage for task creation, task status polling, request headers, HTTP Basic auth, active connection projection, retry budget, structured log file creation and credential redaction, native shutdown, daemon detach readiness, pause/resume, transfer policy mutation, source mutation, mirror failover, integrity failures, restore, native events, and BT lifecycle. Pure JSON-RPC CORS, JSON-RPC WebSocket origin, aria2 method, aria2 notification, AriaNg/Motrix-style compatibility, and RPC control-log assertions were deleted with `crates/raria-cli/tests/rpc_smoke.rs`.
 
-Remaining after completion: continue native event stream and public surface cleanup.
+Remaining after completion: finish native task status projection and remove remaining status-shape leakage in public surfaces.
 
 Next: Checkpoint 99.
+
+### Checkpoint 99: Native Task Status Projection
+
+Status: next
+
+Scope: complete native task detail/list fields for status, progress, transfer, source health, files, and terminal errors without aria2-style names or migration identifiers.
+
+Files: `crates/raria-core/src/native.rs`, `crates/raria-core/src/engine.rs`, `crates/raria-rpc/src/api.rs`, `crates/raria-cli/tests/native_api_smoke.rs`, `crates/raria-rpc/tests/native_api.rs`
+
+Validation: focused native API projection tests, then `cargo test -p raria-rpc --test native_api`, `cargo test -p raria-cli --test native_api_smoke`, and `cargo check --workspace --locked`.
+
+Evidence target: native task list and detail responses expose stable raria field names for all modern status data and omit `gid`, aria2 field names, JSON-RPC envelopes, and migration-only identifiers.
+
+Remaining after completion: native event stream cleanup.
+
+Next: Checkpoint 100.
 
 ## Validation Contract
 
