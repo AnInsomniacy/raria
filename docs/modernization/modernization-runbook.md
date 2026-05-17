@@ -4,13 +4,13 @@ This file is the authoritative recovery and execution document for completing ra
 
 ## Current State
 
-The current branch contains a large uncommitted modernization diff. The tree still compiles with `cargo check --workspace --locked`, and `git diff --check` reports no whitespace errors. The current diff touches the native API, daemon runtime, BitTorrent runtime, native task model, native configuration, Metalink parsing and dispatch, FTP backend, native API tests, daemon smoke tests, and modernization docs.
+The current branch contains the committed modernization snapshot `b18d3b7`. The tree compiles with `cargo check --workspace --locked`, `cargo fmt --all --check` passes, and `git diff --check` reports no whitespace errors. Recent work touched the native API, daemon runtime, BitTorrent runtime, native task model, native configuration, Metalink parsing and dispatch, FTP backend, native API tests, daemon smoke tests, and modernization docs.
 
 The project is no longer a skeleton. It has working HTTP/HTTPS, FTP/FTPS, SFTP, Metalink, BitTorrent, segmented downloads, retry, resume, native API routes, native WebSocket events, redb-backed persistence, structured logs, and many daemon smoke tests. The work is not complete because major internals and tests still depend on aria2-shaped JSON-RPC, `Gid`, `Job`, compatibility terminology, and migration adapters.
 
 The most recent completed checkpoint is Checkpoint 97, Native Session Task Creation and Status. The next checkpoint is Checkpoint 98, Native RPC Smoke Replacement. Its purpose is to migrate useful behavior from `rpc_smoke.rs` into native API smoke tests and delete pure JSON-RPC compatibility coverage when native coverage exists.
 
-Current legacy-surface evidence from the dirty tree includes many remaining references to `aria2.addUri`, `aria2.tellStatus`, `aria2.shutdown`, `jsonrpc`, `Gid`, `gid`, `task_migration_`, `parity`, `compatibility`, and `legacy`. This is expected during the transition, but it is not acceptable at completion.
+Current legacy-surface evidence includes remaining references to JSON-RPC methods, `Gid`, `gid`, `task_migration_`, `parity`, `compatibility`, and `legacy` outside the migrated session smoke tests. This is expected during the transition, but it is not acceptable at completion.
 
 ## Recovery Rules
 
