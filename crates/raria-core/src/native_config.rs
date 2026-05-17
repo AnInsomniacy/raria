@@ -24,6 +24,9 @@ pub struct RariaConfig {
     /// BitTorrent settings.
     #[serde(default)]
     pub bittorrent: BitTorrentConfig,
+    /// Metalink settings.
+    #[serde(default)]
+    pub metalink: MetalinkConfig,
     /// Local storage settings.
     #[serde(default)]
     pub storage: StorageConfig,
@@ -60,6 +63,10 @@ impl RariaConfig {
                 Some(self.network.no_proxy.join(","))
             },
             enable_rpc: true,
+            bt_enable_pex: self.bittorrent.enable_pex,
+            metalink_preferred_locations: self.metalink.preferred_locations.clone(),
+            metalink_preferred_protocol: self.metalink.preferred_protocol.clone(),
+            metalink_unique_protocols: self.metalink.unique_protocols,
             file_allocation: self.storage.file_allocation.to_runtime(),
             ..GlobalConfig::default()
         };
@@ -182,6 +189,18 @@ impl Default for BitTorrentConfig {
             seed_time: None,
         }
     }
+}
+
+/// Metalink settings.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(default, deny_unknown_fields)]
+pub struct MetalinkConfig {
+    /// Preferred mirror locations in order.
+    pub preferred_locations: Vec<String>,
+    /// Preferred mirror protocol.
+    pub preferred_protocol: Option<String>,
+    /// Keep only the best source for each protocol after sorting.
+    pub unique_protocols: bool,
 }
 
 /// Local storage settings.

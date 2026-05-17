@@ -31,6 +31,11 @@ mod tests {
             seed_ratio = 1.5
             seed_time = 60
 
+            [metalink]
+            preferred_locations = ["jp", "us"]
+            preferred_protocol = "https"
+            unique_protocols = true
+
             [storage]
             file_allocation = "prealloc"
             conflict_policy = "rename"
@@ -46,6 +51,9 @@ mod tests {
         assert_eq!(config.downloads.default_segments, 6);
         assert_eq!(config.network.no_proxy, vec!["localhost", "127.0.0.1"]);
         assert!(config.bittorrent.enable_dht);
+        assert_eq!(config.metalink.preferred_locations, vec!["jp", "us"]);
+        assert_eq!(config.metalink.preferred_protocol.as_deref(), Some("https"));
+        assert!(config.metalink.unique_protocols);
         assert_eq!(config.storage.file_allocation.as_str(), "prealloc");
     }
 
@@ -98,6 +106,11 @@ mod tests {
             proxy = "http://proxy.example:8080"
             no_proxy = ["localhost"]
 
+            [metalink]
+            preferred_locations = ["de"]
+            preferred_protocol = "ftp"
+            unique_protocols = true
+
             [storage]
             file_allocation = "trunc"
             "#,
@@ -113,11 +126,15 @@ mod tests {
         assert_eq!(global.split, 7);
         assert_eq!(global.min_split_size, 2097152);
         assert_eq!(global.max_tries, 4);
+        assert!(global.bt_enable_pex);
         assert_eq!(
             global.all_proxy.as_deref(),
             Some("http://proxy.example:8080")
         );
         assert_eq!(global.no_proxy.as_deref(), Some("localhost"));
+        assert_eq!(global.metalink_preferred_locations, vec!["de"]);
+        assert_eq!(global.metalink_preferred_protocol.as_deref(), Some("ftp"));
+        assert!(global.metalink_unique_protocols);
     }
 
     #[test]
@@ -157,5 +174,20 @@ mod tests {
         let global = config.to_global_config().expect("convert to global config");
 
         assert_eq!(global.api_auth_token.as_deref(), Some("runtime-token"));
+    }
+
+    #[test]
+    fn native_config_carries_pex_policy_into_runtime_config() {
+        let config = RariaConfig::from_toml_str(
+            r#"
+            [bittorrent]
+            enable_pex = false
+            "#,
+        )
+        .expect("native config should parse");
+
+        let global = config.to_global_config().expect("convert to global config");
+
+        assert!(!global.bt_enable_pex);
     }
 }

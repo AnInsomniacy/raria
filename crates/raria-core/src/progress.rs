@@ -4,6 +4,7 @@
 // (RPC WebSocket push, progress bars, logging, etc.).
 
 use crate::job::{Gid, Status};
+use crate::native::NativeEvent;
 use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
 
@@ -108,6 +109,36 @@ impl EventBus {
 }
 
 impl Default for EventBus {
+    fn default() -> Self {
+        Self::new(256)
+    }
+}
+
+/// Fan-out event bus for native raria event envelopes.
+#[derive(Debug, Clone)]
+pub struct NativeEventBus {
+    sender: broadcast::Sender<NativeEvent>,
+}
+
+impl NativeEventBus {
+    /// Create a new native event bus with the given channel capacity.
+    pub fn new(capacity: usize) -> Self {
+        let (sender, _) = broadcast::channel(capacity);
+        Self { sender }
+    }
+
+    /// Publish a native event to all subscribers.
+    pub fn publish(&self, event: NativeEvent) -> usize {
+        self.sender.send(event).unwrap_or(0)
+    }
+
+    /// Subscribe to native events.
+    pub fn subscribe(&self) -> broadcast::Receiver<NativeEvent> {
+        self.sender.subscribe()
+    }
+}
+
+impl Default for NativeEventBus {
     fn default() -> Self {
         Self::new(256)
     }

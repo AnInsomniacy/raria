@@ -3,7 +3,9 @@
 // This module defines configuration structures for global and per-job settings.
 
 use crate::file_alloc::FileAllocation;
+use crate::native::NativeSourceHealth;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 /// BitTorrent piece selection strategy exposed through raria configuration.
@@ -170,8 +172,16 @@ pub struct GlobalConfig {
     pub sftp_private_key: Option<PathBuf>,
     /// Optional SSH private key passphrase used for SFTP authentication.
     pub sftp_private_key_passphrase: Option<String>,
+    /// Preferred Metalink mirror locations.
+    pub metalink_preferred_locations: Vec<String>,
+    /// Preferred Metalink mirror protocol.
+    pub metalink_preferred_protocol: Option<String>,
+    /// Keep only the best Metalink source for each protocol.
+    pub metalink_unique_protocols: bool,
     /// Optional BT DHT persistence/config file path used to seed librqbit's persistent DHT state.
     pub bt_dht_config_file: Option<PathBuf>,
+    /// Enable BitTorrent peer exchange when the backend exposes it.
+    pub bt_enable_pex: bool,
     /// BT piece selection strategy forwarded into the BitTorrent runtime.
     pub bt_piece_strategy: BtPieceStrategy,
     /// Require encrypted BitTorrent transport (aria2: --bt-require-crypto).
@@ -236,7 +246,11 @@ impl Default for GlobalConfig {
             sftp_known_hosts: None,
             sftp_private_key: None,
             sftp_private_key_passphrase: None,
+            metalink_preferred_locations: Vec::new(),
+            metalink_preferred_protocol: None,
+            metalink_unique_protocols: false,
             bt_dht_config_file: None,
+            bt_enable_pex: true,
             bt_piece_strategy: BtPieceStrategy::RarestFirst,
             bt_require_crypto: false,
             bt_min_crypto_level: BtMinCryptoLevel::Plain,
@@ -273,12 +287,28 @@ pub struct JobOptions {
     pub bt_selected_files: Option<Vec<usize>>,
     /// Additional BT trackers appended to the torrent.
     pub bt_trackers: Option<Vec<String>>,
+    /// Native BT tracker URIs excluded before task submission.
+    pub bt_excluded_trackers: Vec<String>,
+    /// Native BT tracker connect timeout in seconds.
+    pub bt_tracker_connect_timeout_seconds: Option<u64>,
+    /// Native BT tracker request timeout in seconds.
+    pub bt_tracker_timeout_seconds: Option<u64>,
+    /// Native BT tracker announce interval override in seconds.
+    pub bt_tracker_interval_seconds: Option<u64>,
     /// Additional WebSeed URIs supplied alongside a torrent add request.
     pub bt_web_seed_uris: Option<Vec<String>>,
+    /// Metadata source URIs carried from Metalink, keyed by media type.
+    pub metalink_metadata_sources: Vec<MetalinkMetadataSource>,
+    /// Delete unselected BitTorrent files after the selected payload completes.
+    pub bt_delete_unselected_files_on_completion: bool,
     /// Stop seeding after this upload ratio is reached.
     pub seed_ratio: Option<f64>,
     /// Stop seeding after this many minutes.
     pub seed_time: Option<u64>,
+    /// Stop an incomplete BitTorrent transfer after this many idle download seconds.
+    pub bt_idle_download_timeout: Option<u64>,
+    /// Runtime health recorded for task sources.
+    pub source_health: HashMap<String, NativeSourceHealth>,
 }
 
 impl Default for JobOptions {
@@ -295,9 +325,42 @@ impl Default for JobOptions {
             checksum: None,
             bt_selected_files: None,
             bt_trackers: None,
+            bt_excluded_trackers: Vec::new(),
+            bt_tracker_connect_timeout_seconds: None,
+            bt_tracker_timeout_seconds: None,
+            bt_tracker_interval_seconds: None,
             bt_web_seed_uris: None,
+            metalink_metadata_sources: Vec::new(),
+            bt_delete_unselected_files_on_completion: false,
             seed_ratio: None,
             seed_time: None,
+            bt_idle_download_timeout: None,
+            source_health: HashMap::new(),
+        }
+    }
+}
+
+/// Metadata source associated with a Metalink file.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct MetalinkMetadataSource {
+    /// Metadata source URI.
+    pub uri: String,
+    /// Metadata media type, such as `torrent`.
+    pub media_type: String,
+    /// Priority where lower values are preferred.
+    pub priority: u32,
+    /// Optional metadata name.
+    pub name: Option<String>,
+}
+
+impl Default for MetalinkMetadataSource {
+    fn default() -> Self {
+        Self {
+            uri: String::new(),
+            media_type: String::new(),
+            priority: 999999,
+            name: None,
         }
     }
 }
@@ -315,6 +378,7 @@ mod tests {
         assert!(!cfg.enable_rpc);
         assert!(!cfg.rpc_allow_origin_all);
         assert_eq!(cfg.bt_piece_strategy, BtPieceStrategy::RarestFirst);
+        assert!(cfg.bt_enable_pex);
         assert!(!cfg.bt_require_crypto);
         assert_eq!(cfg.bt_min_crypto_level, BtMinCryptoLevel::Plain);
     }
@@ -333,6 +397,7 @@ mod tests {
         );
         assert_eq!(recovered.rpc_listen_port, cfg.rpc_listen_port);
         assert_eq!(recovered.bt_piece_strategy, BtPieceStrategy::RarestFirst);
+        assert!(recovered.bt_enable_pex);
         assert!(!recovered.bt_require_crypto);
         assert_eq!(recovered.bt_min_crypto_level, BtMinCryptoLevel::Plain);
     }

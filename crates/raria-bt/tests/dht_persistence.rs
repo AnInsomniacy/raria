@@ -104,7 +104,40 @@ fn dht_persistence_contract_wires_custom_config_path_into_session_options() {
             assert_eq!(
                 folder,
                 Some(download_dir.path().join(".raria-bt-session")),
-                "BT session persistence directory must stay stable when DHT persistence is enabled"
+                "default BT session persistence directory should remain download-dir scoped"
+            );
+        }
+    }
+}
+
+#[test]
+fn bt_session_persistence_contract_accepts_native_raria_state_dir() {
+    let download_dir = tempdir().expect("download tempdir");
+    let native_state_dir = download_dir.path().join("native-state/bt-session");
+
+    let options = parity_contract_session_options(
+        download_dir.path(),
+        &BtServiceConfig {
+            disable_dht: true,
+            disable_dht_persistence: true,
+            session_persistence_dir: Some(native_state_dir.clone()),
+            ..Default::default()
+        },
+    );
+
+    assert!(
+        options.fastresume,
+        "BT session persistence must keep librqbit fastresume enabled"
+    );
+    match options
+        .persistence
+        .expect("session persistence must remain enabled")
+    {
+        librqbit::SessionPersistenceConfig::Json { folder } => {
+            assert_eq!(
+                folder,
+                Some(native_state_dir),
+                "BT fastresume state must be bound to the raria-native state directory when configured"
             );
         }
     }

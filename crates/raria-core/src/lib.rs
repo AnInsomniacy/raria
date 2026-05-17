@@ -120,6 +120,9 @@ mod native_model_tests {
 
         let source = TaskSource::new("magnet:?xt=urn:btih:abcdef").expect("valid source");
         assert_eq!(source.protocol, SourceProtocol::Magnet);
+
+        let source = TaskSource::new("/downloads/linux.iso.torrent").expect("valid source");
+        assert_eq!(source.protocol, SourceProtocol::Torrent);
     }
 
     #[test]
@@ -193,6 +196,10 @@ mod native_persist_tests {
         );
         job.total_size = Some(1024);
         job.downloaded = 256;
+        job.options.source_health.insert(
+            "https://example.com/file.iso".to_string(),
+            crate::native::NativeSourceHealth::healthy(4096),
+        );
 
         let row = NativeTaskRow::from_job_for_migration(&job);
 
@@ -204,6 +211,10 @@ mod native_persist_tests {
         assert_eq!(row.total_bytes, Some(1024));
         assert_eq!(row.completed_bytes, 256);
         assert_eq!(row.segments, 8);
+        assert_eq!(
+            row.source_health["https://example.com/file.iso"].last_download_bytes_per_second,
+            Some(4096)
+        );
     }
 
     #[test]
@@ -218,6 +229,10 @@ mod native_persist_tests {
         );
         job.total_size = Some(1024);
         job.downloaded = 256;
+        job.options.source_health.insert(
+            "https://example.com/file.iso".to_string(),
+            crate::native::NativeSourceHealth::failed(1, "transient error: timeout"),
+        );
         let row = NativeTaskRow::from_job_for_migration(&job);
 
         let restored = row.to_job_for_migration().expect("restored job");
@@ -229,6 +244,12 @@ mod native_persist_tests {
         assert_eq!(restored.total_size, Some(1024));
         assert_eq!(restored.downloaded, 256);
         assert_eq!(restored.options.max_connections, 8);
+        assert_eq!(
+            restored.options.source_health["https://example.com/file.iso"]
+                .last_error
+                .as_deref(),
+            Some("transient error: timeout")
+        );
     }
 
     #[test]
@@ -249,11 +270,11 @@ mod native_persist_tests {
 
 #[cfg(test)]
 mod native_projection_tests {
-    use crate::job::{Gid, Job, Status};
+    use crate::job::{BtFile, Gid, Job, Status};
     use crate::native::{
-        ByteRange, NativePeerSnapshot, NativeSegmentRow, NativeTaskFile, NativeTaskIndex,
-        NativeTaskPiece, NativeTaskSummary, NativeTrackerSnapshot, SourceProtocol, TaskId,
-        TaskLifecycle,
+        ByteRange, NativeEvent, NativeEventData, NativeEventType, NativePeerSnapshot,
+        NativeSegmentRow, NativeTaskFile, NativeTaskIndex, NativeTaskPiece, NativeTaskSummary,
+        NativeTrackerSnapshot, SourceProtocol, TaskId, TaskLifecycle,
     };
     use std::path::PathBuf;
 
@@ -310,6 +331,40 @@ mod native_projection_tests {
     }
 
     #[test]
+    fn task_summary_projection_uses_bt_file_snapshots() {
+        let mut job = Job::new_bt(
+            vec!["magnet:?xt=urn:btih:feedface".into()],
+            PathBuf::from("/tmp/torrent"),
+        );
+        job.bt_files = Some(vec![
+            BtFile {
+                index: 0,
+                path: PathBuf::from("disc/file-a.bin"),
+                length: 100,
+                completed_length: 25,
+                selected: true,
+            },
+            BtFile {
+                index: 1,
+                path: PathBuf::from("disc/file-b.bin"),
+                length: 200,
+                completed_length: 0,
+                selected: false,
+            },
+        ]);
+
+        let summary = NativeTaskSummary::from_job_for_migration(&job);
+
+        assert_eq!(summary.files.len(), 2);
+        assert_eq!(summary.files[0].id, "file_0");
+        assert_eq!(summary.files[0].path, PathBuf::from("disc/file-a.bin"));
+        assert_eq!(summary.files[0].completed_bytes, 25);
+        assert!(summary.files[0].selected);
+        assert_eq!(summary.files[1].id, "file_1");
+        assert!(!summary.files[1].selected);
+    }
+
+    #[test]
     fn native_task_index_resolves_task_ids_and_runtime_job_ids() {
         let mut index = NativeTaskIndex::default();
         let gid = Gid::from_raw(42);
@@ -358,5 +413,46 @@ mod native_projection_tests {
         assert_eq!(tracker.uri, "udp://tracker.example:6969");
         assert_eq!(tracker.seeders, None);
         assert_eq!(tracker.leechers, None);
+        assert!(!tracker.excluded);
+        assert_eq!(tracker.connect_timeout_seconds, None);
+        assert_eq!(tracker.timeout_seconds, None);
+        assert_eq!(tracker.interval_seconds, None);
+    }
+
+    #[test]
+    fn bt_native_events_use_stable_type_strings_and_payloads() {
+        let task_id = TaskId::new();
+        let event = NativeEvent::new(
+            1,
+            NativeEventType::TaskBtMetadataResolved,
+            Some(task_id.clone()),
+            NativeEventData::BtMetadata {
+                info_hash: "0123456789abcdef".to_string(),
+                name: Some("fixture.iso".to_string()),
+                total_bytes: Some(4096),
+                piece_length: Some(1024),
+                piece_count: Some(4),
+            },
+        );
+
+        let json = serde_json::to_value(event).expect("event json");
+
+        assert_eq!(json["type"], "task.bt.metadata.resolved");
+        assert_eq!(json["taskId"], task_id.as_str());
+        assert_eq!(json["data"]["kind"], "btMetadata");
+        assert_eq!(json["data"]["infoHash"], "0123456789abcdef");
+
+        assert_eq!(
+            NativeEventType::TaskBtSeedingStarted.as_str(),
+            "task.bt.seeding.started"
+        );
+        assert_eq!(
+            NativeEventType::TaskBtPeerUpdated.as_str(),
+            "task.bt.peer.updated"
+        );
+        assert_eq!(
+            NativeEventType::TaskBtTrackerUpdated.as_str(),
+            "task.bt.tracker.updated"
+        );
     }
 }

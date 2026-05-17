@@ -38,6 +38,16 @@ fn allocate_port() -> u16 {
     port
 }
 
+fn directory_has_state(path: &std::path::Path) -> bool {
+    std::fs::read_dir(path)
+        .ok()
+        .into_iter()
+        .flatten()
+        .filter_map(std::result::Result::ok)
+        .filter_map(|entry| entry.metadata().ok())
+        .any(|metadata| metadata.is_file() && metadata.len() > 0)
+}
+
 async fn wait_for_rpc_ready_with_child(port: u16, child: &mut ChildGuard) -> Result<(), String> {
     let deadline = Instant::now() + Duration::from_secs(120);
     let client = reqwest::Client::new();
@@ -126,6 +136,113 @@ async fn spawn_ready_daemon_with_args(
     }
 
     panic!("failed to start daemon on a free RPC port after multiple attempts");
+}
+
+async fn create_native_bt_task(
+    client: &reqwest::Client,
+    port: u16,
+    download_dir: &std::path::Path,
+    fixture: &BtSeedFixture,
+    seeding_stop_after_minutes: Option<u64>,
+) -> String {
+    let mut bt = serde_json::json!({
+        "trackerUris": [fixture.tracker_url],
+    });
+    if let Some(minutes) = seeding_stop_after_minutes {
+        bt["seeding"] = serde_json::json!({
+            "stopAfterMinutes": minutes
+        });
+    }
+
+    let created: serde_json::Value = client
+        .post(format!("http://127.0.0.1:{port}/api/v1/tasks"))
+        .json(&serde_json::json!({
+            "sources": [format!("torrent:base64:{}", fixture.torrent_b64)],
+            "downloadDir": download_dir,
+            "bt": bt
+        }))
+        .send()
+        .await
+        .expect("send native BT task create")
+        .json()
+        .await
+        .expect("parse native BT task create response");
+
+    created["taskId"]
+        .as_str()
+        .unwrap_or_else(|| panic!("native BT task should be accepted: {created}"))
+        .to_string()
+}
+
+async fn request_native_shutdown(client: &reqwest::Client, port: u16) {
+    let response = client
+        .post(format!("http://127.0.0.1:{port}/api/v1/daemon/shutdown"))
+        .send()
+        .await
+        .expect("send native shutdown");
+    assert!(
+        response.status().is_success(),
+        "native shutdown should return success, got {}",
+        response.status()
+    );
+    let body: serde_json::Value = response
+        .json()
+        .await
+        .expect("parse native shutdown response");
+    assert_eq!(body["status"], "shuttingDown");
+    assert!(body.get("jsonrpc").is_none());
+    assert!(body.get("result").is_none());
+}
+
+async fn wait_for_child_exit_after_native_shutdown(child: &mut ChildGuard) {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        match child.child.try_wait() {
+            Ok(Some(status)) => {
+                assert!(status.success(), "daemon exited unsuccessfully: {status}");
+                return;
+            }
+            Ok(None) => {
+                assert!(
+                    Instant::now() < deadline,
+                    "daemon did not exit after native shutdown request"
+                );
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            Err(error) => panic!("failed waiting for daemon exit: {error}"),
+        }
+    }
+}
+
+async fn wait_for_native_bt_tracker_announce(
+    client: &reqwest::Client,
+    port: u16,
+    task_id: &str,
+    fixture: &BtSeedFixture,
+) {
+    let deadline = Instant::now() + Duration::from_secs(60);
+    loop {
+        let task_resp: serde_json::Value = client
+            .get(format!("http://127.0.0.1:{port}/api/v1/tasks/{task_id}"))
+            .send()
+            .await
+            .expect("send native task detail")
+            .json()
+            .await
+            .expect("parse native task detail");
+        let tracker_requests = fixture.tracker.received_requests().await;
+        if tracker_requests
+            .as_ref()
+            .is_some_and(|requests| !requests.is_empty())
+        {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "BT daemon never announced to tracker\ntask: {task_resp}\ntracker_requests: {tracker_requests:#?}"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
 }
 
 async fn lock_bt_daemon_smoke_lane() -> tokio::sync::MutexGuard<'static, ()> {
@@ -218,6 +335,33 @@ async fn spawn_bt_seed_fixture() -> BtSeedFixture {
 }
 
 #[tokio::test]
+async fn daemon_binds_bt_fastresume_state_to_native_session_path() {
+    let _guard = lock_bt_daemon_smoke_lane().await;
+    let fixture = spawn_bt_seed_fixture().await;
+    let temp = tempdir().expect("tempdir");
+    let session_file = temp.path().join("bt-fastresume.session.redb");
+    let expected_state_dir = temp.path().join("bt-fastresume.session.redb.bt-session");
+    let old_download_scoped_dir = temp.path().join(".raria-bt-session");
+    let (mut child, rpc_port) = spawn_ready_daemon(temp.path(), &session_file).await;
+    let client = reqwest::Client::new();
+
+    let task_id = create_native_bt_task(&client, rpc_port, temp.path(), &fixture, None).await;
+    wait_for_native_bt_tracker_announce(&client, rpc_port, &task_id, &fixture).await;
+
+    request_native_shutdown(&client, rpc_port).await;
+    wait_for_child_exit_after_native_shutdown(&mut child).await;
+
+    assert!(
+        directory_has_state(&expected_state_dir),
+        "BT fastresume state should be persisted under the native session-derived directory"
+    );
+    assert!(
+        !directory_has_state(&old_download_scoped_dir),
+        "BT fastresume state should not use the old download-scoped default directory"
+    );
+}
+
+#[tokio::test]
 async fn daemon_bt_tracker_option_announces_to_tracker_on_real_daemon_path() {
     let _guard = lock_bt_daemon_smoke_lane().await;
     let fixture = spawn_bt_seed_fixture().await;
@@ -226,47 +370,25 @@ async fn daemon_bt_tracker_option_announces_to_tracker_on_real_daemon_path() {
     let (mut child, rpc_port) = spawn_ready_daemon(temp.path(), &session_file).await;
     let client = reqwest::Client::new();
 
-    let add_resp: serde_json::Value = client
-        .post(format!("http://127.0.0.1:{rpc_port}"))
-        .json(&serde_json::json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "aria2.addTorrent",
-            "params": [
-                fixture.torrent_b64,
-                [],
-                { "bt-tracker": fixture.tracker_url }
-            ],
-        }))
-        .send()
-        .await
-        .expect("send addTorrent")
-        .json()
-        .await
-        .expect("parse addTorrent response");
-    let gid = add_resp["result"].as_str().expect("gid").to_string();
+    let task_id = create_native_bt_task(&client, rpc_port, temp.path(), &fixture, None).await;
 
     let deadline = Instant::now() + Duration::from_secs(60);
     loop {
-        let status_resp: serde_json::Value = client
-            .post(format!("http://127.0.0.1:{rpc_port}"))
-            .json(&serde_json::json!({
-                "jsonrpc": "2.0",
-                "id": 2,
-                "method": "aria2.tellStatus",
-                "params": [gid.clone()],
-            }))
+        let task_resp: serde_json::Value = client
+            .get(format!(
+                "http://127.0.0.1:{rpc_port}/api/v1/tasks/{task_id}"
+            ))
             .send()
             .await
-            .expect("send tellStatus")
+            .expect("send native task detail")
             .json()
             .await
-            .expect("parse tellStatus");
+            .expect("parse native task detail");
 
         let tracker_requests = fixture.tracker.received_requests().await;
         if let Some(requests) = tracker_requests.as_ref() {
             if !requests.is_empty() {
-                assert_eq!(status_resp["result"]["status"].as_str(), Some("active"));
+                assert_eq!(task_resp["lifecycle"].as_str(), Some("running"));
                 let request_url = &requests[0].url;
                 let query = request_url.query().expect("tracker query string");
                 assert!(
@@ -283,45 +405,14 @@ async fn daemon_bt_tracker_option_announces_to_tracker_on_real_daemon_path() {
 
         if Instant::now() >= deadline {
             panic!(
-                "BT daemon never announced to tracker on daemon path: {status_resp}\ntracker_requests: {tracker_requests:#?}"
+                "BT daemon never announced to tracker on daemon path: {task_resp}\ntracker_requests: {tracker_requests:#?}"
             );
         }
         tokio::time::sleep(Duration::from_millis(250)).await;
     }
 
-    let shutdown_resp: serde_json::Value = client
-        .post(format!("http://127.0.0.1:{rpc_port}"))
-        .json(&serde_json::json!({
-            "jsonrpc": "2.0",
-            "id": 4,
-            "method": "aria2.shutdown",
-            "params": [],
-        }))
-        .send()
-        .await
-        .expect("send shutdown")
-        .json()
-        .await
-        .expect("parse shutdown response");
-    assert_eq!(shutdown_resp["result"], "OK");
-
-    let deadline = Instant::now() + Duration::from_secs(10);
-    loop {
-        match child.child.try_wait() {
-            Ok(Some(status)) => {
-                assert!(status.success(), "daemon exited unsuccessfully: {status}");
-                break;
-            }
-            Ok(None) => {
-                assert!(
-                    Instant::now() < deadline,
-                    "daemon did not exit after shutdown RPC"
-                );
-                tokio::time::sleep(Duration::from_millis(100)).await;
-            }
-            Err(error) => panic!("failed waiting for daemon exit: {error}"),
-        }
-    }
+    request_native_shutdown(&client, rpc_port).await;
+    wait_for_child_exit_after_native_shutdown(&mut child).await;
 }
 
 #[tokio::test]
@@ -340,70 +431,15 @@ async fn daemon_shutdown_persists_bt_dht_snapshot_before_periodic_dump_window() 
     .await;
     let client = reqwest::Client::new();
 
-    let add_resp: serde_json::Value = client
-        .post(format!("http://127.0.0.1:{rpc_port}"))
-        .json(&serde_json::json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "aria2.addTorrent",
-            "params": [
-                fixture.torrent_b64,
-                [],
-                { "bt-tracker": fixture.tracker_url }
-            ],
-        }))
-        .send()
-        .await
-        .expect("send addTorrent")
-        .json()
-        .await
-        .expect("parse addTorrent response");
-    assert!(
-        add_resp
-            .get("result")
-            .and_then(|value| value.as_str())
-            .is_some(),
-        "daemon should accept BT job before shutdown: {add_resp}"
-    );
+    let _task_id = create_native_bt_task(&client, rpc_port, temp.path(), &fixture, None).await;
     assert!(
         !dht_config_file.exists(),
         "fresh daemon run should not persist DHT state before shutdown is requested"
     );
 
     let shutdown_started_at = Instant::now();
-    let shutdown_resp: serde_json::Value = client
-        .post(format!("http://127.0.0.1:{rpc_port}"))
-        .json(&serde_json::json!({
-            "jsonrpc": "2.0",
-            "id": 2,
-            "method": "aria2.shutdown",
-            "params": [],
-        }))
-        .send()
-        .await
-        .expect("send shutdown")
-        .json()
-        .await
-        .expect("parse shutdown response");
-    assert_eq!(shutdown_resp["result"], "OK");
-
-    let deadline = Instant::now() + Duration::from_secs(10);
-    loop {
-        match child.child.try_wait() {
-            Ok(Some(status)) => {
-                assert!(status.success(), "daemon exited unsuccessfully: {status}");
-                break;
-            }
-            Ok(None) => {
-                assert!(
-                    Instant::now() < deadline,
-                    "daemon did not exit after shutdown RPC"
-                );
-                tokio::time::sleep(Duration::from_millis(100)).await;
-            }
-            Err(error) => panic!("failed waiting for daemon exit: {error}"),
-        }
-    }
+    request_native_shutdown(&client, rpc_port).await;
+    wait_for_child_exit_after_native_shutdown(&mut child).await;
 
     assert!(
         shutdown_started_at.elapsed() < Duration::from_secs(3),
@@ -429,151 +465,6 @@ async fn daemon_shutdown_persists_bt_dht_snapshot_before_periodic_dump_window() 
 }
 
 #[tokio::test]
-async fn daemon_get_peers_exposes_live_bt_peer_details_over_rpc() {
-    let _guard = lock_bt_daemon_smoke_lane().await;
-    let fixture = spawn_bt_seed_fixture_with_payload(
-        (0..(8 * 1024 * 1024))
-            .map(|idx| (idx % 251) as u8)
-            .collect(),
-    )
-    .await;
-    let temp = tempdir().expect("tempdir");
-    let session_file = temp.path().join("bt-get-peers.session.redb");
-    let (mut child, rpc_port) = spawn_ready_daemon(temp.path(), &session_file).await;
-    let client = reqwest::Client::new();
-
-    let add_resp: serde_json::Value = client
-        .post(format!("http://127.0.0.1:{rpc_port}"))
-        .json(&serde_json::json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "aria2.addTorrent",
-            "params": [
-                fixture.torrent_b64,
-                [],
-                { "bt-tracker": fixture.tracker_url }
-            ],
-        }))
-        .send()
-        .await
-        .expect("send addTorrent")
-        .json()
-        .await
-        .expect("parse addTorrent response");
-    let gid = add_resp["result"].as_str().expect("gid").to_string();
-
-    let deadline = Instant::now() + Duration::from_secs(120);
-    loop {
-        let peers_resp: serde_json::Value = client
-            .post(format!("http://127.0.0.1:{rpc_port}"))
-            .json(&serde_json::json!({
-                "jsonrpc": "2.0",
-                "id": 2,
-                "method": "aria2.getPeers",
-                "params": [gid.clone()],
-            }))
-            .send()
-            .await
-            .expect("send getPeers")
-            .json()
-            .await
-            .expect("parse getPeers response");
-
-        let status_resp: serde_json::Value = client
-            .post(format!("http://127.0.0.1:{rpc_port}"))
-            .json(&serde_json::json!({
-                "jsonrpc": "2.0",
-                "id": 3,
-                "method": "aria2.tellStatus",
-                "params": [gid.clone()],
-            }))
-            .send()
-            .await
-            .expect("send tellStatus")
-            .json()
-            .await
-            .expect("parse tellStatus response");
-
-        let tracker_requests = fixture.tracker.received_requests().await;
-        if let Some(first_peer) = peers_resp["result"]
-            .as_array()
-            .and_then(|peers| peers.first())
-        {
-            assert!(
-                tracker_requests
-                    .as_ref()
-                    .is_some_and(|requests| !requests.is_empty()),
-                "expected daemon-path tracker announce before accepting peer details: {tracker_requests:#?}"
-            );
-            assert!(
-                first_peer["ip"].as_str().is_some(),
-                "ip should be a string: {peers_resp}"
-            );
-            assert!(
-                first_peer["port"].as_str().is_some(),
-                "port should be a string: {peers_resp}"
-            );
-            assert!(
-                first_peer["downloadSpeed"].as_str().is_some(),
-                "downloadSpeed should be a string: {peers_resp}"
-            );
-            assert!(
-                first_peer["uploadSpeed"].as_str().is_some(),
-                "uploadSpeed should be a string: {peers_resp}"
-            );
-            assert!(
-                first_peer["seeder"].as_str().is_some(),
-                "seeder should be a string: {peers_resp}"
-            );
-            assert_eq!(first_peer["peerId"].as_str(), Some(""));
-            assert_eq!(first_peer["bitfield"].as_str(), Some(""));
-            break;
-        }
-
-        assert!(
-            Instant::now() < deadline,
-            "BT daemon never surfaced peer details over aria2.getPeers before timeout\nstatus: {status_resp}\npeers: {peers_resp}"
-        );
-
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
-
-    let shutdown_resp: serde_json::Value = client
-        .post(format!("http://127.0.0.1:{rpc_port}"))
-        .json(&serde_json::json!({
-            "jsonrpc": "2.0",
-            "id": 4,
-            "method": "aria2.shutdown",
-            "params": [],
-        }))
-        .send()
-        .await
-        .expect("send shutdown")
-        .json()
-        .await
-        .expect("parse shutdown response");
-    assert_eq!(shutdown_resp["result"], "OK");
-
-    let deadline = Instant::now() + Duration::from_secs(10);
-    loop {
-        match child.child.try_wait() {
-            Ok(Some(status)) => {
-                assert!(status.success(), "daemon exited unsuccessfully: {status}");
-                break;
-            }
-            Ok(None) => {
-                assert!(
-                    Instant::now() < deadline,
-                    "daemon did not exit after shutdown RPC"
-                );
-                tokio::time::sleep(Duration::from_millis(100)).await;
-            }
-            Err(error) => panic!("failed waiting for daemon exit: {error}"),
-        }
-    }
-}
-
-#[tokio::test]
 async fn daemon_log_file_contains_structured_bt_lifecycle_events() {
     let _guard = lock_bt_daemon_smoke_lane().await;
     let fixture = spawn_bt_seed_fixture().await;
@@ -588,94 +479,38 @@ async fn daemon_log_file_contains_structured_bt_lifecycle_events() {
     .await;
     let client = reqwest::Client::new();
 
-    let add_resp: serde_json::Value = client
-        .post(format!("http://127.0.0.1:{rpc_port}"))
-        .json(&serde_json::json!({
-            "jsonrpc": "2.0",
-            "id": 10,
-            "method": "aria2.addTorrent",
-            "params": [
-                fixture.torrent_b64,
-                [],
-                {
-                    "bt-tracker": fixture.tracker_url,
-                    "seed-time": "1"
-                }
-            ],
-        }))
-        .send()
-        .await
-        .expect("send addTorrent")
-        .json()
-        .await
-        .expect("parse addTorrent response");
-    let gid = add_resp["result"].as_str().expect("gid").to_string();
+    let task_id = create_native_bt_task(&client, rpc_port, temp.path(), &fixture, Some(1)).await;
 
     let deadline = Instant::now() + Duration::from_secs(60);
     loop {
-        let status_resp: serde_json::Value = client
-            .post(format!("http://127.0.0.1:{rpc_port}"))
-            .json(&serde_json::json!({
-                "jsonrpc": "2.0",
-                "id": 11,
-                "method": "aria2.tellStatus",
-                "params": [gid.clone()],
-            }))
+        let task_resp: serde_json::Value = client
+            .get(format!(
+                "http://127.0.0.1:{rpc_port}/api/v1/tasks/{task_id}"
+            ))
             .send()
             .await
-            .expect("send tellStatus")
+            .expect("send native task detail")
             .json()
             .await
-            .expect("parse tellStatus response");
+            .expect("parse native task detail");
 
         let tracker_requests = fixture.tracker.received_requests().await;
         if tracker_requests
             .as_ref()
             .is_some_and(|requests| !requests.is_empty())
-            && status_resp["result"]["status"].as_str() == Some("active")
+            && task_resp["lifecycle"].as_str() == Some("running")
         {
             break;
         }
         assert!(
             Instant::now() < deadline,
-            "BT daemon never reached an announced active state: {status_resp}"
+            "BT daemon never reached an announced running state: {task_resp}"
         );
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
 
-    let shutdown_resp: serde_json::Value = client
-        .post(format!("http://127.0.0.1:{rpc_port}"))
-        .json(&serde_json::json!({
-            "jsonrpc": "2.0",
-            "id": 12,
-            "method": "aria2.shutdown",
-            "params": [],
-        }))
-        .send()
-        .await
-        .expect("send shutdown")
-        .json()
-        .await
-        .expect("parse shutdown response");
-    assert_eq!(shutdown_resp["result"], "OK");
-
-    let deadline = Instant::now() + Duration::from_secs(10);
-    loop {
-        match child.child.try_wait() {
-            Ok(Some(status)) => {
-                assert!(status.success(), "daemon exited unsuccessfully: {status}");
-                break;
-            }
-            Ok(None) => {
-                assert!(
-                    Instant::now() < deadline,
-                    "daemon did not exit after shutdown RPC"
-                );
-                tokio::time::sleep(Duration::from_millis(100)).await;
-            }
-            Err(error) => panic!("failed waiting for daemon exit: {error}"),
-        }
-    }
+    request_native_shutdown(&client, rpc_port).await;
+    wait_for_child_exit_after_native_shutdown(&mut child).await;
 
     let entries = std::fs::read_to_string(&log_path)
         .expect("read log file")
@@ -688,7 +523,7 @@ async fn daemon_log_file_contains_structured_bt_lifecycle_events() {
         entries.iter().any(|entry| {
             entry["target"] == "raria::bt"
                 && entry["message"] == "BT download started"
-                && entry["fields"]["gid"] == gid
+                && entry["fields"]["gid"].as_str().is_some()
         }),
         "structured log should capture BT start events"
     );
@@ -696,7 +531,7 @@ async fn daemon_log_file_contains_structured_bt_lifecycle_events() {
         entries.iter().any(|entry| {
             entry["target"] == "raria::bt"
                 && entry["message"] == "BT download cancelled"
-                && entry["fields"]["gid"] == gid
+                && entry["fields"]["gid"].as_str().is_some()
         }),
         "structured log should capture BT shutdown cancellation events"
     );

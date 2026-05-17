@@ -186,6 +186,7 @@ pub(crate) async fn run_download(options: SingleDownloadOptions) -> Result<()> {
         dir: options.dir.clone(),
         filename: resolved_filename,
         connections: options.connections,
+        checksum: options.checksum_spec.clone(),
     })?;
 
     let gid = handle.gid;

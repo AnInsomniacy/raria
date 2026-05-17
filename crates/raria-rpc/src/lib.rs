@@ -14,6 +14,8 @@
 //! - [`facade`] — conversion between raria-core types and aria2 response format
 //! - [`events`] — mapping download events to aria2 notification methods
 
+mod metalink_tasks;
+
 /// Native raria HTTP JSON API.
 pub mod api;
 /// Download event to aria2 notification mapping.

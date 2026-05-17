@@ -4,7 +4,7 @@
 //
 // Complete method list:
 // ─ Download control ─
-//   aria2.addUri, aria2.addTorrent, aria2.addMetalink
+//   aria2.addUri
 //   aria2.remove, aria2.forceRemove
 //   aria2.pause, aria2.pauseAll, aria2.forcePause, aria2.forcePauseAll
 //   aria2.unpause, aria2.unpauseAll
@@ -29,7 +29,7 @@ use raria_core::logging::emit_structured_log;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::Arc;
-use tracing::{debug, info, warn};
+use tracing::{debug, info};
 
 /// aria2-style request options (per-download overrides).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -85,25 +85,6 @@ pub trait Aria2Rpc {
         options: Option<RpcOptions>,
         position: Option<i32>,
     ) -> RpcResult<String>;
-
-    /// Add a download by base64-encoded `.torrent` file. Returns the GID.
-    #[method(name = "aria2.addTorrent")]
-    async fn add_torrent(
-        &self,
-        torrent_base64: String,
-        uris: Option<Vec<String>>,
-        options: Option<RpcOptions>,
-        position: Option<i32>,
-    ) -> RpcResult<String>;
-
-    /// Add downloads from a base64-encoded `.metalink` file. Returns GIDs.
-    #[method(name = "aria2.addMetalink")]
-    async fn add_metalink(
-        &self,
-        metalink_base64: String,
-        options: Option<RpcOptions>,
-        position: Option<i32>,
-    ) -> RpcResult<Vec<String>>;
 
     /// Remove a download. Returns the GID.
     #[method(name = "aria2.remove")]
@@ -278,6 +259,7 @@ impl Aria2RpcServer for RpcHandler {
             dir,
             filename: opts.filename.clone(),
             connections,
+            checksum: opts.checksum.clone(),
         };
 
         let handle = self
@@ -299,190 +281,6 @@ impl Aria2RpcServer for RpcHandler {
             [("gid", handle.gid.to_string())],
         );
         Ok(format!("{}", handle.gid))
-    }
-
-    async fn add_torrent(
-        &self,
-        torrent_base64: String,
-        uris: Option<Vec<String>>,
-        options: Option<RpcOptions>,
-        position: Option<i32>,
-    ) -> RpcResult<String> {
-        use base64::Engine as Base64Engine;
-        use raria_core::job::Job;
-
-        // Decode base64 → torrent bytes.
-        let torrent_bytes = base64::engine::general_purpose::STANDARD
-            .decode(&torrent_base64)
-            .map_err(|e| rpc_err(1, &format!("invalid base64: {e}")))?;
-
-        if torrent_bytes.is_empty() {
-            return Err(rpc_err(1, "empty torrent data"));
-        }
-        // Store the raw torrent bytes as a base64 data URI so the daemon
-        // can retrieve them when it activates this job.
-        let torrent_uri = format!("torrent:base64:{torrent_base64}");
-
-        let out_path = self.engine.config.dir.join("bt_download");
-        let mut job = Job::new_bt(vec![torrent_uri], out_path);
-        if let Some(select_file) = options
-            .as_ref()
-            .and_then(|opts| opts.select_file.as_deref())
-            .map(parse_select_file_spec)
-            .transpose()
-            .map_err(|e| rpc_err(1, &e.to_string()))?
-        {
-            job.options.bt_selected_files = Some(select_file);
-        }
-        if let Some(trackers) = options
-            .as_ref()
-            .and_then(|opts| opts.bt_tracker.as_deref())
-            .map(parse_bt_tracker_spec)
-            .transpose()
-            .map_err(|e| rpc_err(1, &e.to_string()))?
-        {
-            job.options.bt_trackers = Some(trackers);
-        }
-        if let Some(web_seed_uris) = uris.filter(|uris| !uris.is_empty()) {
-            job.options.bt_web_seed_uris = Some(web_seed_uris);
-        }
-        if let Some(seed_ratio) = options
-            .as_ref()
-            .and_then(|opts| opts.seed_ratio.as_deref())
-            .and_then(|v| v.parse::<f64>().ok())
-        {
-            job.options.seed_ratio = Some(seed_ratio);
-        }
-        if let Some(seed_time) = options
-            .as_ref()
-            .and_then(|opts| opts.seed_time.as_deref())
-            .and_then(|v| v.parse::<u64>().ok())
-        {
-            job.options.seed_time = Some(seed_time);
-        }
-        let actual_gid = job.gid;
-
-        self.engine
-            .submit_job(job, parse_queue_position(position)?)
-            .map_err(|e| rpc_err(1, &e.to_string()))?;
-
-        let gid_str = format!("{:016x}", actual_gid.as_raw());
-        debug!(gid = %gid_str, "addTorrent: BT job created");
-        Ok(gid_str)
-    }
-
-    async fn add_metalink(
-        &self,
-        metalink_base64: String,
-        options: Option<RpcOptions>,
-        position: Option<i32>,
-    ) -> RpcResult<Vec<String>> {
-        use base64::Engine as Base64Engine;
-        use raria_core::engine::AddUriSpec;
-        use raria_metalink::normalizer::{NormalizeOptions, normalize};
-        use raria_metalink::parser::parse_metalink;
-        let opts = options.unwrap_or_default();
-
-        // Decode base64 → XML bytes.
-        let xml_bytes = base64::engine::general_purpose::STANDARD
-            .decode(&metalink_base64)
-            .map_err(|e| rpc_err(1, &format!("invalid base64: {e}")))?;
-
-        let xml_str = String::from_utf8(xml_bytes)
-            .map_err(|e| rpc_err(1, &format!("metalink is not valid UTF-8: {e}")))?;
-
-        // Parse the Metalink XML.
-        let metalink = parse_metalink(&xml_str)
-            .map_err(|e| rpc_err(1, &format!("failed to parse metalink: {e}")))?;
-
-        if metalink.files.is_empty() {
-            return Err(rpc_err(1, "metalink contains no files"));
-        }
-
-        let seeds = normalize(&metalink, &NormalizeOptions::default());
-
-        // Create a job for each file in the metalink.
-        let mut gids = Vec::new();
-        let mut created = Vec::new();
-        let mut next_position = parse_queue_position(position)?;
-        for seed in seeds {
-            if seed.uris.is_empty() {
-                continue;
-            }
-
-            let dir = opts
-                .dir
-                .as_ref()
-                .map(PathBuf::from)
-                .unwrap_or_else(|| self.engine.config.dir.clone());
-            let connections = opts
-                .connections
-                .as_ref()
-                .and_then(|s| s.parse().ok())
-                .unwrap_or(16);
-            let spec = AddUriSpec {
-                uris: seed.uris.clone(),
-                filename: Some(seed.filename.clone()),
-                dir,
-                connections,
-            };
-
-            match self.engine.add_uri_with_position(&spec, next_position) {
-                Ok(handle) => {
-                    self.engine.registry.update(handle.gid, |job| {
-                        apply_common_rpc_job_options(job, &opts);
-                        if let Some(checksum) = seed.checksum.as_ref() {
-                            job.options.checksum =
-                                Some(format!("{}={}", checksum.algo, checksum.value));
-                        }
-                        job.total_size = seed.expected_size;
-                        job.piece_checksum = seed.piece_checksum.as_ref().map(|piece_checksum| {
-                            raria_core::job::PieceChecksum {
-                                algo: piece_checksum.algo.clone(),
-                                length: piece_checksum.length,
-                                hashes: piece_checksum.hashes.clone(),
-                            }
-                        });
-                    });
-                    let gid_str = format!("{:016x}", handle.gid.as_raw());
-                    debug!(gid = %gid_str, name = %seed.filename, "metalink: added job");
-                    gids.push(gid_str);
-                    created.push(handle.gid);
-                    next_position = next_position.map(|value| value + 1);
-                }
-                Err(e) => {
-                    warn!(name = %seed.filename, error = %e, "metalink: failed to add job");
-                }
-            }
-        }
-
-        if let Some(root_gid) = created.first().copied() {
-            for (idx, gid) in created.iter().copied().enumerate() {
-                let following = idx
-                    .checked_sub(1)
-                    .and_then(|prev| created.get(prev).copied());
-                let followed_by = created
-                    .get(idx + 1)
-                    .copied()
-                    .map(|gid| vec![gid])
-                    .unwrap_or_default();
-                self.engine.registry.update(gid, |job| {
-                    job.following = following;
-                    job.followed_by = followed_by.clone();
-                    job.belongs_to = if gid == root_gid {
-                        None
-                    } else {
-                        Some(root_gid)
-                    };
-                });
-            }
-        }
-
-        if gids.is_empty() {
-            return Err(rpc_err(1, "no downloadable files found in metalink"));
-        }
-
-        Ok(gids)
     }
 
     async fn remove(&self, gid: String) -> RpcResult<String> {

@@ -152,6 +152,9 @@ impl SourceProtocol {
         if uri.starts_with("torrent:") {
             return Ok(Self::Torrent);
         }
+        if uri.ends_with(".torrent") {
+            return Ok(Self::Torrent);
+        }
         if uri.starts_with("metalink:") {
             return Ok(Self::Metalink);
         }
@@ -180,6 +183,8 @@ pub struct TaskSource {
     pub protocol: SourceProtocol,
     /// User or document supplied source priority.
     pub priority: u32,
+    /// Runtime health observed for this source.
+    pub health: NativeSourceHealth,
 }
 
 impl TaskSource {
@@ -193,7 +198,103 @@ impl TaskSource {
             uri,
             protocol,
             priority: 0,
+            health: NativeSourceHealth::default(),
         })
+    }
+
+    /// Attach runtime health to a source projection.
+    pub fn with_health(mut self, health: NativeSourceHealth) -> Self {
+        self.health = health;
+        self
+    }
+}
+
+/// Runtime source health state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum NativeSourceHealthState {
+    /// No runtime observation has been recorded yet.
+    Unknown,
+    /// The source has completed a recent successful transfer.
+    Healthy,
+    /// The source has failed but is still eligible for future retry.
+    Degraded,
+    /// The source has failed enough times to be treated as the lowest scoring mirror.
+    Failed,
+}
+
+impl NativeSourceHealthState {
+    /// Return the stable API string for this state.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Unknown => "unknown",
+            Self::Healthy => "healthy",
+            Self::Degraded => "degraded",
+            Self::Failed => "failed",
+        }
+    }
+}
+
+/// Runtime source health projection for native APIs.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeSourceHealth {
+    /// Current source health state.
+    pub state: NativeSourceHealthState,
+    /// Number of failed runtime attempts recorded for this source.
+    pub failure_count: u32,
+    /// Last source-specific error, if any.
+    pub last_error: Option<String>,
+    /// Last measured transfer speed for this source, if any.
+    pub last_download_bytes_per_second: Option<u64>,
+    /// Relative selection score. Larger values are preferred.
+    pub score: u64,
+}
+
+impl Default for NativeSourceHealth {
+    fn default() -> Self {
+        Self {
+            state: NativeSourceHealthState::Unknown,
+            failure_count: 0,
+            last_error: None,
+            last_download_bytes_per_second: None,
+            score: 1_000,
+        }
+    }
+}
+
+impl NativeSourceHealth {
+    /// Build a degraded or failed health projection from a failure counter.
+    pub fn failed(failure_count: u32, last_error: impl Into<String>) -> Self {
+        let state = if failure_count >= 3 {
+            NativeSourceHealthState::Failed
+        } else {
+            NativeSourceHealthState::Degraded
+        };
+        let penalty = u64::from(failure_count).saturating_mul(250);
+        Self {
+            state,
+            failure_count,
+            last_error: Some(last_error.into()),
+            last_download_bytes_per_second: None,
+            score: 1_000_u64.saturating_sub(penalty),
+        }
+    }
+
+    /// Build a healthy source projection from observed transfer speed.
+    pub fn healthy(download_bytes_per_second: u64) -> Self {
+        Self {
+            state: NativeSourceHealthState::Healthy,
+            failure_count: 0,
+            last_error: None,
+            last_download_bytes_per_second: Some(download_bytes_per_second),
+            score: 2_000 + download_bytes_per_second,
+        }
+    }
+
+    /// Whether this source has runtime observations.
+    pub const fn is_unknown(&self) -> bool {
+        matches!(self.state, NativeSourceHealthState::Unknown)
     }
 }
 
@@ -247,6 +348,14 @@ pub enum NativeEventType {
     TaskProgress,
     /// One source failed while the task may continue.
     TaskSourceFailed,
+    /// BitTorrent metadata was resolved.
+    TaskBtMetadataResolved,
+    /// BitTorrent payload completed and seeding started.
+    TaskBtSeedingStarted,
+    /// BitTorrent peer snapshot changed.
+    TaskBtPeerUpdated,
+    /// BitTorrent tracker snapshot changed.
+    TaskBtTrackerUpdated,
 }
 
 impl Serialize for NativeEventType {
@@ -271,6 +380,10 @@ impl NativeEventType {
             Self::TaskRemoved => "task.removed",
             Self::TaskProgress => "task.progress",
             Self::TaskSourceFailed => "task.source.failed",
+            Self::TaskBtMetadataResolved => "task.bt.metadata.resolved",
+            Self::TaskBtSeedingStarted => "task.bt.seeding.started",
+            Self::TaskBtPeerUpdated => "task.bt.peer.updated",
+            Self::TaskBtTrackerUpdated => "task.bt.tracker.updated",
         }
     }
 }
@@ -300,6 +413,38 @@ pub enum NativeEventData {
         code: String,
         /// Human-readable message.
         message: String,
+    },
+    /// BitTorrent metadata payload.
+    BtMetadata {
+        /// Torrent info hash.
+        info_hash: String,
+        /// Display name from torrent metadata.
+        name: Option<String>,
+        /// Total payload bytes.
+        total_bytes: Option<u64>,
+        /// Piece length in bytes.
+        piece_length: Option<u64>,
+        /// Number of pieces in the torrent.
+        piece_count: Option<u64>,
+    },
+    /// BitTorrent seeding payload.
+    BtSeeding {
+        /// Bytes uploaded while seeding.
+        uploaded_bytes: u64,
+        /// Number of connected peers.
+        peer_count: u32,
+        /// Number of known seeders.
+        seeder_count: Option<u32>,
+    },
+    /// BitTorrent peer update payload.
+    BtPeer {
+        /// Peer snapshot.
+        peer: NativePeerSnapshot,
+    },
+    /// BitTorrent tracker update payload.
+    BtTracker {
+        /// Tracker snapshot.
+        tracker: NativeTrackerSnapshot,
     },
 }
 
@@ -382,6 +527,9 @@ pub struct NativeTaskRow {
     pub lifecycle: TaskLifecycle,
     /// Source URIs assigned to the task.
     pub sources: Vec<String>,
+    /// Runtime health recorded for each source URI.
+    #[serde(default)]
+    pub source_health: std::collections::HashMap<String, NativeSourceHealth>,
     /// Primary output path.
     pub output_path: PathBuf,
     /// Total payload size, when known.
@@ -409,6 +557,7 @@ impl NativeTaskRow {
             runtime_bridge_id: None,
             lifecycle,
             sources: Vec::new(),
+            source_health: std::collections::HashMap::new(),
             output_path: PathBuf::new(),
             total_bytes: None,
             completed_bytes: 0,
@@ -435,6 +584,7 @@ impl NativeTaskRow {
             runtime_bridge_id: Some(job.gid.as_raw()),
             lifecycle,
             sources: job.uris.clone(),
+            source_health: job.options.source_health.clone(),
             output_path: job.out_path.clone(),
             total_bytes: job.total_size,
             completed_bytes: job.downloaded,
@@ -479,6 +629,7 @@ impl NativeTaskRow {
             self.output_path.clone(),
             crate::config::JobOptions {
                 max_connections: self.segments.max(1),
+                source_health: self.source_health.clone(),
                 dir: self.output_path.parent().map(PathBuf::from),
                 out: self
                     .output_path
@@ -623,6 +774,9 @@ pub struct NativeTaskSummary {
     pub total_bytes: Option<u64>,
     /// Current download speed in bytes per second.
     pub download_bytes_per_second: u64,
+    /// Terminal error message when the task failed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error_message: Option<String>,
 }
 
 impl NativeTaskSummary {
@@ -638,17 +792,44 @@ impl NativeTaskSummary {
             crate::job::Status::Error => TaskLifecycle::Failed,
             crate::job::Status::Removed => TaskLifecycle::Removed,
         };
-        let files = vec![NativeTaskFile {
-            id: "file_0".to_string(),
-            path: job.out_path.clone(),
-            length: job.total_size,
-            completed_bytes: job.downloaded,
-            selected: true,
-        }];
+        let files = job
+            .bt_files
+            .as_ref()
+            .map(|files| {
+                files
+                    .iter()
+                    .map(|file| NativeTaskFile {
+                        id: format!("file_{}", file.index),
+                        path: file.path.clone(),
+                        length: Some(file.length),
+                        completed_bytes: file.completed_length,
+                        selected: file.selected,
+                    })
+                    .collect()
+            })
+            .unwrap_or_else(|| {
+                vec![NativeTaskFile {
+                    id: "file_0".to_string(),
+                    path: job.out_path.clone(),
+                    length: job.total_size,
+                    completed_bytes: job.downloaded,
+                    selected: true,
+                }]
+            });
         let sources = job
             .uris
             .iter()
-            .filter_map(|uri| TaskSource::new(uri.clone()).ok())
+            .filter_map(|uri| {
+                TaskSource::new(uri.clone()).ok().map(|source| {
+                    let health = job
+                        .options
+                        .source_health
+                        .get(uri)
+                        .cloned()
+                        .unwrap_or_default();
+                    source.with_health(health)
+                })
+            })
             .collect();
 
         Self {
@@ -659,6 +840,7 @@ impl NativeTaskSummary {
             completed_bytes: job.downloaded,
             total_bytes: job.total_size,
             download_bytes_per_second: job.download_speed,
+            error_message: job.error_msg.clone(),
         }
     }
 }
@@ -709,6 +891,14 @@ pub struct NativeTrackerSnapshot {
     pub leechers: Option<u32>,
     /// Last tracker error.
     pub last_error: Option<String>,
+    /// Whether the tracker is currently excluded by native policy.
+    pub excluded: bool,
+    /// Connect timeout in seconds, if configured.
+    pub connect_timeout_seconds: Option<u64>,
+    /// Announce request timeout in seconds, if configured.
+    pub timeout_seconds: Option<u64>,
+    /// Announce interval override in seconds, if configured.
+    pub interval_seconds: Option<u64>,
 }
 
 impl NativeTrackerSnapshot {
@@ -720,6 +910,10 @@ impl NativeTrackerSnapshot {
             seeders: None,
             leechers: None,
             last_error: None,
+            excluded: false,
+            connect_timeout_seconds: None,
+            timeout_seconds: None,
+            interval_seconds: None,
         }
     }
 }

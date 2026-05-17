@@ -86,7 +86,7 @@ async fn run_hook(
     let file_path = job.out_path.to_string_lossy().into_owned();
 
     tokio::process::Command::new(script)
-        .arg(format!("{gid}"))
+        .arg(job.task_id.as_str())
         .arg(num_files)
         .arg(file_path)
         .spawn()?;

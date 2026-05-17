@@ -15,7 +15,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use tempfile::tempdir;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::{TcpListener, TcpStream};
+use tokio::net::{TcpListener, TcpStream, UdpSocket};
+use tokio::sync::oneshot;
 use tokio::time::{Duration, sleep, timeout};
 
 fn make_payload(size: usize) -> Vec<u8> {
@@ -126,6 +127,130 @@ struct SeedFixture {
     seed_addr: SocketAddr,
     _session: Arc<Session>,
     _source_root: tempfile::TempDir,
+}
+
+struct UdpTrackerFixture {
+    announce_url: String,
+}
+
+async fn spawn_udp_tracker(peer_addr: SocketAddr) -> UdpTrackerFixture {
+    let socket = UdpSocket::bind("127.0.0.1:0")
+        .await
+        .expect("bind UDP tracker");
+    let tracker_addr = socket.local_addr().expect("UDP tracker addr");
+
+    tokio::spawn(async move {
+        let mut buf = [0u8; 2048];
+        loop {
+            let Ok((len, remote)) = socket.recv_from(&mut buf).await else {
+                break;
+            };
+            if len < 16 {
+                continue;
+            }
+
+            let action = u32::from_be_bytes(buf[8..12].try_into().expect("action bytes"));
+            let transaction_id = &buf[12..16];
+            match action {
+                0 => {
+                    let mut response = Vec::with_capacity(16);
+                    response.extend_from_slice(&0u32.to_be_bytes());
+                    response.extend_from_slice(transaction_id);
+                    response.extend_from_slice(&0x1122_3344_5566_7788u64.to_be_bytes());
+                    let _ = socket.send_to(&response, remote).await;
+                }
+                1 => {
+                    let mut response = Vec::with_capacity(26);
+                    response.extend_from_slice(&1u32.to_be_bytes());
+                    response.extend_from_slice(transaction_id);
+                    response.extend_from_slice(&60u32.to_be_bytes());
+                    response.extend_from_slice(&0u32.to_be_bytes());
+                    response.extend_from_slice(&1u32.to_be_bytes());
+                    match peer_addr {
+                        SocketAddr::V4(addr) => {
+                            response.extend_from_slice(&addr.ip().octets());
+                            response.extend_from_slice(&addr.port().to_be_bytes());
+                        }
+                        SocketAddr::V6(_) => continue,
+                    }
+                    let _ = socket.send_to(&response, remote).await;
+                }
+                _ => {}
+            }
+        }
+    });
+
+    UdpTrackerFixture {
+        announce_url: format!("udp://{tracker_addr}/announce"),
+    }
+}
+
+async fn spawn_pex_handshake_probe(
+    info_hash: [u8; 20],
+) -> (SocketAddr, oneshot::Receiver<Vec<u8>>) {
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind PEX probe");
+    let addr = listener.local_addr().expect("PEX probe addr");
+    let (tx, rx) = oneshot::channel();
+
+    tokio::spawn(async move {
+        let Ok((mut stream, _)) = listener.accept().await else {
+            return;
+        };
+
+        let mut handshake = [0u8; 68];
+        if stream.read_exact(&mut handshake).await.is_err() {
+            return;
+        }
+
+        if handshake[28..48] != info_hash {
+            return;
+        }
+
+        let mut response = [0u8; 68];
+        response[0] = 19;
+        response[1..20].copy_from_slice(b"BitTorrent protocol");
+        response[25] = 0x10;
+        response[28..48].copy_from_slice(&info_hash);
+        response[48..68].copy_from_slice(b"-RA0000-pex-probe-01");
+        if stream.write_all(&response).await.is_err() {
+            return;
+        }
+
+        let remote_extended_handshake = b"d1:md6:ut_pexi1eee";
+        let mut message = Vec::with_capacity(remote_extended_handshake.len() + 6);
+        let len = (remote_extended_handshake.len() + 2) as u32;
+        message.extend_from_slice(&len.to_be_bytes());
+        message.push(20);
+        message.push(0);
+        message.extend_from_slice(remote_extended_handshake);
+        if stream.write_all(&message).await.is_err() {
+            return;
+        }
+
+        loop {
+            let mut len_buf = [0u8; 4];
+            if stream.read_exact(&mut len_buf).await.is_err() {
+                return;
+            }
+            let len = u32::from_be_bytes(len_buf) as usize;
+            if len == 0 {
+                continue;
+            }
+
+            let mut payload = vec![0u8; len];
+            if stream.read_exact(&mut payload).await.is_err() {
+                return;
+            }
+            if payload.first() == Some(&20) && payload.get(1) == Some(&0) {
+                let _ = tx.send(payload);
+                return;
+            }
+        }
+    });
+
+    (addr, rx)
 }
 
 async fn start_seed_fixture_with_initial_peers(
@@ -432,8 +557,10 @@ async fn bt_service_completes_peer_download_through_socks5_proxy() {
             disable_dht_persistence: true,
             dht_config_filename: None,
             initial_peers: Some(vec![seed.seed_addr]),
+            session_persistence_dir: None,
             piece_selection_strategy: PieceSelectionStrategy::Current,
             peer_encryption_policy: PeerEncryptionPolicy::default(),
+            ..Default::default()
         },
     )
     .expect("create bt service");
@@ -519,6 +646,169 @@ async fn bt_service_status_exposes_reachable_bt_metadata_fields() {
     assert_eq!(
         status.num_pieces,
         Some(status.total_size.div_ceil((16 * 1024) as u64))
+    );
+
+    service.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[serial_test::serial]
+async fn bt_service_downloads_real_torrent_through_udp_tracker() {
+    let seed = start_seed_fixture(2 * 1024 * 1024)
+        .await
+        .expect("seed fixture");
+    let tracker = spawn_udp_tracker(seed.seed_addr).await;
+    let download_dir = tempdir().expect("download tempdir");
+    let service = BtService::with_config(
+        download_dir.path().to_path_buf(),
+        BtServiceConfig {
+            disable_dht: true,
+            disable_dht_persistence: true,
+            ..Default::default()
+        },
+    )
+    .expect("create bt service");
+
+    let handle = service
+        .add(
+            BtSource::TorrentBytes(seed.torrent_bytes.clone()),
+            Gid::from_raw(23),
+            None,
+            Some(vec![tracker.announce_url.clone()]),
+            false,
+        )
+        .await
+        .expect("add torrent to BtService");
+
+    timeout(Duration::from_secs(60), async {
+        loop {
+            let status = service.status(&handle).await.expect("bt status");
+            if status.is_complete {
+                return;
+            }
+            sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await
+    .expect("BT UDP tracker completion timeout");
+
+    assert_eq!(
+        fs::read(download_dir.path().join(&seed.output_name)).expect("read UDP tracker torrent"),
+        seed.payload
+    );
+
+    let status = service.status(&handle).await.expect("bt status");
+    assert_eq!(status.announce_list, Some(vec![tracker.announce_url]));
+
+    service.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[serial_test::serial]
+async fn bt_service_advertises_ut_pex_in_extended_handshake() {
+    let source_root = tempdir().expect("source tempdir");
+    let source_file = source_root.path().join("pex.bin");
+    write_fixture(&source_file, 128 * 1024);
+    let torrent = create_torrent(
+        &source_file,
+        CreateTorrentOptions {
+            piece_length: Some(16 * 1024),
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("create PEX torrent");
+    let torrent_bytes = torrent.as_bytes().expect("torrent bytes").to_vec();
+    let info_hash = torrent.info_hash().0;
+    let (probe_addr, handshake_rx) = spawn_pex_handshake_probe(info_hash).await;
+    let download_dir = tempdir().expect("download tempdir");
+    let service = BtService::with_config(
+        download_dir.path().to_path_buf(),
+        BtServiceConfig {
+            disable_dht: true,
+            disable_dht_persistence: true,
+            initial_peers: Some(vec![probe_addr]),
+            ..Default::default()
+        },
+    )
+    .expect("create bt service");
+
+    let _handle = service
+        .add(
+            BtSource::TorrentBytes(torrent_bytes),
+            Gid::from_raw(24),
+            None,
+            None,
+            false,
+        )
+        .await
+        .expect("add torrent to BtService");
+
+    let handshake = timeout(Duration::from_secs(30), handshake_rx)
+        .await
+        .expect("PEX extended handshake timeout")
+        .expect("PEX extended handshake payload");
+    assert!(
+        handshake
+            .windows(b"ut_pex".len())
+            .any(|window| window == b"ut_pex"),
+        "extended handshake must advertise ut_pex: {handshake:?}"
+    );
+
+    service.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[serial_test::serial]
+async fn bt_service_pex_disable_policy_is_not_enforced_by_backend_public_api() {
+    let source_root = tempdir().expect("source tempdir");
+    let source_file = source_root.path().join("pex-disabled.bin");
+    write_fixture(&source_file, 128 * 1024);
+    let torrent = create_torrent(
+        &source_file,
+        CreateTorrentOptions {
+            piece_length: Some(16 * 1024),
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("create PEX torrent");
+    let torrent_bytes = torrent.as_bytes().expect("torrent bytes").to_vec();
+    let info_hash = torrent.info_hash().0;
+    let (probe_addr, handshake_rx) = spawn_pex_handshake_probe(info_hash).await;
+    let download_dir = tempdir().expect("download tempdir");
+    let service = BtService::with_config(
+        download_dir.path().to_path_buf(),
+        BtServiceConfig {
+            disable_dht: true,
+            disable_dht_persistence: true,
+            initial_peers: Some(vec![probe_addr]),
+            enable_pex: false,
+            ..Default::default()
+        },
+    )
+    .expect("create bt service");
+
+    let _handle = service
+        .add(
+            BtSource::TorrentBytes(torrent_bytes),
+            Gid::from_raw(25),
+            None,
+            None,
+            false,
+        )
+        .await
+        .expect("add torrent to BtService");
+
+    let handshake = timeout(Duration::from_secs(30), handshake_rx)
+        .await
+        .expect("PEX extended handshake timeout")
+        .expect("PEX extended handshake payload");
+    assert!(
+        handshake
+            .windows(b"ut_pex".len())
+            .any(|window| window == b"ut_pex"),
+        "current librqbit public API still advertises ut_pex when raria policy disables PEX: {handshake:?}"
     );
 
     service.shutdown().await;

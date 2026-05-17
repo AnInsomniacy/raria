@@ -4,8 +4,11 @@
 // suitable for creating RangeJob instances, including URL prioritization,
 // checksum extraction, and CLI option merging.
 
-use crate::parser::{MetalinkFile, MetalinkHash, MetalinkPieces, RawMetalink};
+use crate::parser::{
+    MetalinkFile, MetalinkHash, MetalinkMetaUrl, MetalinkPieces, MetalinkUrl, RawMetalink,
+};
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use std::path::PathBuf;
 
 /// A normalized seed for creating a RangeJob.
@@ -21,6 +24,8 @@ pub struct RangeJobSeed {
     pub checksum: Option<NormalizedChecksum>,
     /// Preferred piece-hash container for chunk verification.
     pub piece_checksum: Option<NormalizedPieceChecksum>,
+    /// Metadata sources associated with this file, such as torrent descriptors.
+    pub metadata_sources: Vec<NormalizedMetadataSource>,
 }
 
 /// A normalized checksum for file verification.
@@ -43,6 +48,19 @@ pub struct NormalizedPieceChecksum {
     pub hashes: Vec<String>,
 }
 
+/// A normalized metadata source associated with a Metalink file.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NormalizedMetadataSource {
+    /// Metadata URI.
+    pub uri: String,
+    /// Metadata media type, such as `torrent`.
+    pub media_type: String,
+    /// Priority (lower is better).
+    pub priority: u32,
+    /// Optional metadata name.
+    pub name: Option<String>,
+}
+
 /// Options controlling normalization behavior.
 #[derive(Debug, Clone)]
 pub struct NormalizeOptions {
@@ -50,6 +68,12 @@ pub struct NormalizeOptions {
     pub dir: Option<PathBuf>,
     /// Preferred hash algorithms in order of preference.
     pub preferred_hash_algos: Vec<String>,
+    /// Preferred mirror locations in order of preference.
+    pub preferred_locations: Vec<String>,
+    /// Preferred mirror protocol, such as `https`, `http`, or `ftp`.
+    pub preferred_protocol: Option<String>,
+    /// Keep only the best source for each protocol after preference sorting.
+    pub unique_protocols: bool,
 }
 
 impl Default for NormalizeOptions {
@@ -62,6 +86,9 @@ impl Default for NormalizeOptions {
                 "sha-1".into(),
                 "md5".into(),
             ],
+            preferred_locations: Vec::new(),
+            preferred_protocol: None,
+            unique_protocols: false,
         }
     }
 }
@@ -80,9 +107,7 @@ pub fn normalize(metalink: &RawMetalink, opts: &NormalizeOptions) -> Vec<RangeJo
 }
 
 fn normalize_file(file: &MetalinkFile, opts: &NormalizeOptions) -> RangeJobSeed {
-    // Sort URLs by priority (ascending = best first).
-    let mut urls = file.urls.clone();
-    urls.sort_by_key(|u| u.priority);
+    let urls = normalize_urls(&file.urls, opts);
     let uris: Vec<String> = urls.into_iter().map(|u| u.url).collect();
 
     // Select the best hash.
@@ -95,7 +120,81 @@ fn normalize_file(file: &MetalinkFile, opts: &NormalizeOptions) -> RangeJobSeed 
         expected_size: file.size,
         checksum,
         piece_checksum,
+        metadata_sources: normalize_metaurls(&file.metaurls),
     }
+}
+
+fn normalize_urls(urls: &[MetalinkUrl], opts: &NormalizeOptions) -> Vec<MetalinkUrl> {
+    let mut urls = urls.to_vec();
+    let preferred_protocol = opts
+        .preferred_protocol
+        .as_ref()
+        .map(|protocol| protocol.to_ascii_lowercase())
+        .filter(|protocol| !protocol.is_empty() && protocol != "none");
+    let preferred_locations = opts
+        .preferred_locations
+        .iter()
+        .map(|location| location.to_ascii_lowercase())
+        .collect::<Vec<_>>();
+
+    urls.sort_by_key(|url| {
+        (
+            protocol_rank(url, preferred_protocol.as_deref()),
+            location_rank(url, &preferred_locations),
+            url.priority,
+        )
+    });
+
+    if opts.unique_protocols {
+        let mut seen = HashSet::new();
+        urls.retain(|url| {
+            protocol_of(&url.url)
+                .map(|protocol| seen.insert(protocol))
+                .unwrap_or(true)
+        });
+    }
+
+    urls
+}
+
+fn protocol_rank(url: &MetalinkUrl, preferred_protocol: Option<&str>) -> u8 {
+    let Some(preferred_protocol) = preferred_protocol else {
+        return 1;
+    };
+    protocol_of(&url.url)
+        .map(|protocol| (protocol != preferred_protocol) as u8)
+        .unwrap_or(1)
+}
+
+fn location_rank(url: &MetalinkUrl, preferred_locations: &[String]) -> usize {
+    let Some(location) = url.location.as_ref() else {
+        return preferred_locations.len();
+    };
+    let location = location.to_ascii_lowercase();
+    preferred_locations
+        .iter()
+        .position(|preferred| preferred == &location)
+        .unwrap_or(preferred_locations.len())
+}
+
+fn protocol_of(uri: &str) -> Option<String> {
+    url::Url::parse(uri)
+        .ok()
+        .map(|url| url.scheme().to_ascii_lowercase())
+}
+
+fn normalize_metaurls(metaurls: &[MetalinkMetaUrl]) -> Vec<NormalizedMetadataSource> {
+    let mut metaurls = metaurls.to_vec();
+    metaurls.sort_by_key(|metaurl| metaurl.priority);
+    metaurls
+        .into_iter()
+        .map(|metaurl| NormalizedMetadataSource {
+            uri: metaurl.url,
+            media_type: metaurl.media_type.to_lowercase(),
+            priority: metaurl.priority,
+            name: metaurl.name,
+        })
+        .collect()
 }
 
 fn select_best_hash(hashes: &[MetalinkHash], preferred: &[String]) -> Option<NormalizedChecksum> {
@@ -150,7 +249,8 @@ fn select_best_piece_hashes(
 mod tests {
     use super::*;
     use crate::parser::{
-        MetalinkFile, MetalinkHash, MetalinkPieces, MetalinkUrl, MetalinkVersion, RawMetalink,
+        MetalinkFile, MetalinkHash, MetalinkMetaUrl, MetalinkPieces, MetalinkUrl, MetalinkVersion,
+        RawMetalink,
     };
 
     fn sample_metalink() -> RawMetalink {
@@ -171,6 +271,7 @@ mod tests {
                     },
                 ],
                 pieces: vec![],
+                metaurls: vec![],
                 urls: vec![
                     MetalinkUrl {
                         url: "https://slow.example.com/test.zip".into(),
@@ -207,6 +308,82 @@ mod tests {
     }
 
     #[test]
+    fn normalize_prefers_configured_locations_before_plain_priority() {
+        let ml = sample_metalink();
+        let opts = NormalizeOptions {
+            preferred_locations: vec!["us".into()],
+            ..Default::default()
+        };
+
+        let seeds = normalize(&ml, &opts);
+
+        assert_eq!(
+            seeds[0].uris,
+            vec![
+                "https://slow.example.com/test.zip",
+                "https://fast.example.com/test.zip",
+                "ftp://ftp.example.com/test.zip",
+            ]
+        );
+    }
+
+    #[test]
+    fn normalize_prefers_configured_protocol_before_plain_priority() {
+        let ml = sample_metalink();
+        let opts = NormalizeOptions {
+            preferred_protocol: Some("ftp".into()),
+            ..Default::default()
+        };
+
+        let seeds = normalize(&ml, &opts);
+
+        assert_eq!(seeds[0].uris[0], "ftp://ftp.example.com/test.zip");
+    }
+
+    #[test]
+    fn normalize_can_keep_one_source_per_protocol_after_preference_sorting() {
+        let ml = RawMetalink {
+            version: MetalinkVersion::V4,
+            files: vec![MetalinkFile {
+                name: "f.bin".into(),
+                size: None,
+                hashes: vec![],
+                pieces: vec![],
+                metaurls: vec![],
+                urls: vec![
+                    MetalinkUrl {
+                        url: "https://us.example/f.bin".into(),
+                        priority: 10,
+                        location: Some("us".into()),
+                    },
+                    MetalinkUrl {
+                        url: "https://de.example/f.bin".into(),
+                        priority: 1,
+                        location: Some("de".into()),
+                    },
+                    MetalinkUrl {
+                        url: "ftp://ftp.example/f.bin".into(),
+                        priority: 5,
+                        location: None,
+                    },
+                ],
+            }],
+        };
+        let opts = NormalizeOptions {
+            preferred_locations: vec!["us".into()],
+            unique_protocols: true,
+            ..Default::default()
+        };
+
+        let seeds = normalize(&ml, &opts);
+
+        assert_eq!(
+            seeds[0].uris,
+            vec!["https://us.example/f.bin", "ftp://ftp.example/f.bin"]
+        );
+    }
+
+    #[test]
     fn normalize_selects_sha256_over_md5() {
         let ml = sample_metalink();
         let seeds = normalize(&ml, &NormalizeOptions::default());
@@ -236,6 +413,7 @@ mod tests {
                     value: "AABBCC".into(),
                 }],
                 pieces: vec![],
+                metaurls: vec![],
                 urls: vec![MetalinkUrl {
                     url: "https://a.com/f".into(),
                     priority: 1,
@@ -259,6 +437,7 @@ mod tests {
                 size: None,
                 hashes: vec![],
                 pieces: vec![],
+                metaurls: vec![],
                 urls: vec![MetalinkUrl {
                     url: "https://a.com/f".into(),
                     priority: 1,
@@ -281,6 +460,7 @@ mod tests {
                     size: Some(100),
                     hashes: vec![],
                     pieces: vec![],
+                    metaurls: vec![],
                     urls: vec![MetalinkUrl {
                         url: "https://a.com/a".into(),
                         priority: 1,
@@ -292,6 +472,7 @@ mod tests {
                     size: Some(200),
                     hashes: vec![],
                     pieces: vec![],
+                    metaurls: vec![],
                     urls: vec![MetalinkUrl {
                         url: "https://a.com/b".into(),
                         priority: 1,
@@ -331,6 +512,7 @@ mod tests {
                     length: 1024,
                     hashes: vec!["AA".into(), "BB".into()],
                 }],
+                metaurls: vec![],
                 urls: vec![MetalinkUrl {
                     url: "https://a.com/piece.bin".into(),
                     priority: 1,
@@ -344,5 +526,42 @@ mod tests {
         assert_eq!(piece_checksum.algo, "sha-256");
         assert_eq!(piece_checksum.length, 1024);
         assert_eq!(piece_checksum.hashes, vec!["aa", "bb"]);
+    }
+
+    #[test]
+    fn normalize_keeps_torrent_metaurl_as_metadata_source() {
+        let ml = RawMetalink {
+            version: MetalinkVersion::V4,
+            files: vec![MetalinkFile {
+                name: "example.iso".into(),
+                size: Some(1048576),
+                hashes: vec![],
+                pieces: vec![],
+                urls: vec![MetalinkUrl {
+                    url: "https://mirror.example.com/example.iso".into(),
+                    priority: 1,
+                    location: None,
+                }],
+                metaurls: vec![MetalinkMetaUrl {
+                    url: "https://meta.example.com/example.iso.torrent".into(),
+                    media_type: "torrent".into(),
+                    priority: 2,
+                    name: Some("example.iso.torrent".into()),
+                }],
+            }],
+        };
+
+        let seeds = normalize(&ml, &NormalizeOptions::default());
+
+        assert_eq!(
+            seeds[0].uris,
+            vec!["https://mirror.example.com/example.iso"]
+        );
+        assert_eq!(seeds[0].metadata_sources.len(), 1);
+        assert_eq!(
+            seeds[0].metadata_sources[0].uri,
+            "https://meta.example.com/example.iso.torrent"
+        );
+        assert_eq!(seeds[0].metadata_sources[0].media_type, "torrent");
     }
 }

@@ -216,7 +216,10 @@ fn build_rustls_config(config: &FtpBackendConfig) -> Result<rustls::ClientConfig
         return Ok(tls_config);
     }
 
-    Ok(rustls::ClientConfig::builder()
+    let provider = rustls::crypto::ring::default_provider();
+    Ok(rustls::ClientConfig::builder_with_provider(provider.into())
+        .with_safe_default_protocol_versions()
+        .context("failed to set TLS protocol versions")?
         .with_root_certificates(root_store)
         .with_no_client_auth())
 }

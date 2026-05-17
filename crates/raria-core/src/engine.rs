@@ -19,20 +19,76 @@ use crate::config::JobOptions;
 use crate::job::{Gid, Job, Status};
 use crate::limiter::SharedRateLimiter;
 use crate::logging::emit_structured_log;
-use crate::native::{NativeTaskIndex, NativeTaskRow, NativeTaskSummary, TaskId};
+use crate::native::{
+    NativeEvent, NativeEventData, NativeEventType, NativePeerSnapshot, NativeSourceHealth,
+    NativeTaskIndex, NativeTaskRow, NativeTaskSummary, NativeTrackerSnapshot, TaskId,
+};
 use crate::persist::Store;
-use crate::progress::{DownloadEvent, EventBus};
+use crate::progress::{DownloadEvent, EventBus, NativeEventBus};
 use crate::registry::JobRegistry;
 use crate::scheduler::Scheduler;
 use anyhow::{Context, Result};
 use parking_lot::Mutex;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
+
+/// Input for planning a native segmented range download.
+#[derive(Debug, Clone, Copy)]
+pub struct NativeSegmentPlanningInput<'a> {
+    /// Remote file size, when known.
+    pub total_size: Option<u64>,
+    /// Whether the selected source supports byte range reads.
+    pub supports_range: bool,
+    /// User-requested maximum connection count.
+    pub requested_connections: u32,
+    /// Minimum split size from runtime configuration.
+    pub min_split_size: u64,
+    /// Source URI selected for this execution attempt.
+    pub source_uri: Option<&'a str>,
+}
+
+/// Planned native segment state for a range download.
+#[derive(Debug, Clone)]
+pub struct NativeSegmentPlan {
+    /// Resolved connection count after applying source and size constraints.
+    pub connections: u32,
+    /// Segment states with any persisted checkpoint progress applied.
+    pub segments: Vec<crate::segment::SegmentState>,
+}
+
+/// Callback used by range executors to persist native segment checkpoints.
+pub type NativeSegmentCheckpointFn = Arc<dyn Fn(u32, u64) + Send + Sync>;
+
+/// Executor-facing native view of a range download task.
+#[derive(Debug, Clone)]
+pub struct NativeRangeExecutionTask {
+    /// Public native task id.
+    pub task_id: TaskId,
+    /// Current output path.
+    pub output_path: PathBuf,
+    /// Whether the output name was explicitly set by the caller.
+    pub has_explicit_output_name: bool,
+    /// Maximum connections requested for this task.
+    pub max_connections: u32,
+    /// Per-task download limit in bytes per second, or zero for unlimited.
+    pub max_download_limit: u64,
+    /// Request headers configured for this task.
+    pub request_headers: Vec<(String, String)>,
+    /// Per-task HTTP auth username.
+    pub http_user: Option<String>,
+    /// Per-task HTTP auth password.
+    pub http_password: Option<String>,
+    /// Whole-file checksum specification.
+    pub checksum: Option<String>,
+    /// Optional piece checksum metadata.
+    pub piece_checksum: Option<crate::job::PieceChecksum>,
+}
 
 /// Specification for adding a new download job.
 #[derive(Debug, Clone)]
@@ -45,6 +101,8 @@ pub struct AddUriSpec {
     pub filename: Option<String>,
     /// Number of connections to use.
     pub connections: u32,
+    /// Whole-file checksum specification.
+    pub checksum: Option<String>,
 }
 
 /// Handle returned when a job is submitted.
@@ -77,10 +135,14 @@ pub struct Engine {
     pub cancel_registry: CancelRegistry,
     /// Broadcast bus for progress and status events.
     pub event_bus: EventBus,
+    /// Broadcast bus for native raria events.
+    pub native_event_bus: NativeEventBus,
     /// Global configuration snapshot taken at engine creation.
     pub config: GlobalConfig,
     /// Workspace-wide download rate limiter.
     pub global_rate_limiter: Arc<SharedRateLimiter>,
+    /// Workspace-wide upload limit in bytes per second.
+    global_upload_limit: AtomicU64,
     /// Per-job limiter handles layered on top of the global limiter.
     job_rate_limiters: Mutex<HashMap<Gid, Arc<SharedRateLimiter>>>,
     /// Native task id index for the current migration runtime.
@@ -98,6 +160,7 @@ impl Engine {
     /// Create a new Engine with the given configuration (no persistence).
     pub fn new(config: GlobalConfig) -> Self {
         let max_concurrent = config.max_concurrent_downloads;
+        let global_upload_limit = config.max_overall_upload_limit;
         let global_rate_limiter =
             Arc::new(SharedRateLimiter::new(config.max_overall_download_limit));
         Self {
@@ -105,8 +168,10 @@ impl Engine {
             scheduler: Scheduler::new(max_concurrent),
             cancel_registry: CancelRegistry::new(),
             event_bus: EventBus::new(256),
+            native_event_bus: NativeEventBus::new(256),
             config,
             global_rate_limiter,
+            global_upload_limit: AtomicU64::new(global_upload_limit),
             job_rate_limiters: Mutex::new(HashMap::new()),
             native_task_index: Mutex::new(NativeTaskIndex::default()),
             session_id: format!("{:016x}", rand::random::<u64>()),
@@ -120,6 +185,7 @@ impl Engine {
     /// Create a new Engine with persistence enabled.
     pub fn with_store(config: GlobalConfig, store: Arc<Store>) -> Self {
         let max_concurrent = config.max_concurrent_downloads;
+        let global_upload_limit = config.max_overall_upload_limit;
         let global_rate_limiter =
             Arc::new(SharedRateLimiter::new(config.max_overall_download_limit));
         Self {
@@ -127,8 +193,10 @@ impl Engine {
             scheduler: Scheduler::new(max_concurrent),
             cancel_registry: CancelRegistry::new(),
             event_bus: EventBus::new(256),
+            native_event_bus: NativeEventBus::new(256),
             config,
             global_rate_limiter,
+            global_upload_limit: AtomicU64::new(global_upload_limit),
             job_rate_limiters: Mutex::new(HashMap::new()),
             native_task_index: Mutex::new(NativeTaskIndex::default()),
             session_id: format!("{:016x}", rand::random::<u64>()),
@@ -147,6 +215,16 @@ impl Engine {
     /// Returns the number of seconds since this engine was created.
     pub fn uptime_seconds(&self) -> u64 {
         self.started_at.elapsed().as_secs()
+    }
+
+    /// Current global upload limit in bytes per second.
+    pub fn global_upload_limit_bps(&self) -> u64 {
+        self.global_upload_limit.load(Ordering::Relaxed)
+    }
+
+    /// Update the global upload limit in bytes per second.
+    pub fn update_global_upload_limit(&self, limit_bps: u64) {
+        self.global_upload_limit.store(limit_bps, Ordering::Relaxed);
     }
 
     /// Restore jobs from the persistent store into the in-memory registry.
@@ -283,10 +361,348 @@ impl Engine {
             .collect()
     }
 
+    /// Return native BitTorrent peer snapshots for a task.
+    pub fn native_task_peers(&self, task_id: &TaskId) -> Result<Vec<NativePeerSnapshot>> {
+        let job = self
+            .registry
+            .get_by_task_id(task_id)
+            .context("native task not found")?;
+        Ok(job
+            .bt_peers
+            .unwrap_or_default()
+            .into_iter()
+            .map(|peer| {
+                let mut snapshot = NativePeerSnapshot::new(
+                    format!("peer_{}_{}", peer.ip, peer.port),
+                    peer.ip,
+                    peer.port,
+                );
+                snapshot.download_bytes_per_second = peer.download_speed;
+                snapshot.upload_bytes_per_second = peer.upload_speed;
+                snapshot.seeder = peer.seeder;
+                snapshot
+            })
+            .collect())
+    }
+
+    /// Return native BitTorrent tracker snapshots for a task.
+    pub fn native_task_trackers(&self, task_id: &TaskId) -> Result<Vec<NativeTrackerSnapshot>> {
+        let job = self
+            .registry
+            .get_by_task_id(task_id)
+            .context("native task not found")?;
+        let excluded = job
+            .options
+            .bt_excluded_trackers
+            .iter()
+            .map(|uri| uri.trim().to_string())
+            .collect::<HashSet<_>>();
+        Ok(job
+            .bt
+            .and_then(|bt| bt.announce_list)
+            .unwrap_or_default()
+            .into_iter()
+            .enumerate()
+            .map(|(index, uri)| {
+                let mut tracker = NativeTrackerSnapshot::new(format!("tracker_{index}"), &uri);
+                tracker.excluded = excluded.contains(uri.trim()) || excluded.contains("*");
+                tracker.connect_timeout_seconds = job.options.bt_tracker_connect_timeout_seconds;
+                tracker.timeout_seconds = job.options.bt_tracker_timeout_seconds;
+                tracker.interval_seconds = job.options.bt_tracker_interval_seconds;
+                tracker
+            })
+            .collect())
+    }
+
+    /// Replace BitTorrent tracker URIs through the native task facade.
+    pub fn update_native_task_trackers(
+        &self,
+        task_id: &TaskId,
+        tracker_uris: &[String],
+    ) -> Result<Vec<NativeTrackerSnapshot>> {
+        let gid = self
+            .gid_for_task_id(task_id)
+            .context("native task not found")?;
+        let trackers = tracker_uris
+            .iter()
+            .map(|uri| {
+                let uri = uri.trim();
+                anyhow::ensure!(!uri.is_empty(), "tracker uri must not be empty");
+                Ok(uri.to_string())
+            })
+            .collect::<Result<Vec<_>>>()?;
+        self.registry
+            .update(gid, |job| {
+                job.bt.get_or_insert_with(Default::default).announce_list = Some(trackers.clone());
+                job.options.bt_trackers = Some(trackers);
+            })
+            .context("native task not found")?;
+        self.native_task_trackers(task_id)
+    }
+
+    /// Update native BitTorrent tracker policy fields.
+    pub fn update_native_task_tracker_policy(
+        &self,
+        task_id: &TaskId,
+        excluded_tracker_uris: Option<&[String]>,
+        connect_timeout_seconds: Option<Option<u64>>,
+        timeout_seconds: Option<Option<u64>>,
+        interval_seconds: Option<Option<u64>>,
+    ) -> Result<Vec<NativeTrackerSnapshot>> {
+        let gid = self
+            .gid_for_task_id(task_id)
+            .context("native task not found")?;
+        let excluded = excluded_tracker_uris
+            .map(|uris| {
+                uris.iter()
+                    .map(|uri| {
+                        let uri = uri.trim();
+                        anyhow::ensure!(!uri.is_empty(), "excluded tracker uri must not be empty");
+                        Ok(uri.to_string())
+                    })
+                    .collect::<Result<Vec<_>>>()
+            })
+            .transpose()?;
+        self.registry
+            .update(gid, |job| {
+                if let Some(excluded) = excluded {
+                    job.options.bt_excluded_trackers = excluded;
+                }
+                if let Some(value) = connect_timeout_seconds {
+                    job.options.bt_tracker_connect_timeout_seconds = value;
+                }
+                if let Some(value) = timeout_seconds {
+                    job.options.bt_tracker_timeout_seconds = value;
+                }
+                if let Some(value) = interval_seconds {
+                    job.options.bt_tracker_interval_seconds = value;
+                }
+            })
+            .context("native task not found")?;
+        self.native_task_trackers(task_id)
+    }
+
+    /// Replace BitTorrent WebSeed URIs through the native task facade.
+    pub fn update_native_bt_web_seed_uris(
+        &self,
+        task_id: &TaskId,
+        web_seed_uris: &[String],
+    ) -> Result<Vec<String>> {
+        let gid = self
+            .gid_for_task_id(task_id)
+            .context("native task not found")?;
+        let web_seed_uris = web_seed_uris
+            .iter()
+            .map(|uri| {
+                let uri = uri.trim();
+                anyhow::ensure!(!uri.is_empty(), "webseed uri must not be empty");
+                Ok(uri.to_string())
+            })
+            .collect::<Result<Vec<_>>>()?;
+        self.registry
+            .update(gid, |job| {
+                job.options.bt_web_seed_uris = Some(web_seed_uris.clone());
+            })
+            .context("native task not found")?;
+        Ok(web_seed_uris)
+    }
+
+    /// Update whether unselected BitTorrent files are deleted after completion.
+    pub fn update_native_bt_delete_unselected_files_policy(
+        &self,
+        task_id: &TaskId,
+        delete_unselected_files: bool,
+    ) -> Result<NativeTaskSummary> {
+        let gid = self
+            .gid_for_task_id(task_id)
+            .context("native task not found")?;
+        self.registry
+            .update(gid, |job| {
+                anyhow::ensure!(
+                    job.kind == crate::job::JobKind::Bt,
+                    "delete-unselected policy is only supported for BitTorrent jobs"
+                );
+                job.options.bt_delete_unselected_files_on_completion = delete_unselected_files;
+                Ok(())
+            })
+            .context("native task not found")?
+            .context("delete-unselected policy mutation failed")?;
+        self.native_task_summary(task_id)
+    }
+
+    /// Replace BitTorrent seeding policy through the native task facade.
+    pub fn update_native_bt_seeding_policy(
+        &self,
+        task_id: &TaskId,
+        target_ratio: Option<f64>,
+        stop_after_minutes: Option<u64>,
+        idle_download_timeout_seconds: Option<u64>,
+    ) -> Result<(Option<f64>, Option<u64>, Option<u64>)> {
+        if let Some(ratio) = target_ratio {
+            anyhow::ensure!(ratio.is_finite() && ratio >= 0.0, "invalid seed ratio");
+        }
+        let gid = self
+            .gid_for_task_id(task_id)
+            .context("native task not found")?;
+        self.registry
+            .update(gid, |job| {
+                job.options.seed_ratio = target_ratio;
+                job.options.seed_time = stop_after_minutes;
+                job.options.bt_idle_download_timeout = idle_download_timeout_seconds;
+            })
+            .context("native task not found")?;
+        Ok((
+            target_ratio,
+            stop_after_minutes,
+            idle_download_timeout_seconds,
+        ))
+    }
+
+    /// Replace runtime transfer policy through the native task facade.
+    pub fn update_native_transfer_policy(
+        &self,
+        task_id: &TaskId,
+        download_limit: Option<u64>,
+        upload_limit: Option<u64>,
+        segments: Option<u32>,
+    ) -> Result<(u64, u64, u32)> {
+        let gid = self
+            .gid_for_task_id(task_id)
+            .context("native task not found")?;
+        self.registry
+            .update(gid, |job| {
+                if let Some(limit) = download_limit {
+                    job.options.max_download_limit = limit;
+                }
+                if let Some(limit) = upload_limit {
+                    job.options.max_upload_limit = limit;
+                }
+                if let Some(segments) = segments {
+                    job.options.max_connections = segments.max(1);
+                }
+            })
+            .context("native task not found")?;
+        if let Some(limit) = download_limit {
+            self.update_job_rate_limit(gid, limit)?;
+        }
+        let job = self.registry.get(gid).context("native task not found")?;
+        Ok((
+            job.options.max_download_limit,
+            job.options.max_upload_limit,
+            job.options.max_connections,
+        ))
+    }
+
+    /// Replace range task sources through the native task facade.
+    pub fn replace_native_task_sources(
+        &self,
+        task_id: &TaskId,
+        sources: &[String],
+    ) -> Result<NativeTaskSummary> {
+        anyhow::ensure!(!sources.is_empty(), "sources must not be empty");
+        for source in sources {
+            let protocol = crate::native::SourceProtocol::detect(source)
+                .map_err(|error| anyhow::anyhow!("{error}"))?;
+            anyhow::ensure!(
+                matches!(
+                    protocol,
+                    crate::native::SourceProtocol::Http
+                        | crate::native::SourceProtocol::Https
+                        | crate::native::SourceProtocol::Ftp
+                        | crate::native::SourceProtocol::Ftps
+                        | crate::native::SourceProtocol::Sftp
+                ),
+                "source mutation supports range protocols only"
+            );
+        }
+        let gid = self
+            .gid_for_task_id(task_id)
+            .context("native task not found")?;
+        self.registry
+            .update(gid, |job| {
+                anyhow::ensure!(
+                    job.kind != crate::job::JobKind::Bt,
+                    "source mutation is not supported for BitTorrent jobs"
+                );
+                job.uris = sources.to_vec();
+                Ok(())
+            })
+            .context("native task not found")?
+            .context("source mutation failed")?;
+        self.native_task_summary(task_id)
+    }
+
+    /// Update selected BitTorrent files through native file ids.
+    pub fn update_native_task_file_selection(
+        &self,
+        task_id: &TaskId,
+        selected_file_ids: &[String],
+    ) -> Result<NativeTaskSummary> {
+        let gid = self
+            .gid_for_task_id(task_id)
+            .context("native task not found")?;
+        let selected = selected_file_ids
+            .iter()
+            .map(|id| {
+                id.strip_prefix("file_")
+                    .context("invalid file id")
+                    .and_then(|raw| raw.parse::<usize>().context("invalid file id"))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        self.registry
+            .update(gid, |job| {
+                if let Some(files) = job.bt_files.as_mut() {
+                    for file in files {
+                        file.selected = selected.contains(&file.index);
+                    }
+                }
+                job.options.bt_selected_files = Some(selected);
+            })
+            .context("native task not found")?;
+        self.native_task_summary(task_id)
+    }
+
     /// Submit a new task through the native task facade.
     pub fn add_native_task(&self, spec: &AddUriSpec) -> Result<NativeTaskSummary> {
         let task_id = TaskId::new();
         let _handle = self.add_uri_with_task_id(spec, None, Some(task_id.clone()))?;
+        self.native_task_summary(&task_id)
+    }
+
+    /// Submit a native BitTorrent task from a metadata source and associated WebSeed mirrors.
+    pub fn add_native_bt_task_from_metadata_source(
+        &self,
+        metadata_uri: &str,
+        web_seed_uris: &[String],
+        dir: PathBuf,
+        filename: Option<String>,
+        connections: u32,
+    ) -> Result<NativeTaskSummary> {
+        anyhow::ensure!(
+            metadata_uri.starts_with("torrent:")
+                || metadata_uri.starts_with("magnet:")
+                || metadata_uri.ends_with(".torrent")
+                || url::Url::parse(metadata_uri)
+                    .map(|url| url.path().ends_with(".torrent"))
+                    .unwrap_or(false),
+            "metadata source must identify a torrent"
+        );
+        let task_id = TaskId::new();
+        let spec = AddUriSpec {
+            uris: vec![metadata_uri.to_string()],
+            dir,
+            filename,
+            connections,
+            checksum: None,
+        };
+        let handle = self.add_uri_with_task_id(&spec, None, Some(task_id.clone()))?;
+        self.registry
+            .update(handle.gid, |job| {
+                job.kind = crate::job::JobKind::Bt;
+                job.options.bt_web_seed_uris =
+                    (!web_seed_uris.is_empty()).then(|| web_seed_uris.to_vec());
+            })
+            .context("native BT metadata task not found")?;
         self.native_task_summary(&task_id)
     }
 
@@ -345,6 +761,27 @@ impl Engine {
         summary
     }
 
+    fn publish_native_task_event(
+        &self,
+        task_id: TaskId,
+        event_type: NativeEventType,
+        data: NativeEventData,
+    ) {
+        self.native_event_bus
+            .publish(NativeEvent::new(0, event_type, Some(task_id), data));
+    }
+
+    fn publish_native_task_event_for_gid(
+        &self,
+        gid: Gid,
+        event_type: NativeEventType,
+        data: NativeEventData,
+    ) {
+        if let Some(task_id) = self.task_id_for_gid(gid) {
+            self.publish_native_task_event(task_id, event_type, data);
+        }
+    }
+
     /// Insert a prepared job into the engine and waiting queue.
     pub fn submit_job(&self, job: Job, queue_position: Option<usize>) -> Result<JobHandle> {
         let gid = job.gid;
@@ -360,12 +797,17 @@ impl Engine {
             .map_err(|e| anyhow::anyhow!("{e}"))
             .context("failed to insert job into registry")?;
         if let Some(position) = queue_position {
-            self.scheduler.enqueue_task_at(task_id, position);
+            self.scheduler.enqueue_task_at(task_id.clone(), position);
         } else {
-            self.scheduler.enqueue_task(task_id);
+            self.scheduler.enqueue_task(task_id.clone());
         }
 
         self.event_bus.publish(DownloadEvent::Started { gid });
+        self.publish_native_task_event(
+            task_id,
+            NativeEventType::TaskCreated,
+            NativeEventData::Empty,
+        );
         self.work_notify.notify_one();
         info!(%gid, queue_position = ?queue_position, "job added");
         emit_structured_log(
@@ -426,11 +868,14 @@ impl Engine {
             out_path = crate::rename::auto_rename(&out_path);
         }
 
-        // Detect whether this is a BT job (magnet URI) or a range-based download.
-        let is_bt = spec.uris.iter().any(|u| u.starts_with("magnet:"));
+        // Detect whether this is a BT job or a range-based download.
+        let is_bt = spec.uris.iter().any(|u| {
+            u.starts_with("magnet:") || u.starts_with("torrent:") || u.ends_with(".torrent")
+        });
         let options = JobOptions {
             out: spec.filename.clone(),
             max_connections: spec.connections.max(1),
+            checksum: spec.checksum.clone(),
             ..JobOptions::default()
         };
 
@@ -460,6 +905,11 @@ impl Engine {
 
         self.persist_job_by_gid(gid);
         self.event_bus.publish(DownloadEvent::Paused { gid });
+        self.publish_native_task_event_for_gid(
+            gid,
+            NativeEventType::TaskPaused,
+            NativeEventData::Empty,
+        );
         info!(%gid, "job paused");
         emit_structured_log(
             "INFO",
@@ -488,6 +938,11 @@ impl Engine {
         self.persist_job_by_gid(gid);
         self.work_notify.notify_one();
         self.event_bus.publish(DownloadEvent::Started { gid });
+        self.publish_native_task_event_for_gid(
+            gid,
+            NativeEventType::TaskResumed,
+            NativeEventData::Empty,
+        );
         info!(%gid, "job resumed");
         emit_structured_log(
             "INFO",
@@ -515,6 +970,11 @@ impl Engine {
 
         self.persist_job_by_gid(gid);
         self.event_bus.publish(DownloadEvent::Stopped { gid });
+        self.publish_native_task_event_for_gid(
+            gid,
+            NativeEventType::TaskRemoved,
+            NativeEventData::Empty,
+        );
         info!(%gid, "job removed");
         emit_structured_log(
             "INFO",
@@ -569,6 +1029,11 @@ impl Engine {
         }
         self.persist_job_by_gid(gid);
         self.event_bus.publish(DownloadEvent::Started { gid });
+        self.publish_native_task_event_for_gid(
+            gid,
+            NativeEventType::TaskStarted,
+            NativeEventData::Empty,
+        );
         debug!(%gid, "job activated");
 
         // Return the cancel token for this job.
@@ -593,6 +1058,11 @@ impl Engine {
         self.cancel_registry.remove(gid);
         self.persist_job_by_gid(gid);
         self.event_bus.publish(DownloadEvent::Complete { gid });
+        self.publish_native_task_event_for_gid(
+            gid,
+            NativeEventType::TaskCompleted,
+            NativeEventData::Empty,
+        );
         info!(%gid, "job completed");
         emit_structured_log(
             "INFO",
@@ -624,6 +1094,14 @@ impl Engine {
             gid,
             message: error_msg.to_string(),
         });
+        self.publish_native_task_event_for_gid(
+            gid,
+            NativeEventType::TaskFailed,
+            NativeEventData::Error {
+                code: "task_failed".to_string(),
+                message: error_msg.to_string(),
+            },
+        );
         error!(%gid, error_msg, "job failed");
         emit_structured_log(
             "ERROR",
@@ -638,12 +1116,48 @@ impl Engine {
 
     /// Record that a single source failed while the job may continue with others.
     pub fn source_failed(&self, gid: Gid, uri: &str, error_msg: &str) -> Result<()> {
-        self.registry.get(gid).context("job not found")?;
+        let task_id = self.task_id_for_gid(gid).context("native task not found")?;
+        self.source_failed_native_task(&task_id, uri, error_msg)
+    }
+
+    /// Record that a single source failed for a native task while the task may continue.
+    pub fn source_failed_native_task(
+        &self,
+        task_id: &TaskId,
+        uri: &str,
+        error_msg: &str,
+    ) -> Result<()> {
+        let gid = self
+            .gid_for_task_id(task_id)
+            .context("native task not found")?;
+        self.registry
+            .update(gid, |job| {
+                let previous = job
+                    .options
+                    .source_health
+                    .get(uri)
+                    .map(|health| health.failure_count)
+                    .unwrap_or(0);
+                job.options.source_health.insert(
+                    uri.to_string(),
+                    NativeSourceHealth::failed(previous.saturating_add(1), error_msg),
+                );
+            })
+            .context("native task not found")?;
         self.event_bus.publish(DownloadEvent::SourceFailed {
             gid,
             uri: uri.to_string(),
             message: error_msg.to_string(),
         });
+        self.native_event_bus.publish(NativeEvent::new(
+            0,
+            NativeEventType::TaskSourceFailed,
+            Some(task_id.clone()),
+            NativeEventData::Error {
+                code: "source_failed".to_string(),
+                message: error_msg.to_string(),
+            },
+        ));
         warn!(%gid, uri, error = error_msg, "job source failed");
         emit_structured_log(
             "WARN",
@@ -655,6 +1169,27 @@ impl Engine {
                 ("error", error_msg.to_string()),
             ],
         );
+        Ok(())
+    }
+
+    /// Record successful runtime feedback for a native task source.
+    pub fn source_succeeded_native_task(
+        &self,
+        task_id: &TaskId,
+        uri: &str,
+        download_bytes_per_second: u64,
+    ) -> Result<()> {
+        let gid = self
+            .gid_for_task_id(task_id)
+            .context("native task not found")?;
+        self.registry
+            .update(gid, |job| {
+                job.options.source_health.insert(
+                    uri.to_string(),
+                    NativeSourceHealth::healthy(download_bytes_per_second),
+                );
+            })
+            .context("native task not found")?;
         Ok(())
     }
 
@@ -790,6 +1325,19 @@ impl Engine {
             .gid_for_task_id(task_id)
             .context("native task not found")?;
         self.update_progress(gid, bytes);
+        let Some(job) = self.registry.get(gid) else {
+            return Ok(());
+        };
+        self.native_event_bus.publish(NativeEvent::new(
+            0,
+            NativeEventType::TaskProgress,
+            Some(task_id.clone()),
+            NativeEventData::Progress {
+                completed_bytes: job.downloaded,
+                total_bytes: job.total_size,
+                download_bytes_per_second: job.download_speed,
+            },
+        ));
         Ok(())
     }
 
@@ -828,9 +1376,412 @@ impl Engine {
         self.registry
             .update(gid, |job| {
                 job.connections = 0;
+                for uri in &job.uris {
+                    job.options
+                        .source_health
+                        .entry(uri.clone())
+                        .or_insert_with(|| NativeSourceHealth::failed(1, error_msg));
+                }
             })
             .context("native task not found")?;
         self.fail_job(gid, error_msg)
+    }
+
+    /// Publish a native BitTorrent metadata resolution event for a task.
+    pub fn publish_native_bt_metadata_resolved(
+        &self,
+        task_id: &TaskId,
+        info_hash: &str,
+        name: Option<&str>,
+        total_bytes: Option<u64>,
+        piece_length: Option<u64>,
+        piece_count: Option<u64>,
+    ) -> Result<()> {
+        self.gid_for_task_id(task_id)
+            .context("native task not found")?;
+        self.publish_native_task_event(
+            task_id.clone(),
+            NativeEventType::TaskBtMetadataResolved,
+            NativeEventData::BtMetadata {
+                info_hash: info_hash.to_string(),
+                name: name.map(str::to_string),
+                total_bytes,
+                piece_length,
+                piece_count,
+            },
+        );
+        Ok(())
+    }
+
+    /// Publish a native BitTorrent seeding-started event for a task.
+    pub fn publish_native_bt_seeding_started(
+        &self,
+        task_id: &TaskId,
+        uploaded_bytes: u64,
+        peer_count: u32,
+        seeder_count: Option<u32>,
+    ) -> Result<()> {
+        self.gid_for_task_id(task_id)
+            .context("native task not found")?;
+        self.work_notify.notify_one();
+        self.publish_native_task_event(
+            task_id.clone(),
+            NativeEventType::TaskBtSeedingStarted,
+            NativeEventData::BtSeeding {
+                uploaded_bytes,
+                peer_count,
+                seeder_count,
+            },
+        );
+        Ok(())
+    }
+
+    /// Publish a native BitTorrent peer update event for a task.
+    pub fn publish_native_bt_peer_updated(
+        &self,
+        task_id: &TaskId,
+        peer: NativePeerSnapshot,
+    ) -> Result<()> {
+        self.gid_for_task_id(task_id)
+            .context("native task not found")?;
+        self.publish_native_task_event(
+            task_id.clone(),
+            NativeEventType::TaskBtPeerUpdated,
+            NativeEventData::BtPeer { peer },
+        );
+        Ok(())
+    }
+
+    /// Publish a native BitTorrent tracker update event for a task.
+    pub fn publish_native_bt_tracker_updated(
+        &self,
+        task_id: &TaskId,
+        tracker: NativeTrackerSnapshot,
+    ) -> Result<()> {
+        self.gid_for_task_id(task_id)
+            .context("native task not found")?;
+        self.publish_native_task_event(
+            task_id.clone(),
+            NativeEventType::TaskBtTrackerUpdated,
+            NativeEventData::BtTracker { tracker },
+        );
+        Ok(())
+    }
+
+    /// Get or create the rate limiter for a native task.
+    pub fn native_task_rate_limiter(
+        &self,
+        task_id: &TaskId,
+        limit_bps: u64,
+    ) -> Result<Arc<SharedRateLimiter>> {
+        let gid = self
+            .gid_for_task_id(task_id)
+            .context("native task not found")?;
+        Ok(self.job_rate_limiter(gid, limit_bps))
+    }
+
+    /// Persist interrupted segment checkpoints for a native task.
+    pub fn persist_native_interrupted_segments(
+        &self,
+        task_id: &TaskId,
+        segments: &[crate::segment::SegmentState],
+        downloaded: u64,
+    ) -> Result<()> {
+        let gid = self
+            .gid_for_task_id(task_id)
+            .context("native task not found")?;
+        self.registry
+            .update(gid, |job| {
+                job.downloaded = downloaded;
+                job.connections = 0;
+            })
+            .context("native task not found")?;
+        if let Some(store) = self.store.as_ref() {
+            for (seg_id, segment) in segments.iter().enumerate() {
+                store
+                    .put_native_segment(task_id, seg_id as u32, segment)
+                    .with_context(|| {
+                        format!("failed to persist native segment checkpoint {seg_id}")
+                    })?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Remove native segment checkpoints and current migration fallback rows for a task.
+    pub fn cleanup_native_segment_checkpoints(&self, task_id: &TaskId) -> Result<()> {
+        let gid = self
+            .gid_for_task_id(task_id)
+            .context("native task not found")?;
+        if let Some(store) = self.store.as_ref() {
+            store
+                .remove_native_segments(task_id)
+                .context("failed to remove native segment checkpoints")?;
+            store
+                .remove_segments(gid)
+                .context("failed to remove migration segment checkpoints")?;
+        }
+        Ok(())
+    }
+
+    /// Return the next source URI that has not exhausted its registered occurrences.
+    pub fn native_task_next_source(
+        &self,
+        task_id: &TaskId,
+        attempted_counts: &HashMap<String, usize>,
+    ) -> Result<Option<String>> {
+        let job = self
+            .registry
+            .get_by_task_id(task_id)
+            .context("native task not found")?;
+        let unattempted = job
+            .uris
+            .iter()
+            .find(|uri| {
+                attempted_counts.get(*uri).copied().unwrap_or(0) == 0
+                    && job
+                        .options
+                        .source_health
+                        .get(*uri)
+                        .map(|health| health.is_unknown())
+                        .unwrap_or(true)
+            })
+            .cloned();
+        if unattempted.is_some() {
+            return Ok(unattempted);
+        }
+        if let Some(best) = job
+            .uris
+            .iter()
+            .filter(|uri| attempted_counts.get(*uri).copied().unwrap_or(0) == 0)
+            .max_by_key(|uri| {
+                job.options
+                    .source_health
+                    .get(*uri)
+                    .map(|health| health.score)
+                    .unwrap_or_default()
+            })
+            .cloned()
+        {
+            return Ok(Some(best));
+        }
+        let mut seen_counts: HashMap<&str, usize> = HashMap::new();
+        for uri in &job.uris {
+            let seen = seen_counts.entry(uri.as_str()).or_insert(0);
+            *seen += 1;
+            let attempted = attempted_counts.get(uri).copied().unwrap_or(0);
+            if *seen > attempted {
+                return Ok(Some(uri.clone()));
+            }
+        }
+        Ok(None)
+    }
+
+    /// Apply a remote filename to a native task only when the user did not set output explicitly.
+    pub fn set_native_output_filename_if_unset(
+        &self,
+        task_id: &TaskId,
+        filename: &str,
+    ) -> Result<PathBuf> {
+        let gid = self
+            .gid_for_task_id(task_id)
+            .context("native task not found")?;
+        let job = self
+            .registry
+            .get_by_task_id(task_id)
+            .context("native task not found")?;
+        if job.options.out.is_some() {
+            return Ok(job.out_path);
+        }
+        let path = job
+            .out_path
+            .parent()
+            .unwrap_or_else(|| std::path::Path::new("."))
+            .join(filename);
+        self.registry.update(gid, |job| {
+            job.out_path = path.clone();
+        });
+        Ok(path)
+    }
+
+    /// Reset per-source retry state after a failed mirror attempt.
+    pub fn reset_native_task_for_next_source(&self, task_id: &TaskId) -> Result<()> {
+        let gid = self
+            .gid_for_task_id(task_id)
+            .context("native task not found")?;
+        self.registry
+            .update(gid, |job| {
+                job.downloaded = 0;
+                job.connections = 0;
+            })
+            .context("native task not found")?;
+        Ok(())
+    }
+
+    /// Update segment-planning metadata through a native task id.
+    pub fn set_native_segment_plan_metadata(
+        &self,
+        task_id: &TaskId,
+        total_size: Option<u64>,
+        connections: u32,
+    ) -> Result<()> {
+        let gid = self
+            .gid_for_task_id(task_id)
+            .context("native task not found")?;
+        self.registry
+            .update(gid, |job| {
+                job.total_size = total_size;
+                job.connections = connections;
+            })
+            .context("native task not found")?;
+        Ok(())
+    }
+
+    /// Plan segmented range state for a native task and apply persisted checkpoints.
+    pub fn plan_native_segments(
+        &self,
+        task_id: &TaskId,
+        input: NativeSegmentPlanningInput<'_>,
+    ) -> Result<NativeSegmentPlan> {
+        let gid = self
+            .gid_for_task_id(task_id)
+            .context("native task not found")?;
+        let file_size = input.total_size.unwrap_or(0);
+        let mut connections = if input.supports_range && file_size > 0 {
+            input
+                .requested_connections
+                .min((file_size / 1024).max(1) as u32)
+        } else {
+            1
+        };
+        if input.supports_range && file_size > 0 && input.min_split_size > 0 {
+            let max_by_min = (file_size / input.min_split_size).max(1) as u32;
+            connections = connections.min(max_by_min);
+        }
+        if let Some(source_uri) = input.source_uri {
+            let job = self.registry.get(gid).context("native task not found")?;
+            if let Some(health) = job.options.source_health.get(source_uri) {
+                if matches!(
+                    health.state,
+                    crate::native::NativeSourceHealthState::Degraded
+                        | crate::native::NativeSourceHealthState::Failed
+                ) {
+                    connections = (connections / 2).max(1);
+                }
+            }
+        }
+
+        self.set_native_segment_plan_metadata(task_id, Some(file_size), connections)?;
+
+        let ranges = if file_size > 0 {
+            crate::segment::plan_segments(file_size, connections)
+        } else {
+            vec![(0u64, u64::MAX)]
+        };
+        let mut segments = crate::segment::init_segment_states(&ranges);
+
+        if let Some(store) = self.store.as_ref() {
+            let persisted = store
+                .list_native_segments(task_id)
+                .and_then(|native_segments| {
+                    if native_segments.is_empty() {
+                        store.list_segments(gid)
+                    } else {
+                        Ok(native_segments)
+                    }
+                })
+                .context("failed to load persisted segment checkpoints")?;
+            for (seg_id, persisted_state) in persisted {
+                if let Some(segment) = segments.get_mut(seg_id as usize) {
+                    if persisted_state.downloaded > 0
+                        && persisted_state.downloaded <= segment.size()
+                    {
+                        segment.downloaded = persisted_state.downloaded;
+                        segment.status = crate::segment::SegmentStatus::Pending;
+                    }
+                }
+            }
+        }
+
+        Ok(NativeSegmentPlan {
+            connections,
+            segments,
+        })
+    }
+
+    /// Persist one active segment checkpoint by native task id.
+    pub fn checkpoint_native_segment(
+        &self,
+        task_id: &TaskId,
+        seg_id: u32,
+        segments: &[crate::segment::SegmentState],
+        bytes_downloaded: u64,
+    ) -> Result<()> {
+        self.gid_for_task_id(task_id)
+            .context("native task not found")?;
+        let Some(source) = segments.get(seg_id as usize) else {
+            return Ok(());
+        };
+        let Some(store) = self.store.as_ref() else {
+            return Ok(());
+        };
+        let segment = crate::segment::SegmentState {
+            start: source.start,
+            end: source.end,
+            downloaded: bytes_downloaded,
+            etag: None,
+            status: crate::segment::SegmentStatus::Active,
+        };
+        store
+            .put_native_segment(task_id, seg_id, &segment)
+            .with_context(|| format!("failed to checkpoint native segment {seg_id}"))?;
+        Ok(())
+    }
+
+    /// Build a checkpoint callback that writes native segment rows for this task.
+    pub fn native_segment_checkpoint_callback(
+        self: &Arc<Self>,
+        task_id: &TaskId,
+        segments: &[crate::segment::SegmentState],
+    ) -> Option<NativeSegmentCheckpointFn> {
+        self.store.as_ref()?;
+        let engine = Arc::clone(self);
+        let task_id = task_id.clone();
+        let segments = segments.to_vec();
+        Some(Arc::new(move |seg_id, bytes_downloaded| {
+            if let Err(error) =
+                engine.checkpoint_native_segment(&task_id, seg_id, &segments, bytes_downloaded)
+            {
+                warn!(%task_id, seg_id, error = %error, "failed to checkpoint native segment progress");
+            }
+        }))
+    }
+
+    /// Build the executor-facing native descriptor for a range task.
+    pub fn native_range_execution_task(
+        &self,
+        task_id: &TaskId,
+    ) -> Result<NativeRangeExecutionTask> {
+        let job = self
+            .registry
+            .get_by_task_id(task_id)
+            .context("native task not found")?;
+        anyhow::ensure!(
+            job.kind == crate::job::JobKind::Range,
+            "native task is not a range download"
+        );
+        Ok(NativeRangeExecutionTask {
+            task_id: job.task_id,
+            output_path: job.out_path,
+            has_explicit_output_name: job.options.out.is_some(),
+            max_connections: job.options.max_connections,
+            max_download_limit: job.options.max_download_limit,
+            request_headers: job.options.headers,
+            http_user: job.options.http_user,
+            http_password: job.options.http_passwd,
+            checksum: job.options.checksum,
+            piece_checksum: job.piece_checksum,
+        })
     }
 
     /// Get the work notifier for the run loop.
@@ -923,6 +1874,11 @@ impl Engine {
 
         self.persist_job_by_gid(gid);
         self.event_bus.publish(DownloadEvent::Stopped { gid });
+        self.publish_native_task_event_for_gid(
+            gid,
+            NativeEventType::TaskRemoved,
+            NativeEventData::Empty,
+        );
         info!(%gid, "job force-removed");
         Ok(())
     }
@@ -994,6 +1950,24 @@ impl Engine {
         Ok(new_pos)
     }
 
+    /// Change the absolute queue position of a native waiting task.
+    pub fn change_native_queue_position(&self, task_id: &TaskId, position: usize) -> Result<usize> {
+        let job = self
+            .registry
+            .get_by_task_id(task_id)
+            .context("native task not found")?;
+        if job.status != Status::Waiting {
+            anyhow::bail!("native queue position can only be changed for queued tasks");
+        }
+        let new_pos = self.scheduler.change_task_position(
+            task_id.clone(),
+            position as i32,
+            PositionHow::Set,
+        )?;
+        debug!(task_id = %task_id.as_str(), new_pos, "changed native queue position");
+        Ok(new_pos)
+    }
+
     /// Save the current session to the store.
     ///
     /// aria2 equivalent: `aria2.saveSession`
@@ -1036,6 +2010,7 @@ pub enum PositionHow {
 mod tests {
     use super::*;
     use crate::job::JobKind;
+    use crate::segment::{SegmentState, SegmentStatus};
 
     fn default_config() -> GlobalConfig {
         GlobalConfig {
@@ -1050,6 +2025,7 @@ mod tests {
             dir: PathBuf::from("/tmp/downloads"),
             filename: None,
             connections: 16,
+            checksum: None,
         }
     }
 
@@ -1121,6 +2097,33 @@ mod tests {
     }
 
     #[test]
+    fn native_bt_task_from_metalink_metadata_source_carries_webseed_mirrors() {
+        let engine = Engine::new(default_config());
+
+        let created = engine
+            .add_native_bt_task_from_metadata_source(
+                "https://meta.example.com/file.iso.torrent",
+                &["https://mirror.example.com/file.iso".to_string()],
+                PathBuf::from("/tmp/downloads"),
+                Some("file.iso".to_string()),
+                4,
+            )
+            .unwrap();
+
+        let gid = engine.gid_for_task_id(&created.task_id).unwrap();
+        let job = engine.registry.get(gid).unwrap();
+        assert_eq!(job.kind, crate::job::JobKind::Bt);
+        assert_eq!(
+            job.uris,
+            vec!["https://meta.example.com/file.iso.torrent".to_string()]
+        );
+        assert_eq!(
+            job.options.bt_web_seed_uris,
+            Some(vec!["https://mirror.example.com/file.iso".to_string()])
+        );
+    }
+
+    #[test]
     fn native_activation_uses_task_id_with_runtime_bridge() {
         let engine = Engine::new(default_config());
         let created = engine.add_native_task(&default_spec()).unwrap();
@@ -1166,6 +2169,521 @@ mod tests {
         assert_eq!(job.downloaded, 512);
         assert_eq!(job.connections, 0);
         assert_eq!(job.status, Status::Complete);
+    }
+
+    #[test]
+    fn native_runtime_helpers_manage_rate_limiter_and_segment_state() {
+        let (engine, _dir) = engine_with_store();
+        let created = engine.add_native_task(&default_spec()).unwrap();
+        let runtime_gid = engine.gid_for_task_id(&created.task_id).unwrap();
+        let segment = SegmentState {
+            start: 0,
+            end: 1024,
+            downloaded: 512,
+            etag: None,
+            status: SegmentStatus::Active,
+        };
+        let store = engine.store.as_ref().unwrap();
+        store
+            .put_native_segment(&created.task_id, 0, &segment)
+            .unwrap();
+        store.put_segment(runtime_gid, 0, &segment).unwrap();
+
+        let limiter = engine
+            .native_task_rate_limiter(&created.task_id, 1024)
+            .unwrap();
+        assert!(limiter.is_limited());
+
+        engine
+            .persist_native_interrupted_segments(&created.task_id, &[segment], 512)
+            .unwrap();
+        let job = engine.registry.get(runtime_gid).unwrap();
+        assert_eq!(job.downloaded, 512);
+        assert_eq!(job.connections, 0);
+
+        engine
+            .cleanup_native_segment_checkpoints(&created.task_id)
+            .unwrap();
+        assert!(
+            store
+                .list_native_segments(&created.task_id)
+                .unwrap()
+                .is_empty()
+        );
+        assert!(store.list_segments(runtime_gid).unwrap().is_empty());
+    }
+
+    #[test]
+    fn native_segment_planning_restores_checkpoints_and_writes_native_rows() {
+        let (engine, _dir) = engine_with_store();
+        let created = engine.add_native_task(&default_spec()).unwrap();
+        let runtime_gid = engine.gid_for_task_id(&created.task_id).unwrap();
+        let store = engine.store.as_ref().unwrap();
+        let legacy_segment = SegmentState {
+            start: 0,
+            end: 2048,
+            downloaded: 1024,
+            etag: None,
+            status: SegmentStatus::Active,
+        };
+        store.put_segment(runtime_gid, 0, &legacy_segment).unwrap();
+
+        let plan = engine
+            .plan_native_segments(
+                &created.task_id,
+                NativeSegmentPlanningInput {
+                    total_size: Some(4096),
+                    supports_range: true,
+                    requested_connections: 2,
+                    min_split_size: 1024,
+                    source_uri: None,
+                },
+            )
+            .unwrap();
+
+        assert_eq!(plan.connections, 2);
+        assert_eq!(plan.segments[0].downloaded, 1024);
+        assert_eq!(plan.segments[0].status, SegmentStatus::Pending);
+        assert!(
+            store
+                .list_native_segments(&created.task_id)
+                .unwrap()
+                .is_empty(),
+            "legacy fallback restore must not synthesize native rows"
+        );
+
+        engine
+            .checkpoint_native_segment(&created.task_id, 1, &plan.segments, 512)
+            .unwrap();
+        let native_segments = store.list_native_segments(&created.task_id).unwrap();
+        assert_eq!(native_segments.len(), 1);
+        assert_eq!(native_segments[0].0, 1);
+        assert_eq!(native_segments[0].1.start, 2048);
+        assert_eq!(native_segments[0].1.end, 4096);
+        assert_eq!(native_segments[0].1.downloaded, 512);
+        assert_eq!(native_segments[0].1.status, SegmentStatus::Active);
+    }
+
+    #[test]
+    fn native_segment_planning_reduces_connections_for_degraded_source() {
+        let engine = Engine::new(default_config());
+        let mut spec = default_spec();
+        spec.uris = vec!["https://slow.example/file.zip".to_string()];
+        let created = engine.add_native_task(&spec).unwrap();
+        engine
+            .source_failed_native_task(
+                &created.task_id,
+                "https://slow.example/file.zip",
+                "transient error: timeout",
+            )
+            .unwrap();
+
+        let plan = engine
+            .plan_native_segments(
+                &created.task_id,
+                NativeSegmentPlanningInput {
+                    total_size: Some(8192),
+                    supports_range: true,
+                    requested_connections: 4,
+                    min_split_size: 1024,
+                    source_uri: Some("https://slow.example/file.zip"),
+                },
+            )
+            .unwrap();
+
+        assert_eq!(plan.connections, 2);
+        assert_eq!(plan.segments.len(), 2);
+    }
+
+    #[test]
+    fn native_range_execution_descriptor_exposes_runtime_inputs_without_job_snapshot() {
+        let engine = Engine::new(default_config());
+        let created = engine.add_native_task(&default_spec()).unwrap();
+        let runtime_gid = engine.gid_for_task_id(&created.task_id).unwrap();
+        engine.registry.update(runtime_gid, |job| {
+            job.out_path = PathBuf::from("/tmp/downloads/custom.bin");
+            job.options.max_connections = 3;
+            job.options.max_download_limit = 2048;
+            job.options.headers =
+                vec![("accept".to_string(), "application/octet-stream".to_string())];
+            job.options.http_user = Some("task-user".to_string());
+            job.options.http_passwd = Some("task-pass".to_string());
+            job.options.checksum = Some("sha-256=abc123".to_string());
+            job.options.out = Some("custom.bin".to_string());
+            job.piece_checksum = Some(crate::job::PieceChecksum {
+                algo: "sha-256".to_string(),
+                length: 1024,
+                hashes: vec!["abc123".to_string()],
+            });
+        });
+
+        let task = engine
+            .native_range_execution_task(&created.task_id)
+            .expect("range execution task");
+
+        assert_eq!(task.task_id, created.task_id);
+        assert_eq!(task.output_path, PathBuf::from("/tmp/downloads/custom.bin"));
+        assert!(task.has_explicit_output_name);
+        assert_eq!(task.max_connections, 3);
+        assert_eq!(task.max_download_limit, 2048);
+        assert_eq!(
+            task.request_headers,
+            vec![("accept".to_string(), "application/octet-stream".to_string())]
+        );
+        assert_eq!(task.http_user.as_deref(), Some("task-user"));
+        assert_eq!(task.http_password.as_deref(), Some("task-pass"));
+        assert_eq!(task.checksum.as_deref(), Some("sha-256=abc123"));
+        assert!(task.piece_checksum.is_some());
+    }
+
+    #[test]
+    fn native_runtime_helpers_manage_sources_output_and_retry_reset() {
+        let engine = Engine::new(default_config());
+        let created = engine.add_native_task(&default_spec()).unwrap();
+        let runtime_gid = engine.gid_for_task_id(&created.task_id).unwrap();
+
+        assert_eq!(
+            engine
+                .native_task_next_source(&created.task_id, &HashMap::new())
+                .unwrap()
+                .as_deref(),
+            Some("https://example.com/file.zip")
+        );
+
+        let output = engine
+            .set_native_output_filename_if_unset(&created.task_id, "remote.bin")
+            .unwrap();
+        assert_eq!(output, PathBuf::from("/tmp/downloads/remote.bin"));
+        assert_eq!(engine.registry.get(runtime_gid).unwrap().out_path, output);
+
+        engine
+            .update_native_progress(&created.task_id, 1024)
+            .unwrap();
+        engine
+            .set_native_runtime_connections(&created.task_id, 3)
+            .unwrap();
+        engine
+            .reset_native_task_for_next_source(&created.task_id)
+            .unwrap();
+        let job = engine.registry.get(runtime_gid).unwrap();
+        assert_eq!(job.downloaded, 0);
+        assert_eq!(job.connections, 0);
+    }
+
+    #[tokio::test]
+    async fn native_runtime_helpers_update_segment_plan_and_source_failure() {
+        let engine = Engine::new(default_config());
+        let created = engine.add_native_task(&default_spec()).unwrap();
+        let runtime_gid = engine.gid_for_task_id(&created.task_id).unwrap();
+        let mut rx = engine.event_bus.subscribe();
+
+        engine
+            .set_native_segment_plan_metadata(&created.task_id, Some(4096), 4)
+            .unwrap();
+        let job = engine.registry.get(runtime_gid).unwrap();
+        assert_eq!(job.total_size, Some(4096));
+        assert_eq!(job.connections, 4);
+
+        engine
+            .source_failed_native_task(
+                &created.task_id,
+                "https://mirror.example/file.zip",
+                "transient error: timeout",
+            )
+            .unwrap();
+
+        let event = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
+            .await
+            .expect("timed out waiting for source-failed event")
+            .expect("source-failed event should be published");
+        match event {
+            DownloadEvent::SourceFailed { gid, uri, message } => {
+                assert_eq!(gid, runtime_gid);
+                assert_eq!(uri, "https://mirror.example/file.zip");
+                assert_eq!(message, "transient error: timeout");
+            }
+            other => panic!("unexpected event: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn native_sources_project_health_after_source_runtime_feedback() {
+        let engine = Engine::new(default_config());
+        let mut spec = default_spec();
+        spec.uris = vec![
+            "https://slow.example/file.zip".to_string(),
+            "https://fast.example/file.zip".to_string(),
+        ];
+        let created = engine.add_native_task(&spec).unwrap();
+
+        engine
+            .source_failed_native_task(
+                &created.task_id,
+                "https://slow.example/file.zip",
+                "transient error: timeout",
+            )
+            .unwrap();
+        engine
+            .source_succeeded_native_task(&created.task_id, "https://fast.example/file.zip", 8192)
+            .unwrap();
+
+        let summary = engine.native_task_summary(&created.task_id).unwrap();
+        let slow = summary
+            .sources
+            .iter()
+            .find(|source| source.uri == "https://slow.example/file.zip")
+            .expect("slow source");
+        let fast = summary
+            .sources
+            .iter()
+            .find(|source| source.uri == "https://fast.example/file.zip")
+            .expect("fast source");
+
+        assert_eq!(slow.health.state.as_str(), "degraded");
+        assert_eq!(slow.health.failure_count, 1);
+        assert_eq!(
+            slow.health.last_error.as_deref(),
+            Some("transient error: timeout")
+        );
+        assert_eq!(slow.health.last_download_bytes_per_second, None);
+        assert!(slow.health.score < fast.health.score);
+        assert_eq!(fast.health.state.as_str(), "healthy");
+        assert_eq!(fast.health.failure_count, 0);
+        assert_eq!(fast.health.last_download_bytes_per_second, Some(8192));
+    }
+
+    #[test]
+    fn fail_native_task_records_terminal_source_error_when_missing() {
+        let engine = Engine::new(default_config());
+        let mut spec = default_spec();
+        spec.uris = vec!["https://mirror.example/file.zip".to_string()];
+        let created = engine.add_native_task(&spec).unwrap();
+        engine.activate_native_task(&created.task_id).unwrap();
+
+        engine
+            .fail_native_task(
+                &created.task_id,
+                "permanent error: checksum verification failed",
+            )
+            .unwrap();
+
+        let summary = engine.native_task_summary(&created.task_id).unwrap();
+        assert_eq!(summary.lifecycle, crate::native::TaskLifecycle::Failed);
+        assert_eq!(summary.sources.len(), 1);
+        assert_eq!(
+            summary.sources[0].health.last_error.as_deref(),
+            Some("permanent error: checksum verification failed")
+        );
+    }
+
+    #[test]
+    fn native_source_selection_prefers_untested_then_healthiest_source() {
+        let engine = Engine::new(default_config());
+        let mut spec = default_spec();
+        spec.uris = vec![
+            "https://slow.example/file.zip".to_string(),
+            "https://fast.example/file.zip".to_string(),
+            "https://new.example/file.zip".to_string(),
+        ];
+        let created = engine.add_native_task(&spec).unwrap();
+        engine
+            .source_succeeded_native_task(&created.task_id, "https://slow.example/file.zip", 1024)
+            .unwrap();
+        engine
+            .source_succeeded_native_task(&created.task_id, "https://fast.example/file.zip", 8192)
+            .unwrap();
+
+        assert_eq!(
+            engine
+                .native_task_next_source(&created.task_id, &HashMap::new())
+                .unwrap()
+                .as_deref(),
+            Some("https://new.example/file.zip")
+        );
+
+        let attempted = HashMap::from([("https://new.example/file.zip".to_string(), 1)]);
+        assert_eq!(
+            engine
+                .native_task_next_source(&created.task_id, &attempted)
+                .unwrap()
+                .as_deref(),
+            Some("https://fast.example/file.zip")
+        );
+    }
+
+    #[tokio::test]
+    async fn native_runtime_helpers_publish_native_progress_and_source_failure_events() {
+        let engine = Engine::new(default_config());
+        let created = engine.add_native_task(&default_spec()).unwrap();
+        let runtime_gid = engine.gid_for_task_id(&created.task_id).unwrap();
+        engine
+            .set_native_segment_plan_metadata(&created.task_id, Some(4096), 4)
+            .unwrap();
+        engine.registry.update(runtime_gid, |job| {
+            job.download_speed = 256;
+        });
+        let mut rx = engine.native_event_bus.subscribe();
+
+        engine
+            .update_native_progress(&created.task_id, 1024)
+            .unwrap();
+        let progress = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
+            .await
+            .expect("timed out waiting for native progress event")
+            .expect("native progress event should be published");
+        assert_eq!(progress.task_id.as_ref(), Some(&created.task_id));
+        assert_eq!(progress.event_type, NativeEventType::TaskProgress);
+        assert_eq!(
+            progress.data,
+            NativeEventData::Progress {
+                completed_bytes: 1024,
+                total_bytes: Some(4096),
+                download_bytes_per_second: 256,
+            }
+        );
+
+        engine
+            .source_failed_native_task(
+                &created.task_id,
+                "https://mirror.example/file.zip",
+                "transient error: timeout",
+            )
+            .unwrap();
+        let source_failed = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
+            .await
+            .expect("timed out waiting for native source-failed event")
+            .expect("native source-failed event should be published");
+        assert_eq!(source_failed.task_id.as_ref(), Some(&created.task_id));
+        assert_eq!(source_failed.event_type, NativeEventType::TaskSourceFailed);
+        assert_eq!(
+            source_failed.data,
+            NativeEventData::Error {
+                code: "source_failed".to_string(),
+                message: "transient error: timeout".to_string(),
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn native_lifecycle_operations_publish_native_events() {
+        let engine = Engine::new(default_config());
+        let mut rx = engine.native_event_bus.subscribe();
+
+        let created = engine.add_native_task(&default_spec()).unwrap();
+        assert_native_event(
+            &mut rx,
+            &created.task_id,
+            NativeEventType::TaskCreated,
+            NativeEventData::Empty,
+        )
+        .await;
+
+        engine.activate_native_task(&created.task_id).unwrap();
+        assert_native_event(
+            &mut rx,
+            &created.task_id,
+            NativeEventType::TaskStarted,
+            NativeEventData::Empty,
+        )
+        .await;
+
+        engine.pause_native_task(&created.task_id).unwrap();
+        assert_native_event(
+            &mut rx,
+            &created.task_id,
+            NativeEventType::TaskPaused,
+            NativeEventData::Empty,
+        )
+        .await;
+
+        engine.resume_native_task(&created.task_id).unwrap();
+        assert_native_event(
+            &mut rx,
+            &created.task_id,
+            NativeEventType::TaskResumed,
+            NativeEventData::Empty,
+        )
+        .await;
+
+        engine.activate_native_task(&created.task_id).unwrap();
+        assert_native_event(
+            &mut rx,
+            &created.task_id,
+            NativeEventType::TaskStarted,
+            NativeEventData::Empty,
+        )
+        .await;
+
+        engine.complete_native_task(&created.task_id, 1024).unwrap();
+        assert_native_event(
+            &mut rx,
+            &created.task_id,
+            NativeEventType::TaskCompleted,
+            NativeEventData::Empty,
+        )
+        .await;
+
+        let failed = engine.add_native_task(&default_spec()).unwrap();
+        assert_native_event(
+            &mut rx,
+            &failed.task_id,
+            NativeEventType::TaskCreated,
+            NativeEventData::Empty,
+        )
+        .await;
+        engine.activate_native_task(&failed.task_id).unwrap();
+        assert_native_event(
+            &mut rx,
+            &failed.task_id,
+            NativeEventType::TaskStarted,
+            NativeEventData::Empty,
+        )
+        .await;
+        engine
+            .fail_native_task(&failed.task_id, "connection timeout")
+            .unwrap();
+        assert_native_event(
+            &mut rx,
+            &failed.task_id,
+            NativeEventType::TaskFailed,
+            NativeEventData::Error {
+                code: "task_failed".to_string(),
+                message: "connection timeout".to_string(),
+            },
+        )
+        .await;
+
+        let removed = engine.add_native_task(&default_spec()).unwrap();
+        assert_native_event(
+            &mut rx,
+            &removed.task_id,
+            NativeEventType::TaskCreated,
+            NativeEventData::Empty,
+        )
+        .await;
+        engine.remove_native_task(&removed.task_id).unwrap();
+        assert_native_event(
+            &mut rx,
+            &removed.task_id,
+            NativeEventType::TaskRemoved,
+            NativeEventData::Empty,
+        )
+        .await;
+    }
+
+    async fn assert_native_event(
+        rx: &mut tokio::sync::broadcast::Receiver<NativeEvent>,
+        task_id: &TaskId,
+        event_type: NativeEventType,
+        data: NativeEventData,
+    ) {
+        let event = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
+            .await
+            .expect("timed out waiting for native event")
+            .expect("native event should be published");
+        assert_eq!(event.task_id.as_ref(), Some(task_id));
+        assert_eq!(event.event_type, event_type);
+        assert_eq!(event.data, data);
     }
 
     #[test]
@@ -1995,6 +3513,57 @@ mod tests {
             .unwrap()
             .expect("native task row");
         assert_eq!(row.task_id, task_id);
+    }
+
+    #[test]
+    fn save_session_and_restore_preserve_native_source_health() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("source-health.redb");
+        let store = Arc::new(Store::open(&db_path).unwrap());
+        let engine = Engine::with_store(default_config(), Arc::clone(&store));
+        let mut spec = default_spec();
+        spec.uris = vec![
+            "https://slow.example/file.zip".to_string(),
+            "https://fast.example/file.zip".to_string(),
+        ];
+        let created = engine.add_native_task(&spec).unwrap();
+        engine
+            .source_failed_native_task(
+                &created.task_id,
+                "https://slow.example/file.zip",
+                "transient error: timeout",
+            )
+            .unwrap();
+        engine
+            .source_succeeded_native_task(&created.task_id, "https://fast.example/file.zip", 8192)
+            .unwrap();
+
+        engine.save_session().unwrap();
+
+        let restored_engine = Engine::with_store(default_config(), store);
+        restored_engine.restore().unwrap();
+        let restored = restored_engine
+            .native_task_summary(&created.task_id)
+            .expect("restored native task");
+        let slow = restored
+            .sources
+            .iter()
+            .find(|source| source.uri == "https://slow.example/file.zip")
+            .expect("slow source");
+        let fast = restored
+            .sources
+            .iter()
+            .find(|source| source.uri == "https://fast.example/file.zip")
+            .expect("fast source");
+
+        assert_eq!(slow.health.state.as_str(), "degraded");
+        assert_eq!(slow.health.failure_count, 1);
+        assert_eq!(
+            slow.health.last_error.as_deref(),
+            Some("transient error: timeout")
+        );
+        assert_eq!(fast.health.state.as_str(), "healthy");
+        assert_eq!(fast.health.last_download_bytes_per_second, Some(8192));
     }
 
     #[test]

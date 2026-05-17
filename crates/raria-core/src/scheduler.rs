@@ -110,38 +110,59 @@ impl Scheduler {
         pos: i32,
         how: crate::engine::PositionHow,
     ) -> anyhow::Result<usize> {
-        use crate::engine::PositionHow;
         let mut queue = self.queue.write();
         let task_id = TaskId::from_migration_gid(gid.as_raw());
-        let cur_pos = queue
-            .iter()
-            .position(|queued| *queued == task_id)
-            .ok_or_else(|| anyhow::anyhow!("GID {gid} not in queue"))?;
-        queue.remove(cur_pos);
-        let len = queue.len();
-        let new_pos = match how {
-            PositionHow::Set => (pos.max(0) as usize).min(len),
-            PositionHow::Cur => {
-                let target = cur_pos as i64 + pos as i64;
-                target.max(0).min(len as i64) as usize
-            }
-            PositionHow::End => {
-                let target = len as i64 + pos as i64;
-                target.max(0).min(len as i64) as usize
-            }
-        };
-        queue.insert(new_pos, task_id);
-        Ok(new_pos)
+        change_task_position_locked(&mut queue, task_id, pos, how)
     }
 
+    /// Move a native task id to a different position in the queue.
+    pub fn change_task_position(
+        &self,
+        task_id: TaskId,
+        pos: i32,
+        how: crate::engine::PositionHow,
+    ) -> anyhow::Result<usize> {
+        let mut queue = self.queue.write();
+        change_task_position_locked(&mut queue, task_id, pos, how)
+    }
+}
+
+fn change_task_position_locked(
+    queue: &mut VecDeque<TaskId>,
+    task_id: TaskId,
+    pos: i32,
+    how: crate::engine::PositionHow,
+) -> anyhow::Result<usize> {
+    use crate::engine::PositionHow;
+    let cur_pos = queue
+        .iter()
+        .position(|queued| *queued == task_id)
+        .ok_or_else(|| anyhow::anyhow!("task {} not in queue", task_id.as_str()))?;
+    queue.remove(cur_pos);
+    let len = queue.len();
+    let new_pos = match how {
+        PositionHow::Set => (pos.max(0) as usize).min(len),
+        PositionHow::Cur => {
+            let target = cur_pos as i64 + pos as i64;
+            target.max(0).min(len as i64) as usize
+        }
+        PositionHow::End => {
+            let target = len as i64 + pos as i64;
+            target.max(0).min(len as i64) as usize
+        }
+    };
+    queue.insert(new_pos, task_id);
+    Ok(new_pos)
+}
+
+impl Scheduler {
     /// Determine which GIDs should be promoted from Waiting → Active.
     ///
     /// Checks the registry for the count of currently Active jobs,
     /// and returns GIDs from the front of the queue that can be activated.
     pub fn jobs_to_activate(&self, registry: &JobRegistry) -> Vec<Gid> {
         let max = self.max_concurrent.load(Ordering::Relaxed);
-        let active_count = (registry.by_status(Status::Active).len()
-            + registry.by_status(Status::Seeding).len()) as u32;
+        let active_count = registry.by_status(Status::Active).len() as u32;
         if active_count >= max {
             return Vec::new();
         }
@@ -158,8 +179,7 @@ impl Scheduler {
     /// Determine which native task ids should be promoted from queued to running.
     pub fn native_tasks_to_activate(&self, registry: &JobRegistry) -> Vec<TaskId> {
         let max = self.max_concurrent.load(Ordering::Relaxed);
-        let active_count = (registry.by_status(Status::Active).len()
-            + registry.by_status(Status::Seeding).len()) as u32;
+        let active_count = registry.by_status(Status::Active).len() as u32;
         if active_count >= max {
             return Vec::new();
         }
@@ -387,6 +407,28 @@ mod tests {
 
         let to_activate = sched.jobs_to_activate(&reg);
         assert!(to_activate.is_empty());
+    }
+
+    #[test]
+    fn native_tasks_to_activate_does_not_count_seeding_tasks_as_download_slots() {
+        let sched = Scheduler::new(1);
+        let reg = JobRegistry::new();
+
+        let mut seeding_job = Job::new_bt(
+            vec!["magnet:?xt=urn:btih:feedface".into()],
+            PathBuf::from("/tmp/seed"),
+        );
+        seeding_job.status = Status::Seeding;
+        reg.insert(seeding_job).unwrap();
+
+        let waiting = make_job("https://example.test/next.bin");
+        let waiting_task_id = waiting.task_id.clone();
+        reg.insert(waiting).unwrap();
+        sched.enqueue_task(waiting_task_id.clone());
+
+        let to_activate = sched.native_tasks_to_activate(&reg);
+
+        assert_eq!(to_activate, vec![waiting_task_id]);
     }
 
     #[test]

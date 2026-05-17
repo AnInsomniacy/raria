@@ -1,5 +1,9 @@
 //! Native raria HTTP JSON API.
 
+use crate::metalink_tasks::{
+    apply_metalink_seed_metadata, normalize_metalink_for_engine, parse_metalink_xml,
+    torrent_metadata_source,
+};
 use anyhow::{Context, Result};
 use axum::extract::ws::{Message as WsMessage, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path, State};
@@ -9,8 +13,8 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use raria_core::engine::{AddUriSpec, Engine};
 use raria_core::native::{
-    NativeEvent, NativeEventData, NativeEventType, NativeTaskFile, NativeTaskSummary, TaskId,
-    TaskSource,
+    NativeEvent, NativeEventData, NativeEventType, NativePeerSnapshot, NativeTaskFile,
+    NativeTaskSummary, NativeTrackerSnapshot, TaskId, TaskSource,
 };
 use raria_core::progress::DownloadEvent;
 use serde::{Deserialize, Serialize};
@@ -85,9 +89,14 @@ pub fn native_api_router(engine: Arc<Engine>, auth_token: Option<String>) -> Rou
     Router::new()
         .route("/api/v1/health", get(handle_health))
         .route("/api/v1/config", get(handle_config))
+        .route("/api/v1/daemon/shutdown", post(handle_daemon_shutdown))
         .route("/api/v1/events", get(handle_events_ws))
         .route("/api/v1/session/save", post(handle_save_session))
         .route("/api/v1/stats", get(handle_stats))
+        .route(
+            "/api/v1/transfer",
+            get(handle_global_transfer).patch(handle_patch_global_transfer),
+        )
         .route(
             "/api/v1/tasks",
             get(handle_list_tasks).post(handle_create_task),
@@ -97,10 +106,33 @@ pub fn native_api_router(engine: Arc<Engine>, auth_token: Option<String>) -> Rou
             get(handle_get_task).delete(handle_remove_task),
         )
         .route("/api/v1/tasks/:task_id/pause", post(handle_pause_task))
+        .route(
+            "/api/v1/tasks/:task_id/queue",
+            get(handle_task_queue).patch(handle_patch_task_queue),
+        )
         .route("/api/v1/tasks/:task_id/restart", post(handle_restart_task))
         .route("/api/v1/tasks/:task_id/resume", post(handle_resume_task))
-        .route("/api/v1/tasks/:task_id/files", get(handle_task_files))
-        .route("/api/v1/tasks/:task_id/sources", get(handle_task_sources))
+        .route(
+            "/api/v1/tasks/:task_id/files",
+            get(handle_task_files).patch(handle_patch_task_files),
+        )
+        .route(
+            "/api/v1/tasks/:task_id/bt/seeding",
+            get(handle_task_bt_seeding).patch(handle_patch_task_bt_seeding),
+        )
+        .route(
+            "/api/v1/tasks/:task_id/transfer",
+            get(handle_task_transfer).patch(handle_patch_task_transfer),
+        )
+        .route("/api/v1/tasks/:task_id/peers", get(handle_task_peers))
+        .route(
+            "/api/v1/tasks/:task_id/sources",
+            get(handle_task_sources).patch(handle_patch_task_sources),
+        )
+        .route(
+            "/api/v1/tasks/:task_id/trackers",
+            get(handle_task_trackers).patch(handle_patch_task_trackers),
+        )
         .with_state(state)
 }
 
@@ -127,6 +159,7 @@ async fn handle_health(State(state): State<NativeApiState>) -> impl IntoResponse
 struct RuntimeConfigResponse {
     daemon: RuntimeDaemonConfig,
     downloads: RuntimeDownloadsConfig,
+    metalink: RuntimeMetalinkConfig,
 }
 
 #[derive(Debug, Serialize)]
@@ -143,6 +176,14 @@ struct RuntimeDownloadsConfig {
     default_segments: u32,
     min_segment_size: u64,
     retry_max_attempts: u32,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RuntimeMetalinkConfig {
+    preferred_locations: Vec<String>,
+    preferred_protocol: Option<String>,
+    unique_protocols: bool,
 }
 
 async fn handle_config(
@@ -163,6 +204,11 @@ async fn handle_config(
             min_segment_size: config.min_split_size,
             retry_max_attempts: config.max_tries,
         },
+        metalink: RuntimeMetalinkConfig {
+            preferred_locations: config.metalink_preferred_locations.clone(),
+            preferred_protocol: config.metalink_preferred_protocol.clone(),
+            unique_protocols: config.metalink_unique_protocols,
+        },
     }))
 }
 
@@ -178,11 +224,39 @@ async fn handle_events_ws(
 }
 
 async fn handle_events_client(mut socket: WebSocket, state: NativeApiState) {
+    let mut native_events = state.engine.native_event_bus.subscribe();
     let mut events = state.engine.event_bus.subscribe();
+    let mut received_native_event = false;
     let mut sequence = 1u64;
 
-    while let Ok(event) = events.recv().await {
-        let Some(native_event) = download_event_to_native(&state.engine, sequence, event) else {
+    loop {
+        let native_event = match native_events.try_recv() {
+            Ok(event) => {
+                let mut event = event;
+                event.sequence = sequence;
+                received_native_event = true;
+                Some(event)
+            }
+            Err(tokio::sync::broadcast::error::TryRecvError::Empty) => {
+                tokio::select! {
+                    biased;
+                    Ok(event) = native_events.recv() => {
+                        let mut event = event;
+                        event.sequence = sequence;
+                        received_native_event = true;
+                        Some(event)
+                    }
+                    Ok(event) = events.recv(), if !received_native_event => {
+                        download_event_to_native(&state.engine, sequence, event)
+                    },
+                    else => break,
+                }
+            }
+            Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_)) => continue,
+            Err(tokio::sync::broadcast::error::TryRecvError::Closed) => break,
+        };
+
+        let Some(native_event) = native_event else {
             continue;
         };
         sequence += 1;
@@ -205,25 +279,25 @@ fn download_event_to_native(
         DownloadEvent::Started { gid } => Some(NativeEvent::new(
             sequence,
             NativeEventType::TaskStarted,
-            Some(task_id_for_event(engine, gid)),
+            Some(task_id_for_event(engine, gid)?),
             NativeEventData::Empty,
         )),
         DownloadEvent::Paused { gid } => Some(NativeEvent::new(
             sequence,
             NativeEventType::TaskPaused,
-            Some(task_id_for_event(engine, gid)),
+            Some(task_id_for_event(engine, gid)?),
             NativeEventData::Empty,
         )),
         DownloadEvent::Complete { gid } => Some(NativeEvent::new(
             sequence,
             NativeEventType::TaskCompleted,
-            Some(task_id_for_event(engine, gid)),
+            Some(task_id_for_event(engine, gid)?),
             NativeEventData::Empty,
         )),
         DownloadEvent::Error { gid, message } => Some(NativeEvent::new(
             sequence,
             NativeEventType::TaskFailed,
-            Some(task_id_for_event(engine, gid)),
+            Some(task_id_for_event(engine, gid)?),
             NativeEventData::Error {
                 code: "task_failed".to_string(),
                 message,
@@ -237,7 +311,7 @@ fn download_event_to_native(
         } => Some(NativeEvent::new(
             sequence,
             NativeEventType::TaskProgress,
-            Some(task_id_for_event(engine, gid)),
+            Some(task_id_for_event(engine, gid)?),
             NativeEventData::Progress {
                 completed_bytes: downloaded,
                 total_bytes: total,
@@ -247,7 +321,7 @@ fn download_event_to_native(
         DownloadEvent::SourceFailed { gid, message, .. } => Some(NativeEvent::new(
             sequence,
             NativeEventType::TaskSourceFailed,
-            Some(task_id_for_event(engine, gid)),
+            Some(task_id_for_event(engine, gid)?),
             NativeEventData::Error {
                 code: "source_failed".to_string(),
                 message,
@@ -256,13 +330,13 @@ fn download_event_to_native(
         DownloadEvent::Stopped { gid } => Some(NativeEvent::new(
             sequence,
             NativeEventType::TaskRemoved,
-            Some(task_id_for_event(engine, gid)),
+            Some(task_id_for_event(engine, gid)?),
             NativeEventData::Empty,
         )),
         DownloadEvent::BtDownloadComplete { gid } => Some(NativeEvent::new(
             sequence,
             NativeEventType::TaskCompleted,
-            Some(task_id_for_event(engine, gid)),
+            Some(task_id_for_event(engine, gid)?),
             NativeEventData::Empty,
         )),
         DownloadEvent::StatusChanged { .. } => None,
@@ -299,6 +373,28 @@ struct SaveSessionResponse {
     status: &'static str,
     task_count: usize,
     session_path: PathBuf,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DaemonShutdownResponse {
+    status: &'static str,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GlobalTransferPolicyResponse {
+    download_bytes_per_second_limit: u64,
+    upload_bytes_per_second_limit: u64,
+    max_active_tasks: u32,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PatchGlobalTransferPolicyRequest {
+    download_bytes_per_second_limit: Option<u64>,
+    upload_bytes_per_second_limit: Option<u64>,
+    max_active_tasks: Option<u32>,
 }
 
 #[derive(Debug, Default, Serialize)]
@@ -343,6 +439,41 @@ async fn handle_stats(
     }))
 }
 
+async fn handle_global_transfer(
+    headers: HeaderMap,
+    State(state): State<NativeApiState>,
+) -> Result<Json<GlobalTransferPolicyResponse>, NativeApiError> {
+    require_auth(&state, &headers)?;
+    Ok(Json(GlobalTransferPolicyResponse {
+        download_bytes_per_second_limit: state.engine.global_rate_limiter.limit_bps(),
+        upload_bytes_per_second_limit: state.engine.global_upload_limit_bps(),
+        max_active_tasks: state.engine.scheduler.max_concurrent(),
+    }))
+}
+
+async fn handle_patch_global_transfer(
+    headers: HeaderMap,
+    State(state): State<NativeApiState>,
+    Json(request): Json<PatchGlobalTransferPolicyRequest>,
+) -> Result<Json<GlobalTransferPolicyResponse>, NativeApiError> {
+    require_auth(&state, &headers)?;
+    if let Some(limit) = request.download_bytes_per_second_limit {
+        state.engine.global_rate_limiter.update_limit(limit);
+    }
+    if let Some(limit) = request.upload_bytes_per_second_limit {
+        state.engine.update_global_upload_limit(limit);
+    }
+    if let Some(max_active_tasks) = request.max_active_tasks {
+        state.engine.scheduler.set_max_concurrent(max_active_tasks);
+        state.engine.work_notify().notify_one();
+    }
+    Ok(Json(GlobalTransferPolicyResponse {
+        download_bytes_per_second_limit: state.engine.global_rate_limiter.limit_bps(),
+        upload_bytes_per_second_limit: state.engine.global_upload_limit_bps(),
+        max_active_tasks: state.engine.scheduler.max_concurrent(),
+    }))
+}
+
 async fn handle_save_session(
     headers: HeaderMap,
     State(state): State<NativeApiState>,
@@ -360,36 +491,214 @@ async fn handle_save_session(
     }))
 }
 
+async fn handle_daemon_shutdown(
+    headers: HeaderMap,
+    State(state): State<NativeApiState>,
+) -> Result<Json<DaemonShutdownResponse>, NativeApiError> {
+    require_auth(&state, &headers)?;
+    state.engine.shutdown();
+
+    Ok(Json(DaemonShutdownResponse {
+        status: "shuttingDown",
+    }))
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct CreateTaskRequest {
-    sources: Vec<String>,
+    sources: Option<Vec<String>>,
     download_dir: PathBuf,
     filename: Option<String>,
     segments: Option<u32>,
+    checksum: Option<String>,
+    metalink: Option<CreateMetalinkTaskOptions>,
+    bt: Option<CreateBtTaskOptions>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CreateMetalinkTaskOptions {
+    bytes_base64: Option<String>,
+    path: Option<PathBuf>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CreateMetalinkTasksResponse {
+    tasks: Vec<NativeTaskSummary>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CreateBtTaskOptions {
+    selected_file_ids: Option<Vec<String>>,
+    tracker_uris: Option<Vec<String>>,
+    web_seed_uris: Option<Vec<String>>,
+    delete_unselected_files_on_completion: Option<bool>,
+    seeding: Option<PatchBtSeedingPolicyRequest>,
 }
 
 async fn handle_create_task(
     headers: HeaderMap,
     State(state): State<NativeApiState>,
     Json(request): Json<CreateTaskRequest>,
-) -> Result<Json<NativeTaskSummary>, NativeApiError> {
+) -> Result<Response, NativeApiError> {
     require_auth(&state, &headers)?;
-    if request.sources.is_empty() {
+    if request.metalink.is_some() {
+        let response = create_metalink_tasks(&state.engine, request)
+            .await
+            .map_err(|_| NativeApiError::InvalidRequest)?;
+        return Ok(Json(response).into_response());
+    }
+
+    let Some(sources) = request.sources else {
+        return Err(NativeApiError::InvalidRequest);
+    };
+    if sources.is_empty() {
         return Err(NativeApiError::InvalidRequest);
     }
+    let bt_options = request.bt.as_ref();
+    let bt_selected_files = bt_options
+        .and_then(|bt| {
+            bt.selected_file_ids.as_ref().map(|ids| {
+                ids.iter()
+                    .map(|id| parse_file_id(id))
+                    .collect::<std::result::Result<Vec<_>, _>>()
+            })
+        })
+        .transpose()?;
 
     let summary = state
         .engine
         .add_native_task(&AddUriSpec {
-            uris: request.sources,
+            uris: sources,
             dir: request.download_dir,
             filename: request.filename,
             connections: request.segments.unwrap_or(1).max(1),
+            checksum: request.checksum,
         })
         .map_err(|_| NativeApiError::InvalidRequest)?;
+    if let Some(selected_files) = bt_selected_files {
+        state
+            .engine
+            .update_native_task_file_selection(
+                &summary.task_id,
+                &selected_files
+                    .into_iter()
+                    .map(|index| format!("file_{index}"))
+                    .collect::<Vec<_>>(),
+            )
+            .map_err(|_| NativeApiError::InvalidRequest)?;
+    }
+    if let Some(trackers) = bt_options.and_then(|bt| bt.tracker_uris.as_ref()) {
+        state
+            .engine
+            .update_native_task_trackers(&summary.task_id, trackers)
+            .map_err(|_| NativeApiError::InvalidRequest)?;
+    }
+    if let Some(web_seed_uris) = bt_options.and_then(|bt| bt.web_seed_uris.as_ref()) {
+        state
+            .engine
+            .update_native_bt_web_seed_uris(&summary.task_id, web_seed_uris)
+            .map_err(|_| NativeApiError::InvalidRequest)?;
+    }
+    if let Some(delete_unselected) =
+        bt_options.and_then(|bt| bt.delete_unselected_files_on_completion)
+    {
+        state
+            .engine
+            .update_native_bt_delete_unselected_files_policy(&summary.task_id, delete_unselected)
+            .map_err(|_| NativeApiError::InvalidRequest)?;
+    }
+    if let Some(seeding) = bt_options.and_then(|bt| bt.seeding.as_ref()) {
+        state
+            .engine
+            .update_native_bt_seeding_policy(
+                &summary.task_id,
+                seeding.target_ratio,
+                seeding.stop_after_minutes,
+                seeding.idle_download_timeout_seconds,
+            )
+            .map_err(|_| NativeApiError::InvalidRequest)?;
+    }
+    let summary = state
+        .engine
+        .native_task_summary(&summary.task_id)
+        .map_err(|_| NativeApiError::InvalidRequest)?;
 
-    Ok(Json(summary))
+    Ok(Json(summary).into_response())
+}
+
+async fn create_metalink_tasks(
+    engine: &Arc<Engine>,
+    request: CreateTaskRequest,
+) -> Result<CreateMetalinkTasksResponse> {
+    use base64::Engine as Base64Engine;
+
+    let metalink = request.metalink.context("metalink payload missing")?;
+    let xml = if let Some(bytes_base64) = metalink.bytes_base64 {
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(bytes_base64)
+            .context("invalid metalink base64")?;
+        String::from_utf8(bytes).context("metalink is not valid UTF-8")?
+    } else if let Some(path) = metalink.path {
+        tokio::fs::read_to_string(path)
+            .await
+            .context("failed to read metalink file")?
+    } else {
+        anyhow::bail!("metalink bytesBase64 or path is required");
+    };
+    let metalink = parse_metalink_xml(&xml)?;
+    let seeds = normalize_metalink_for_engine(engine, &metalink);
+
+    let mut tasks = Vec::new();
+    for seed in seeds {
+        if seed.uris.is_empty() && torrent_metadata_source(&seed).is_none() {
+            continue;
+        }
+        let summary = create_task_from_metalink_seed(
+            engine,
+            &seed,
+            request.download_dir.clone(),
+            request.segments.unwrap_or(1).max(1),
+        )?;
+        tasks.push(summary);
+    }
+    anyhow::ensure!(!tasks.is_empty(), "metalink contains no downloadable files");
+    Ok(CreateMetalinkTasksResponse { tasks })
+}
+
+fn create_task_from_metalink_seed(
+    engine: &Engine,
+    seed: &raria_metalink::normalizer::RangeJobSeed,
+    download_dir: PathBuf,
+    connections: u32,
+) -> Result<NativeTaskSummary> {
+    let summary = if let Some(metadata_source) = torrent_metadata_source(seed) {
+        engine.add_native_bt_task_from_metadata_source(
+            &metadata_source.uri,
+            &seed.uris,
+            download_dir,
+            Some(seed.filename.clone()),
+            connections,
+        )?
+    } else {
+        engine.add_native_task(&AddUriSpec {
+            uris: seed.uris.clone(),
+            dir: download_dir,
+            filename: Some(seed.filename.clone()),
+            connections,
+            checksum: seed
+                .checksum
+                .as_ref()
+                .map(|checksum| format!("{}={}", checksum.algo, checksum.value)),
+        })?
+    };
+    let gid = engine
+        .gid_for_task_id(&summary.task_id)
+        .context("native task was not registered")?;
+    apply_metalink_seed_metadata(engine, gid, seed)?;
+    engine.native_task_summary(&summary.task_id)
 }
 
 async fn handle_get_task(
@@ -484,10 +793,39 @@ async fn handle_task_files(
     }))
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PatchFilesRequest {
+    selected_file_ids: Vec<String>,
+}
+
+async fn handle_patch_task_files(
+    headers: HeaderMap,
+    State(state): State<NativeApiState>,
+    Path(task_id): Path<String>,
+    Json(request): Json<PatchFilesRequest>,
+) -> Result<Json<FilesResponse>, NativeApiError> {
+    require_auth(&state, &headers)?;
+    let task_id = parse_task_id(&task_id)?;
+    let summary = state
+        .engine
+        .update_native_task_file_selection(&task_id, &request.selected_file_ids)
+        .map_err(|_| NativeApiError::InvalidRequest)?;
+    Ok(Json(FilesResponse {
+        files: summary.files,
+    }))
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct SourcesResponse {
     sources: Vec<TaskSource>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PatchSourcesRequest {
+    sources: Vec<String>,
 }
 
 async fn handle_task_sources(
@@ -500,6 +838,265 @@ async fn handle_task_sources(
     Ok(Json(SourcesResponse {
         sources: summary.sources,
     }))
+}
+
+async fn handle_patch_task_sources(
+    headers: HeaderMap,
+    State(state): State<NativeApiState>,
+    Path(task_id): Path<String>,
+    Json(request): Json<PatchSourcesRequest>,
+) -> Result<Json<SourcesResponse>, NativeApiError> {
+    require_auth(&state, &headers)?;
+    let task_id = parse_task_id(&task_id)?;
+    let summary = state
+        .engine
+        .replace_native_task_sources(&task_id, &request.sources)
+        .map_err(|_| NativeApiError::InvalidRequest)?;
+    Ok(Json(SourcesResponse {
+        sources: summary.sources,
+    }))
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PeersResponse {
+    peers: Vec<NativePeerSnapshot>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BtSeedingPolicyResponse {
+    target_ratio: Option<f64>,
+    stop_after_minutes: Option<u64>,
+    idle_download_timeout_seconds: Option<u64>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct TransferPolicyResponse {
+    download_bytes_per_second_limit: u64,
+    upload_bytes_per_second_limit: u64,
+    segments: u32,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct QueuePositionResponse {
+    task_id: TaskId,
+    position: usize,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PatchQueuePositionRequest {
+    position: usize,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PatchTransferPolicyRequest {
+    download_bytes_per_second_limit: Option<u64>,
+    upload_bytes_per_second_limit: Option<u64>,
+    segments: Option<u32>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PatchBtSeedingPolicyRequest {
+    target_ratio: Option<f64>,
+    stop_after_minutes: Option<u64>,
+    idle_download_timeout_seconds: Option<u64>,
+}
+
+async fn handle_task_bt_seeding(
+    headers: HeaderMap,
+    State(state): State<NativeApiState>,
+    Path(task_id): Path<String>,
+) -> Result<Json<BtSeedingPolicyResponse>, NativeApiError> {
+    require_auth(&state, &headers)?;
+    let task_id = parse_task_id(&task_id)?;
+    let job = state
+        .engine
+        .registry
+        .get_by_task_id(&task_id)
+        .ok_or(NativeApiError::TaskNotFound)?;
+    Ok(Json(BtSeedingPolicyResponse {
+        target_ratio: job.options.seed_ratio,
+        stop_after_minutes: job.options.seed_time,
+        idle_download_timeout_seconds: job.options.bt_idle_download_timeout,
+    }))
+}
+
+async fn handle_patch_task_bt_seeding(
+    headers: HeaderMap,
+    State(state): State<NativeApiState>,
+    Path(task_id): Path<String>,
+    Json(request): Json<PatchBtSeedingPolicyRequest>,
+) -> Result<Json<BtSeedingPolicyResponse>, NativeApiError> {
+    require_auth(&state, &headers)?;
+    let task_id = parse_task_id(&task_id)?;
+    let (target_ratio, stop_after_minutes, idle_download_timeout_seconds) = state
+        .engine
+        .update_native_bt_seeding_policy(
+            &task_id,
+            request.target_ratio,
+            request.stop_after_minutes,
+            request.idle_download_timeout_seconds,
+        )
+        .map_err(|_| NativeApiError::InvalidRequest)?;
+    Ok(Json(BtSeedingPolicyResponse {
+        target_ratio,
+        stop_after_minutes,
+        idle_download_timeout_seconds,
+    }))
+}
+
+async fn handle_task_queue(
+    headers: HeaderMap,
+    State(state): State<NativeApiState>,
+    Path(task_id): Path<String>,
+) -> Result<Json<QueuePositionResponse>, NativeApiError> {
+    require_auth(&state, &headers)?;
+    let task_id = parse_task_id(&task_id)?;
+    let position = state
+        .engine
+        .scheduler
+        .waiting_task_queue()
+        .iter()
+        .position(|queued| queued == &task_id)
+        .ok_or(NativeApiError::TaskNotFound)?;
+    Ok(Json(QueuePositionResponse { task_id, position }))
+}
+
+async fn handle_patch_task_queue(
+    headers: HeaderMap,
+    State(state): State<NativeApiState>,
+    Path(task_id): Path<String>,
+    Json(request): Json<PatchQueuePositionRequest>,
+) -> Result<Json<QueuePositionResponse>, NativeApiError> {
+    require_auth(&state, &headers)?;
+    let task_id = parse_task_id(&task_id)?;
+    let position = state
+        .engine
+        .change_native_queue_position(&task_id, request.position)
+        .map_err(|_| NativeApiError::InvalidRequest)?;
+    Ok(Json(QueuePositionResponse { task_id, position }))
+}
+
+async fn handle_task_transfer(
+    headers: HeaderMap,
+    State(state): State<NativeApiState>,
+    Path(task_id): Path<String>,
+) -> Result<Json<TransferPolicyResponse>, NativeApiError> {
+    require_auth(&state, &headers)?;
+    let task_id = parse_task_id(&task_id)?;
+    let job = state
+        .engine
+        .registry
+        .get_by_task_id(&task_id)
+        .ok_or(NativeApiError::TaskNotFound)?;
+    Ok(Json(TransferPolicyResponse {
+        download_bytes_per_second_limit: job.options.max_download_limit,
+        upload_bytes_per_second_limit: job.options.max_upload_limit,
+        segments: job.options.max_connections,
+    }))
+}
+
+async fn handle_patch_task_transfer(
+    headers: HeaderMap,
+    State(state): State<NativeApiState>,
+    Path(task_id): Path<String>,
+    Json(request): Json<PatchTransferPolicyRequest>,
+) -> Result<Json<TransferPolicyResponse>, NativeApiError> {
+    require_auth(&state, &headers)?;
+    let task_id = parse_task_id(&task_id)?;
+    let (download_limit, upload_limit, segments) = state
+        .engine
+        .update_native_transfer_policy(
+            &task_id,
+            request.download_bytes_per_second_limit,
+            request.upload_bytes_per_second_limit,
+            request.segments,
+        )
+        .map_err(|_| NativeApiError::InvalidRequest)?;
+    Ok(Json(TransferPolicyResponse {
+        download_bytes_per_second_limit: download_limit,
+        upload_bytes_per_second_limit: upload_limit,
+        segments,
+    }))
+}
+
+async fn handle_task_peers(
+    headers: HeaderMap,
+    State(state): State<NativeApiState>,
+    Path(task_id): Path<String>,
+) -> Result<Json<PeersResponse>, NativeApiError> {
+    require_auth(&state, &headers)?;
+    let task_id = parse_task_id(&task_id)?;
+    let peers = state
+        .engine
+        .native_task_peers(&task_id)
+        .map_err(|_| NativeApiError::TaskNotFound)?;
+    Ok(Json(PeersResponse { peers }))
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct TrackersResponse {
+    trackers: Vec<NativeTrackerSnapshot>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PatchTrackersRequest {
+    tracker_uris: Vec<String>,
+    #[serde(default)]
+    excluded_tracker_uris: Option<Vec<String>>,
+    #[serde(default)]
+    connect_timeout_seconds: Option<Option<u64>>,
+    #[serde(default)]
+    timeout_seconds: Option<Option<u64>>,
+    #[serde(default)]
+    interval_seconds: Option<Option<u64>>,
+}
+
+async fn handle_task_trackers(
+    headers: HeaderMap,
+    State(state): State<NativeApiState>,
+    Path(task_id): Path<String>,
+) -> Result<Json<TrackersResponse>, NativeApiError> {
+    require_auth(&state, &headers)?;
+    let task_id = parse_task_id(&task_id)?;
+    let trackers = state
+        .engine
+        .native_task_trackers(&task_id)
+        .map_err(|_| NativeApiError::TaskNotFound)?;
+    Ok(Json(TrackersResponse { trackers }))
+}
+
+async fn handle_patch_task_trackers(
+    headers: HeaderMap,
+    State(state): State<NativeApiState>,
+    Path(task_id): Path<String>,
+    Json(request): Json<PatchTrackersRequest>,
+) -> Result<Json<TrackersResponse>, NativeApiError> {
+    require_auth(&state, &headers)?;
+    let task_id = parse_task_id(&task_id)?;
+    state
+        .engine
+        .update_native_task_trackers(&task_id, &request.tracker_uris)
+        .map_err(|_| NativeApiError::InvalidRequest)?;
+    let trackers = state
+        .engine
+        .update_native_task_tracker_policy(
+            &task_id,
+            request.excluded_tracker_uris.as_deref(),
+            request.connect_timeout_seconds,
+            request.timeout_seconds,
+            request.interval_seconds,
+        )
+        .map_err(|_| NativeApiError::InvalidRequest)?;
+    Ok(Json(TrackersResponse { trackers }))
 }
 
 #[derive(Debug, Serialize)]
@@ -576,8 +1173,12 @@ fn parse_task_id(task_id: &str) -> Result<TaskId, NativeApiError> {
     Ok(task_id)
 }
 
-fn task_id_for_event(engine: &Engine, gid: raria_core::job::Gid) -> TaskId {
-    engine
-        .task_id_for_gid(gid)
-        .unwrap_or_else(|| TaskId::from_migration_gid(gid.as_raw()))
+fn parse_file_id(id: &str) -> Result<usize, NativeApiError> {
+    id.strip_prefix("file_")
+        .and_then(|raw| raw.parse::<usize>().ok())
+        .ok_or(NativeApiError::InvalidRequest)
+}
+
+fn task_id_for_event(engine: &Engine, gid: raria_core::job::Gid) -> Option<TaskId> {
+    engine.task_id_for_gid(gid)
 }

@@ -39,6 +39,8 @@ pub struct MetalinkFile {
     pub pieces: Vec<MetalinkPieces>,
     /// Download URLs with priority.
     pub urls: Vec<MetalinkUrl>,
+    /// Metadata URLs such as torrent descriptors.
+    pub metaurls: Vec<MetalinkMetaUrl>,
 }
 
 /// A hash value for file verification.
@@ -72,6 +74,19 @@ pub struct MetalinkUrl {
     pub location: Option<String>,
 }
 
+/// A metadata URL associated with a Metalink file.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MetalinkMetaUrl {
+    /// Metadata URL.
+    pub url: String,
+    /// Metadata media type, such as `torrent`.
+    pub media_type: String,
+    /// Priority (lower = better, default = 999999).
+    pub priority: u32,
+    /// Optional metadata name.
+    pub name: Option<String>,
+}
+
 /// Parse a Metalink XML string into a `RawMetalink`.
 pub fn parse_metalink(xml: &str) -> Result<RawMetalink> {
     let mut reader = Reader::from_str(xml);
@@ -85,6 +100,8 @@ pub fn parse_metalink(xml: &str) -> Result<RawMetalink> {
     let mut in_url = false;
     let mut current_url_priority: u32 = 999999;
     let mut current_url_location: Option<String> = None;
+    let mut current_metaurl_media_type: Option<String> = None;
+    let mut current_metaurl_name: Option<String> = None;
     let mut in_hash = false;
     let mut current_hash_algo = String::new();
     let mut current_pieces: Option<MetalinkPieces> = None;
@@ -124,6 +141,7 @@ pub fn parse_metalink(xml: &str) -> Result<RawMetalink> {
                             hashes: Vec::new(),
                             pieces: Vec::new(),
                             urls: Vec::new(),
+                            metaurls: Vec::new(),
                         });
                     }
                     "pieces" => {
@@ -148,6 +166,8 @@ pub fn parse_metalink(xml: &str) -> Result<RawMetalink> {
                         in_url = true;
                         current_url_priority = 999999;
                         current_url_location = None;
+                        current_metaurl_media_type = None;
+                        current_metaurl_name = None;
                         for attr in e.attributes().flatten() {
                             let key = String::from_utf8_lossy(attr.key.as_ref()).to_string();
                             let val = String::from_utf8_lossy(&attr.value).to_string();
@@ -157,6 +177,12 @@ pub fn parse_metalink(xml: &str) -> Result<RawMetalink> {
                                 }
                                 "location" => {
                                     current_url_location = Some(val);
+                                }
+                                "mediatype" => {
+                                    current_metaurl_media_type = Some(val);
+                                }
+                                "name" => {
+                                    current_metaurl_name = Some(val);
                                 }
                                 _ => {}
                             }
@@ -205,11 +231,22 @@ pub fn parse_metalink(xml: &str) -> Result<RawMetalink> {
                         if let Some(ref mut file) = current_file {
                             let url_text = text_buf.trim().to_string();
                             if !url_text.is_empty() {
-                                file.urls.push(MetalinkUrl {
-                                    url: url_text,
-                                    priority: current_url_priority,
-                                    location: current_url_location.take(),
-                                });
+                                if local_name == "metaurl" {
+                                    file.metaurls.push(MetalinkMetaUrl {
+                                        url: url_text,
+                                        media_type: current_metaurl_media_type
+                                            .take()
+                                            .unwrap_or_default(),
+                                        priority: current_url_priority,
+                                        name: current_metaurl_name.take(),
+                                    });
+                                } else {
+                                    file.urls.push(MetalinkUrl {
+                                        url: url_text,
+                                        priority: current_url_priority,
+                                        location: current_url_location.take(),
+                                    });
+                                }
                             }
                         }
                         in_url = false;
@@ -297,6 +334,15 @@ mod tests {
   </file>
 </metalink>"#;
 
+    const METALINK_V4_METAURL: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
+<metalink xmlns="urn:ietf:params:xml:ns:metalink">
+  <file name="example.iso">
+    <size>1048576</size>
+    <url priority="1">https://mirror.example.com/example.iso</url>
+    <metaurl mediatype="torrent" priority="2" name="example.iso.torrent">https://meta.example.com/example.iso.torrent</metaurl>
+  </file>
+</metalink>"#;
+
     #[test]
     fn parse_v4_basic() {
         let ml = parse_metalink(METALINK_V4_SAMPLE).unwrap();
@@ -379,5 +425,24 @@ mod tests {
         let pieces = &ml.files[0].pieces[0];
         assert_eq!(pieces.hashes.first().map(String::as_str), Some("piece0"));
         assert_eq!(pieces.hashes.last().map(String::as_str), Some("piece3"));
+    }
+
+    #[test]
+    fn parse_v4_torrent_metaurl_as_metadata_source() {
+        let ml = parse_metalink(METALINK_V4_METAURL).unwrap();
+        let file = &ml.files[0];
+
+        assert_eq!(file.urls.len(), 1);
+        assert_eq!(file.metaurls.len(), 1);
+        assert_eq!(
+            file.metaurls[0].url,
+            "https://meta.example.com/example.iso.torrent"
+        );
+        assert_eq!(file.metaurls[0].media_type, "torrent");
+        assert_eq!(file.metaurls[0].priority, 2);
+        assert_eq!(
+            file.metaurls[0].name.as_deref(),
+            Some("example.iso.torrent")
+        );
     }
 }

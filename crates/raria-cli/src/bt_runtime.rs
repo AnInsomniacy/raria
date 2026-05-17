@@ -4,6 +4,7 @@ use raria_bt::service::{
     BtService, BtServiceConfig, BtSource, BtStatus, PeerEncryptionMinLevel, PeerEncryptionMode,
     PeerEncryptionPolicy, PieceSelectionStrategy,
 };
+use raria_bt::torrent_meta::TorrentMeta;
 use raria_core::config::{BtMinCryptoLevel, BtPieceStrategy};
 use raria_core::engine::Engine;
 use raria_core::job::{BtCompletionDisposition, BtFile, BtPeer, Gid, Job, Status};
@@ -59,6 +60,10 @@ fn bt_service_config(engine: &Engine) -> BtServiceConfig {
             .clone()
             .filter(|proxy| proxy.starts_with("socks5://")),
         dht_config_filename: engine.config.bt_dht_config_file.clone(),
+        session_persistence_dir: Some(native_bt_session_persistence_dir(
+            &engine.config.session_file,
+        )),
+        enable_pex: engine.config.bt_enable_pex,
         piece_selection_strategy: match engine.config.bt_piece_strategy {
             BtPieceStrategy::Current => PieceSelectionStrategy::Current,
             BtPieceStrategy::RarestFirst => PieceSelectionStrategy::RarestFirst,
@@ -76,6 +81,17 @@ fn bt_service_config(engine: &Engine) -> BtServiceConfig {
         },
         ..Default::default()
     }
+}
+
+pub(crate) fn native_bt_session_persistence_dir(session_file: &std::path::Path) -> PathBuf {
+    let parent = session_file
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."));
+    let stem = session_file
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("raria.session");
+    parent.join(format!("{stem}.bt-session"))
 }
 
 pub(crate) fn create_bt_service(engine: &Engine, download_dir: PathBuf) -> Result<Arc<BtService>> {
@@ -96,6 +112,7 @@ struct BtStatusSyncOutcome {
     completion_action: BtCompletionAction,
     seed_ratio: Option<f64>,
     seed_time: Option<u64>,
+    idle_download_timeout: Option<u64>,
 }
 
 fn sync_bt_status_into_job(
@@ -154,6 +171,7 @@ fn sync_bt_status_into_job(
         completion_action,
         seed_ratio: job.options.seed_ratio,
         seed_time: job.options.seed_time,
+        idle_download_timeout: job.options.bt_idle_download_timeout,
     })
 }
 
@@ -170,6 +188,59 @@ fn sync_bt_job_from_status(
             sync_bt_status_into_job(job, status, bt_files, bt_peers)
         })
         .context("BT job not found in registry")?
+        .and_then(|outcome| {
+            if !status.info_hash.is_empty() {
+                if let Some(task_id) = engine.task_id_for_gid(gid) {
+                    engine.publish_native_bt_metadata_resolved(
+                        &task_id,
+                        &status.info_hash,
+                        status.torrent_name.as_deref(),
+                        (status.total_size > 0).then_some(status.total_size),
+                        status.piece_length,
+                        status.num_pieces,
+                    )?;
+                    if outcome.completion_action == BtCompletionAction::EnterSeeding {
+                        engine.publish_native_bt_seeding_started(
+                            &task_id,
+                            status.uploaded,
+                            status.num_peers,
+                            Some(status.num_seeders),
+                        )?;
+                    }
+                    for peer in engine.native_task_peers(&task_id)? {
+                        engine.publish_native_bt_peer_updated(&task_id, peer)?;
+                    }
+                    for tracker in engine.native_task_trackers(&task_id)? {
+                        engine.publish_native_bt_tracker_updated(&task_id, tracker)?;
+                    }
+                }
+            }
+            Ok(outcome)
+        })
+}
+
+async fn cleanup_unselected_bt_files(
+    output_dir: &std::path::Path,
+    torrent_bytes: &[u8],
+    selected_files: &[usize],
+) -> Result<()> {
+    let meta = TorrentMeta::from_bytes(torrent_bytes)?;
+    let selected = selected_files.iter().copied().collect::<HashSet<_>>();
+    for (index, file) in meta.files.iter().enumerate() {
+        if !selected.contains(&index) {
+            let path = output_dir.join(&file.path);
+            match tokio::fs::remove_file(&path).await {
+                Ok(()) => {
+                    info!(file = %path.display(), "removed unselected BT file after completion");
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => {
+                    warn!(file = %path.display(), %error, "failed to remove unselected BT file");
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 fn persist_bt_job(engine: &Engine, gid: Gid) {
@@ -202,6 +273,25 @@ fn should_stop_seeding(
         }
     }
     false
+}
+
+fn should_stop_idle_bt_download(
+    download_speed: u64,
+    idle_timeout_seconds: Option<u64>,
+    last_download_activity_at: &mut Instant,
+    now: Instant,
+) -> bool {
+    let Some(timeout_seconds) = idle_timeout_seconds else {
+        return false;
+    };
+    if timeout_seconds == 0 {
+        return false;
+    }
+    if download_speed > 0 {
+        *last_download_activity_at = now;
+        return false;
+    }
+    now.duration_since(*last_download_activity_at) >= Duration::from_secs(timeout_seconds)
 }
 
 fn derive_bt_web_seed_uris(job: &Job, primary_uri: &str) -> Option<Vec<String>> {
@@ -240,6 +330,38 @@ fn derive_bt_web_seed_uris(job: &Job, primary_uri: &str) -> Option<Vec<String>> 
     (!uris.is_empty()).then_some(uris)
 }
 
+fn selected_files_changed(current: Option<&[usize]>, next: &[usize]) -> bool {
+    current
+        .map(|current| {
+            current.len() != next.len() || current.iter().any(|file| !next.contains(file))
+        })
+        .unwrap_or(!next.is_empty())
+}
+
+fn is_remote_torrent_metadata_uri(uri: &str) -> bool {
+    url::Url::parse(uri)
+        .map(|parsed| {
+            matches!(parsed.scheme(), "http" | "https")
+                && parsed.path().to_ascii_lowercase().ends_with(".torrent")
+        })
+        .unwrap_or(false)
+}
+
+async fn fetch_remote_torrent_metadata(uri: &str) -> Result<Vec<u8>> {
+    let response = reqwest::Client::new()
+        .get(uri)
+        .send()
+        .await
+        .with_context(|| format!("failed to fetch torrent metadata from {uri}"))?
+        .error_for_status()
+        .with_context(|| format!("torrent metadata request failed for {uri}"))?;
+    let bytes = response
+        .bytes()
+        .await
+        .with_context(|| format!("failed to read torrent metadata from {uri}"))?;
+    Ok(bytes.to_vec())
+}
+
 pub(crate) async fn run_bt_download(
     engine: Arc<Engine>,
     gid: Gid,
@@ -267,33 +389,37 @@ pub(crate) async fn run_bt_download(
             .decode(b64)
             .context("failed to decode torrent base64")?;
         BtSource::TorrentBytes(bytes)
+    } else if is_remote_torrent_metadata_uri(uri_str) {
+        BtSource::TorrentBytes(fetch_remote_torrent_metadata(uri_str).await?)
     } else {
         BtSource::TorrentFile(PathBuf::from(uri_str))
     };
 
     let web_seed_uris = derive_bt_web_seed_uris(&job, uri_str);
+    let selected_files_for_cleanup = job.options.bt_selected_files.clone();
+    let delete_unselected_files_on_completion =
+        job.options.bt_delete_unselected_files_on_completion;
+    let torrent_bytes_opt = match &source {
+        BtSource::TorrentBytes(bytes) => Some(bytes.clone()),
+        BtSource::TorrentFile(path) => match std::fs::read(path) {
+            Ok(b) => Some(b),
+            Err(e) => {
+                warn!(%gid, error = %e, "could not read torrent file for metadata-dependent BT preprocessing");
+                None
+            }
+        },
+        BtSource::Magnet(_) => {
+            // Magnet URIs don't carry torrent metadata until resolution.
+            None
+        }
+    };
 
     // WebSeed pre-download: if URIs are available and we have torrent bytes,
     // download files via HTTP/FTP/SFTP before librqbit starts so that its
     // initial_check discovers them as already-complete pieces on disk.
     if let Some(ws_uris) = &web_seed_uris {
-        let torrent_bytes_opt = match &source {
-            BtSource::TorrentBytes(bytes) => Some(bytes.clone()),
-            BtSource::TorrentFile(path) => match std::fs::read(path) {
-                Ok(b) => Some(b),
-                Err(e) => {
-                    warn!(%gid, error = %e, "could not read torrent file for WebSeed, skipping pre-download");
-                    None
-                }
-            },
-            BtSource::Magnet(_) => {
-                // Magnet URIs don't carry torrent metadata yet — skip WebSeed.
-                None
-            }
-        };
-
-        if let Some(torrent_bytes) = torrent_bytes_opt {
-            match raria_bt::torrent_meta::TorrentMeta::from_bytes(&torrent_bytes) {
+        if let Some(torrent_bytes) = &torrent_bytes_opt {
+            match TorrentMeta::from_bytes(torrent_bytes) {
                 Ok(mut meta) => {
                     meta.merge_web_seed_uris(ws_uris);
                     if !meta.web_seed_uris.is_empty() {
@@ -350,6 +476,8 @@ pub(crate) async fn run_bt_download(
         ],
     );
     let mut seeding_started_at: Option<Instant> = None;
+    let mut last_download_activity_at = Instant::now();
+    let mut applied_selected_files = job.options.bt_selected_files.clone();
 
     loop {
         tokio::select! {
@@ -366,6 +494,21 @@ pub(crate) async fn run_bt_download(
                 return Ok(());
             }
             _ = tokio::time::sleep(Duration::from_secs(2)) => {
+                let next_selected_files = engine
+                    .registry
+                    .get(gid)
+                    .and_then(|job| job.options.bt_selected_files.clone());
+                if let Some(next_selected_files) = next_selected_files.as_ref() {
+                    if selected_files_changed(applied_selected_files.as_deref(), next_selected_files) {
+                        bt_service
+                            .update_selected_files(&handle, next_selected_files)
+                            .await
+                            .with_context(|| {
+                                format!("failed to update selected BT files for GID {gid}")
+                            })?;
+                        applied_selected_files = Some(next_selected_files.clone());
+                    }
+                }
                 match bt_service.status(&handle).await {
                     Ok(status) => {
                         let bt_files = bt_service.file_list(&handle).await.ok().map(map_bt_files);
@@ -394,10 +537,37 @@ pub(crate) async fn run_bt_download(
                                     .publish(DownloadEvent::BtDownloadComplete { gid });
                             }
                             BtCompletionAction::Complete => {
+                                if delete_unselected_files_on_completion {
+                                    if let (Some(torrent_bytes), Some(selected_files)) =
+                                        (torrent_bytes_opt.as_deref(), selected_files_for_cleanup.as_deref())
+                                    {
+                                        cleanup_unselected_bt_files(
+                                            bt_service.output_dir(),
+                                            torrent_bytes,
+                                            selected_files,
+                                        )
+                                        .await?;
+                                    }
+                                }
                                 engine.complete_job(gid)?;
                                 return Ok(());
                             }
                             BtCompletionAction::None => {}
+                        }
+
+                        if !status.is_complete
+                            && should_stop_idle_bt_download(
+                                status.download_speed,
+                                outcome.idle_download_timeout,
+                                &mut last_download_activity_at,
+                                Instant::now(),
+                            )
+                        {
+                            engine.fail_job(
+                                gid,
+                                "BitTorrent download stopped after configured idle timeout",
+                            )?;
+                            return Ok(());
                         }
 
                         if status.is_complete
@@ -442,18 +612,23 @@ pub(crate) async fn run_bt_download(
 #[cfg(test)]
 mod tests {
     use super::{
-        BtCompletionAction, bt_service_config, derive_bt_web_seed_uris, handle_bt_cancellation,
-        map_bt_files, map_bt_peers, should_stop_seeding, sync_bt_job_from_status,
-        sync_bt_status_into_job,
+        BtCompletionAction, bt_service_config, cleanup_unselected_bt_files,
+        derive_bt_web_seed_uris, handle_bt_cancellation, map_bt_files, map_bt_peers,
+        native_bt_session_persistence_dir, selected_files_changed, should_stop_idle_bt_download,
+        should_stop_seeding, sync_bt_job_from_status, sync_bt_status_into_job,
     };
     use crate::bt_runtime::PieceSelectionStrategy;
+    use librqbit::{CreateTorrentOptions, create_torrent};
     use raria_bt::service::{
         BtFileInfo, BtPeerInfo, BtStatus, PeerEncryptionMinLevel, PeerEncryptionMode,
         PeerEncryptionPolicy,
     };
     use raria_core::config::{BtMinCryptoLevel, BtPieceStrategy, GlobalConfig, JobOptions};
     use raria_core::engine::{AddUriSpec, Engine};
-    use raria_core::job::{BtSnapshot, Job, Status};
+    use raria_core::job::{BtPeer, BtSnapshot, Job, Status};
+    use raria_core::native::{
+        NativeEventData, NativeEventType, NativePeerSnapshot, NativeTrackerSnapshot, TaskId,
+    };
     use std::path::PathBuf;
     use std::time::{Duration, Instant};
 
@@ -466,6 +641,7 @@ mod tests {
         let gid = job.gid;
         job.status = Status::Active;
         engine.registry.insert(job).expect("insert bt job");
+        engine.register_native_task_id_for_migration(TaskId::new(), gid);
         gid
     }
 
@@ -593,6 +769,36 @@ mod tests {
     }
 
     #[test]
+    fn bt_service_config_forwards_native_pex_policy() {
+        let engine = Engine::new(GlobalConfig {
+            bt_enable_pex: false,
+            ..Default::default()
+        });
+        let bt_config = bt_service_config(&engine);
+
+        assert!(!bt_config.enable_pex);
+    }
+
+    #[test]
+    fn bt_service_config_binds_fastresume_to_native_session_path() {
+        let session_file = PathBuf::from("/tmp/raria-fixture.session.redb");
+        let engine = Engine::new(GlobalConfig {
+            session_file: session_file.clone(),
+            ..Default::default()
+        });
+        let bt_config = bt_service_config(&engine);
+
+        assert_eq!(
+            bt_config.session_persistence_dir,
+            Some(PathBuf::from("/tmp/raria-fixture.session.redb.bt-session"))
+        );
+        assert_eq!(
+            native_bt_session_persistence_dir(&session_file),
+            PathBuf::from("/tmp/raria-fixture.session.redb.bt-session")
+        );
+    }
+
+    #[test]
     fn derive_bt_web_seed_uris_merges_explicit_and_job_uri_candidates() {
         let mut job = Job::new_bt(
             vec![
@@ -639,9 +845,71 @@ mod tests {
     }
 
     #[test]
+    fn remote_torrent_metadata_detection_is_limited_to_http_torrent_uris() {
+        assert!(super::is_remote_torrent_metadata_uri(
+            "https://metadata.example/file.iso.torrent"
+        ));
+        assert!(super::is_remote_torrent_metadata_uri(
+            "http://metadata.example/file.iso.torrent?token=abc"
+        ));
+        assert!(!super::is_remote_torrent_metadata_uri(
+            "/tmp/file.iso.torrent"
+        ));
+        assert!(!super::is_remote_torrent_metadata_uri(
+            "ftp://metadata.example/file.iso.torrent"
+        ));
+        assert!(!super::is_remote_torrent_metadata_uri(
+            "https://metadata.example/file.iso"
+        ));
+    }
+
+    #[test]
+    fn selected_files_changed_uses_set_semantics_for_live_bt_updates() {
+        assert!(!selected_files_changed(Some(&[1, 3]), &[3, 1]));
+        assert!(selected_files_changed(Some(&[1, 3]), &[1]));
+        assert!(selected_files_changed(None, &[1]));
+        assert!(!selected_files_changed(None, &[]));
+    }
+
+    #[tokio::test]
+    async fn cleanup_unselected_bt_files_removes_only_unselected_paths() {
+        let source = tempfile::tempdir().expect("source tempdir");
+        let payload_dir = source.path().join("payload");
+        std::fs::create_dir(&payload_dir).expect("create payload dir");
+        std::fs::write(payload_dir.join("file-a.bin"), b"aaaa").expect("write selected payload");
+        std::fs::write(payload_dir.join("file-b.bin"), b"bbbb").expect("write unselected payload");
+        let torrent = create_torrent(
+            &payload_dir,
+            CreateTorrentOptions {
+                name: Some("payload"),
+                piece_length: Some(4),
+            },
+        )
+        .await
+        .expect("create torrent");
+
+        let output = tempfile::tempdir().expect("output tempdir");
+        std::fs::write(output.path().join("file-a.bin"), b"aaaa").expect("write selected output");
+        std::fs::write(output.path().join("file-b.bin"), b"bbbb").expect("write unselected output");
+
+        cleanup_unselected_bt_files(
+            output.path(),
+            &torrent.as_bytes().expect("torrent bytes"),
+            &[1],
+        )
+        .await
+        .expect("cleanup unselected files");
+
+        assert!(output.path().join("file-a.bin").is_file());
+        assert!(!output.path().join("file-b.bin").exists());
+    }
+
+    #[test]
     fn sync_bt_job_from_status_populates_bt_snapshot_fields() {
         let engine = Engine::new(GlobalConfig::default());
         let gid = insert_active_bt_job(&engine, JobOptions::default());
+        let task_id = engine.task_id_for_gid(gid).expect("native task id");
+        let mut events = engine.native_event_bus.subscribe();
 
         let outcome = sync_bt_job_from_status(&engine, gid, &sample_bt_status(), None, None)
             .expect("sync bt status");
@@ -665,6 +933,20 @@ mod tests {
         assert_eq!(bt.num_seeders, Some(2));
         assert_eq!(bt.piece_length, Some(1024));
         assert_eq!(bt.num_pieces, Some(4));
+
+        let event = events.try_recv().expect("native metadata event");
+        assert_eq!(event.task_id.as_ref(), Some(&task_id));
+        assert_eq!(event.event_type, NativeEventType::TaskBtMetadataResolved);
+        assert_eq!(
+            event.data,
+            NativeEventData::BtMetadata {
+                info_hash: "0123456789abcdef0123456789abcdef01234567".to_string(),
+                name: Some("fixture.iso".to_string()),
+                total_bytes: Some(4096),
+                piece_length: Some(1024),
+                piece_count: Some(4),
+            }
+        );
     }
 
     #[test]
@@ -677,6 +959,8 @@ mod tests {
                 ..Default::default()
             },
         );
+        let task_id = engine.task_id_for_gid(gid).expect("native task id");
+        let mut events = engine.native_event_bus.subscribe();
 
         let mut status = sample_bt_status();
         status.is_complete = true;
@@ -689,10 +973,94 @@ mod tests {
         let first_job = engine.registry.get(gid).expect("job in registry");
         assert_eq!(first_job.status, Status::Seeding);
         assert!(first_job.bt_download_complete_emitted());
+        let _metadata = events.try_recv().expect("native metadata event");
+        let seeding = events.try_recv().expect("native seeding event");
+        assert_eq!(seeding.task_id.as_ref(), Some(&task_id));
+        assert_eq!(seeding.event_type, NativeEventType::TaskBtSeedingStarted);
+        assert_eq!(
+            seeding.data,
+            NativeEventData::BtSeeding {
+                uploaded_bytes: 512,
+                peer_count: 3,
+                seeder_count: Some(2),
+            }
+        );
 
         let second = sync_bt_job_from_status(&engine, gid, &status, None, None)
             .expect("second bt sync should succeed");
         assert_eq!(second.completion_action, BtCompletionAction::None);
+    }
+
+    #[tokio::test]
+    async fn sync_bt_job_from_status_notifies_scheduler_when_entering_seeding() {
+        let engine = Engine::new(GlobalConfig::default());
+        let gid = insert_active_bt_job(
+            &engine,
+            JobOptions {
+                seed_ratio: Some(1.5),
+                ..Default::default()
+            },
+        );
+        let work_notify = engine.work_notify();
+
+        let mut status = sample_bt_status();
+        status.is_complete = true;
+        status.downloaded = status.total_size;
+
+        let outcome = sync_bt_job_from_status(&engine, gid, &status, None, None)
+            .expect("bt sync should enter seeding");
+
+        assert_eq!(outcome.completion_action, BtCompletionAction::EnterSeeding);
+        tokio::time::timeout(std::time::Duration::from_secs(1), work_notify.notified())
+            .await
+            .expect("seeding transition should wake scheduler");
+    }
+
+    #[test]
+    fn sync_bt_job_from_status_publishes_native_peer_and_tracker_events() {
+        let engine = Engine::new(GlobalConfig::default());
+        let gid = insert_active_bt_job(&engine, JobOptions::default());
+        let task_id = engine.task_id_for_gid(gid).expect("native task id");
+        let mut events = engine.native_event_bus.subscribe();
+
+        let peers = vec![BtPeer {
+            addr: "203.0.113.7:6881".to_string(),
+            ip: "203.0.113.7".to_string(),
+            port: 6881,
+            download_speed: 1024,
+            upload_speed: 256,
+            seeder: true,
+        }];
+        sync_bt_job_from_status(&engine, gid, &sample_bt_status(), None, Some(peers))
+            .expect("sync bt status");
+
+        let _metadata = events.try_recv().expect("native metadata event");
+        let peer = events.try_recv().expect("native peer event");
+        assert_eq!(peer.task_id.as_ref(), Some(&task_id));
+        assert_eq!(peer.event_type, NativeEventType::TaskBtPeerUpdated);
+        assert_eq!(
+            peer.data,
+            NativeEventData::BtPeer {
+                peer: NativePeerSnapshot {
+                    id: "peer_203.0.113.7_6881".to_string(),
+                    ip: "203.0.113.7".to_string(),
+                    port: 6881,
+                    download_bytes_per_second: 1024,
+                    upload_bytes_per_second: 256,
+                    seeder: true,
+                },
+            }
+        );
+
+        let tracker = events.try_recv().expect("native tracker event");
+        assert_eq!(tracker.task_id.as_ref(), Some(&task_id));
+        assert_eq!(tracker.event_type, NativeEventType::TaskBtTrackerUpdated);
+        assert_eq!(
+            tracker.data,
+            NativeEventData::BtTracker {
+                tracker: NativeTrackerSnapshot::new("tracker_0", "http://tracker.example/announce",),
+            }
+        );
     }
 
     #[test]
@@ -762,6 +1130,30 @@ mod tests {
             started,
             started + Duration::from_secs(60),
         ));
+    }
+
+    #[test]
+    fn bt_idle_timeout_stops_incomplete_download_after_zero_speed_window() {
+        let mut last_activity = Instant::now() - Duration::from_secs(8);
+        assert!(should_stop_idle_bt_download(
+            0,
+            Some(7),
+            &mut last_activity,
+            Instant::now()
+        ));
+    }
+
+    #[test]
+    fn bt_idle_timeout_resets_when_download_speed_recovers() {
+        let mut last_activity = Instant::now() - Duration::from_secs(8);
+        let now = Instant::now();
+        assert!(!should_stop_idle_bt_download(
+            128,
+            Some(7),
+            &mut last_activity,
+            now
+        ));
+        assert_eq!(last_activity, now);
     }
 
     #[test]

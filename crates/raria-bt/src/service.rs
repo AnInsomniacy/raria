@@ -17,7 +17,7 @@ use librqbit::{
 };
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -105,6 +105,13 @@ fn bt_session_persistence_dir(output_dir: &Path) -> PathBuf {
     output_dir.join(".raria-bt-session")
 }
 
+fn effective_bt_session_persistence_dir(output_dir: &Path, config: &BtServiceConfig) -> PathBuf {
+    config
+        .session_persistence_dir
+        .clone()
+        .unwrap_or_else(|| bt_session_persistence_dir(output_dir))
+}
+
 fn bt_session_options(output_dir: &Path, config: &BtServiceConfig) -> SessionOptions {
     SessionOptions {
         disable_dht: config.disable_dht,
@@ -122,7 +129,7 @@ fn bt_session_options(output_dir: &Path, config: &BtServiceConfig) -> SessionOpt
         socks_proxy_url: config.socks_proxy_url.clone(),
         fastresume: true,
         persistence: Some(SessionPersistenceConfig::Json {
-            folder: Some(bt_session_persistence_dir(output_dir)),
+            folder: Some(effective_bt_session_persistence_dir(output_dir, config)),
         }),
         ..Default::default()
     }
@@ -225,7 +232,7 @@ pub struct BtPeerInfo {
 /// This is the entry point for all BT operations. It manages a librqbit
 /// Session internally and provides raria-compatible operations.
 ///
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct BtServiceConfig {
     /// SOCKS5 proxy URL for tracker and peer connections.
     pub socks_proxy_url: Option<String>,
@@ -237,10 +244,30 @@ pub struct BtServiceConfig {
     pub dht_config_filename: Option<PathBuf>,
     /// Bootstrap peers to connect to before DHT discovery.
     pub initial_peers: Option<Vec<SocketAddr>>,
+    /// Native raria-managed librqbit session persistence directory.
+    pub session_persistence_dir: Option<PathBuf>,
+    /// Enable peer exchange when the backend supports it.
+    pub enable_pex: bool,
     /// Piece selection strategy forwarded into librqbit.
     pub piece_selection_strategy: PieceSelectionStrategy,
     /// Peer transport encryption policy forwarded into librqbit.
     pub peer_encryption_policy: PeerEncryptionPolicy,
+}
+
+impl Default for BtServiceConfig {
+    fn default() -> Self {
+        Self {
+            socks_proxy_url: None,
+            disable_dht: false,
+            disable_dht_persistence: false,
+            dht_config_filename: None,
+            initial_peers: None,
+            session_persistence_dir: None,
+            enable_pex: true,
+            piece_selection_strategy: PieceSelectionStrategy::default(),
+            peer_encryption_policy: PeerEncryptionPolicy::default(),
+        }
+    }
 }
 
 /// BitTorrent download service managing a librqbit session.
@@ -501,6 +528,21 @@ impl BtService {
             .collect();
 
         Ok(files)
+    }
+
+    /// Update selected files for an active torrent.
+    pub async fn update_selected_files(
+        &self,
+        handle: &BtHandle,
+        selected_files: &[usize],
+    ) -> Result<()> {
+        let session = self.ensure_session().await?;
+        let managed = self.get_managed_handle(handle)?;
+        let selected_files = selected_files.iter().copied().collect::<HashSet<_>>();
+        session
+            .update_only_files(&managed, &selected_files)
+            .await
+            .context("failed to update selected BT files")
     }
 
     /// List peers in a torrent.
@@ -816,6 +858,8 @@ mod tests {
                 disable_dht_persistence: true,
                 dht_config_filename: Some(PathBuf::from("/tmp/raria-bt-dht.json")),
                 initial_peers: None,
+                session_persistence_dir: None,
+                enable_pex: true,
                 piece_selection_strategy: PieceSelectionStrategy::Current,
                 peer_encryption_policy: PeerEncryptionPolicy {
                     mode: PeerEncryptionMode::Require,
