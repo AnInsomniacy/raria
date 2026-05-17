@@ -77,7 +77,7 @@ mod tests {
     #[tokio::test]
     async fn tasks_endpoint_returns_native_task_projection() {
         let engine = Arc::new(Engine::new(GlobalConfig::default()));
-        engine
+        let handle = engine
             .add_uri(&AddUriSpec {
                 uris: vec!["https://example.com/file.iso".into()],
                 dir: PathBuf::from("/tmp"),
@@ -89,6 +89,13 @@ mod tests {
                 checksum: None,
             })
             .expect("add task");
+        engine.registry.update(handle.gid, |job| {
+            job.total_size = Some(16_384);
+            job.downloaded = 4096;
+            job.download_speed = 2048;
+            job.options.max_download_limit = 8192;
+            job.options.max_upload_limit = 1024;
+        });
 
         let cancel = CancellationToken::new();
         let addrs = start_native_api_server(
@@ -114,7 +121,20 @@ mod tests {
         assert!(tasks[0]["taskId"].as_str().unwrap().starts_with("task_"));
         assert_eq!(tasks[0]["lifecycle"], "queued");
         assert_eq!(tasks[0]["sources"][0]["protocol"], "https");
+        assert_eq!(tasks[0]["outputPath"], "/tmp/file.iso");
+        assert_eq!(tasks[0]["segments"], 4);
+        assert_eq!(tasks[0]["completedBytes"], 4096);
+        assert_eq!(tasks[0]["totalBytes"], 16_384);
+        assert_eq!(tasks[0]["downloadBytesPerSecond"], 2048);
+        assert_eq!(tasks[0]["estimatedSecondsRemaining"], 6);
+        assert_eq!(tasks[0]["downloadBytesPerSecondLimit"], 8192);
+        assert_eq!(tasks[0]["uploadBytesPerSecondLimit"], 1024);
+        assert!(tasks[0]["createdAt"].as_str().is_some());
+        assert!(tasks[0]["updatedAt"].as_str().is_some());
         assert!(tasks[0].get("gid").is_none());
+        assert!(tasks[0].get("status").is_none());
+        assert!(tasks[0].get("completedLength").is_none());
+        assert!(tasks[0].get("downloadSpeed").is_none());
 
         cancel.cancel();
     }
@@ -170,7 +190,13 @@ mod tests {
             .await
             .expect("detail json");
         assert_eq!(detail["taskId"], task_id);
+        assert_eq!(detail["outputPath"], "/tmp/file.iso");
+        assert_eq!(detail["segments"], 4);
+        assert!(detail["createdAt"].as_str().is_some());
+        assert!(detail["updatedAt"].as_str().is_some());
         assert!(detail.get("gid").is_none());
+        assert!(detail.get("status").is_none());
+        assert!(detail.get("completedLength").is_none());
 
         let paused: serde_json::Value = client
             .post(format!(

@@ -8,7 +8,7 @@ The current branch contains the committed modernization snapshot `b18d3b7`. The 
 
 The project is no longer a skeleton. It has working HTTP/HTTPS, FTP/FTPS, SFTP, Metalink, BitTorrent, segmented downloads, retry, resume, native API routes, native WebSocket events, redb-backed persistence, structured logs, and many daemon smoke tests. The work is not complete because major internals and tests still depend on aria2-shaped JSON-RPC, `Gid`, `Job`, compatibility terminology, and migration adapters.
 
-The most recent completed checkpoint is Checkpoint 98, Native RPC Smoke Replacement. The next checkpoint is Checkpoint 99, Native Task Status Projection. Its purpose is to finish native status fields and remove remaining public task-shape leakage before the event-stream cleanup.
+The most recent completed checkpoint is Checkpoint 99, Native Task Status Projection. The next checkpoint is Checkpoint 100, Native Event Stream Cleanup. Its purpose is to remove remaining legacy event fallback behavior and make `/api/v1/events` the sole public event contract.
 
 Current legacy-surface evidence includes remaining references to JSON-RPC methods, `Gid`, `gid`, `task_migration_`, `parity`, `compatibility`, and `legacy` outside the migrated session smoke tests. This is expected during the transition, but it is not acceptable at completion.
 
@@ -64,7 +64,7 @@ Protocol implementation should use mature Rust libraries already chosen by the p
 | Core runtime | Native task model | Protocol-neutral task graph with files, sources, segments, pieces, peers, trackers, policy, timestamps, and errors | Native projections exist; `Job` drives runtime state | Partial | CP108 |
 | Core runtime | Queue scheduling | Native queued/running/paused/seeding/completed/failed/removed scheduling with bounded active tasks and priorities | Scheduler now stores native task IDs; legacy queue adapters remain | Partial | CP109 |
 | Core runtime | Lifecycle controls | Pause, resume, remove, restart, shutdown, and session save operate through native task service | Native API has controls; engine still bridges to GID operations | Partial | CP97-CP109 |
-| Core runtime | Progress and stats | Accurate per-task and global completed bytes, total bytes, speed, connections, ETA, and lifecycle counts | Native stats route exists; old event bus still feeds some paths | Partial | CP100 |
+| Core runtime | Progress and stats | Accurate per-task and global completed bytes, total bytes, speed, connections, ETA, and lifecycle counts | Native task projection now exposes output path, timestamps, segments, active connections, transfer limits, ETA, progress, and lifecycle; old event bus still feeds some paths | Partial | CP100 |
 | Core runtime | Runtime mutation | Safe mutation of limits, queue position, sources, file selection, trackers, and seeding policy | Native routes exist for several mutations; BT source graph and priorities incomplete | Partial | CP101-CP103 |
 | Core runtime | Structured logs | JSONL operational logs with redaction and task correlation | `docs/logging-contract.md`, logging helpers, daemon smoke tests | Partial | CP107 |
 | Core runtime | Hooks | Modern lifecycle hooks or event-consumer model | start/complete/error hooks exist but still expose legacy identifiers in tests | Partial | CP105 |
@@ -189,19 +189,35 @@ Next: Checkpoint 99.
 
 ### Checkpoint 99: Native Task Status Projection
 
-Status: next
+Status: complete
 
 Scope: complete native task detail/list fields for status, progress, transfer, source health, files, and terminal errors without aria2-style names or migration identifiers.
 
 Files: `crates/raria-core/src/native.rs`, `crates/raria-core/src/engine.rs`, `crates/raria-rpc/src/api.rs`, `crates/raria-cli/tests/native_api_smoke.rs`, `crates/raria-rpc/tests/native_api.rs`
 
-Validation: focused native API projection tests, then `cargo test -p raria-rpc --test native_api`, `cargo test -p raria-cli --test native_api_smoke`, and `cargo check --workspace --locked`.
+Validation: `cargo test -p raria-rpc --test native_api tasks_endpoint_returns_native_task_projection` passed. `cargo test -p raria-rpc --test native_api task_detail_pause_and_resume_use_native_task_id` passed. `cargo test -p raria-rpc --test native_api` passed with 33 tests. `cargo test -p raria-cli --test native_api_smoke` passed with 27 tests. `cargo check --workspace --locked` passed. `cargo fmt --all --check` passed.
 
-Evidence target: native task list and detail responses expose stable raria field names for all modern status data and omit `gid`, aria2 field names, JSON-RPC envelopes, and migration-only identifiers.
+Evidence: native task list and detail responses expose stable raria fields for `taskId`, `lifecycle`, `outputPath`, files, sources, `segments`, completed bytes, total bytes, download speed, active connections, estimated seconds remaining, transfer limits, creation time, update time, and terminal error. Native API tests assert that `gid`, aria2 `status`, `completedLength`, and `downloadSpeed` fields are absent from task projections.
 
 Remaining after completion: native event stream cleanup.
 
 Next: Checkpoint 100.
+
+### Checkpoint 100: Native Event Stream Cleanup
+
+Status: next
+
+Scope: make `/api/v1/events` use raria-native event envelopes only, remove legacy JSON-RPC event fallback from public behavior, and keep useful lifecycle/progress/source/BT event coverage.
+
+Files: `crates/raria-core/src/native.rs`, `crates/raria-core/src/progress.rs`, `crates/raria-rpc/src/api.rs`, `crates/raria-rpc/src/events.rs`, `crates/raria-rpc/tests/native_api.rs`, `crates/raria-cli/tests/native_api_smoke.rs`
+
+Validation: focused native WebSocket event tests, then `cargo test -p raria-rpc --test native_api`, `cargo test -p raria-cli --test native_api_smoke`, and `cargo check --workspace --locked`.
+
+Evidence target: `/api/v1/events` emits typed native event records for lifecycle, progress, source failure, integrity failure, BT metadata, and BT seeding without `jsonrpc`, aria2 method names, `gid`, or compatibility notification envelopes.
+
+Remaining after completion: native task mutation cleanup.
+
+Next: Checkpoint 101.
 
 ## Validation Contract
 

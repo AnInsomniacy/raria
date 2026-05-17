@@ -764,10 +764,14 @@ pub struct NativeTaskSummary {
     pub task_id: TaskId,
     /// Current lifecycle.
     pub lifecycle: TaskLifecycle,
+    /// Primary output path for the task.
+    pub output_path: PathBuf,
     /// Output files.
     pub files: Vec<NativeTaskFile>,
     /// Sources attached to the task.
     pub sources: Vec<TaskSource>,
+    /// Configured segment count.
+    pub segments: u32,
     /// Completed payload bytes.
     pub completed_bytes: u64,
     /// Total payload bytes, when known.
@@ -776,6 +780,16 @@ pub struct NativeTaskSummary {
     pub download_bytes_per_second: u64,
     /// Active transport connections currently backing the task.
     pub active_connections: u32,
+    /// Estimated seconds until completion, when enough runtime data exists.
+    pub estimated_seconds_remaining: Option<u64>,
+    /// Per-task download limit in bytes per second, or zero for unlimited.
+    pub download_bytes_per_second_limit: u64,
+    /// Per-task upload limit in bytes per second, or zero for unlimited.
+    pub upload_bytes_per_second_limit: u64,
+    /// Task creation timestamp.
+    pub created_at: DateTime<Utc>,
+    /// Last projection update timestamp.
+    pub updated_at: DateTime<Utc>,
     /// Terminal error message when the task failed.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error_message: Option<String>,
@@ -834,15 +848,28 @@ impl NativeTaskSummary {
             })
             .collect();
 
+        let estimated_seconds_remaining = match (job.total_size, job.download_speed) {
+            (Some(total), speed) if speed > 0 && total > job.downloaded => {
+                Some((total - job.downloaded).div_ceil(speed))
+            }
+            _ => None,
+        };
         Self {
             task_id,
             lifecycle,
+            output_path: job.out_path.clone(),
             files,
             sources,
+            segments: job.options.max_connections.max(1),
             completed_bytes: job.downloaded,
             total_bytes: job.total_size,
             download_bytes_per_second: job.download_speed,
             active_connections: job.connections,
+            estimated_seconds_remaining,
+            download_bytes_per_second_limit: job.options.max_download_limit,
+            upload_bytes_per_second_limit: job.options.max_upload_limit,
+            created_at: job.created_at,
+            updated_at: Utc::now(),
             error_message: job.error_msg.clone(),
         }
     }
