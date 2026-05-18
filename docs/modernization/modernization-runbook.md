@@ -8,7 +8,7 @@ The current branch contains the committed modernization stream through Checkpoin
 
 The project is no longer a skeleton. It has working HTTP/HTTPS, FTP/FTPS, SFTP, Metalink, BitTorrent, segmented downloads, retry, resume, native API routes, native WebSocket events, redb-backed persistence, structured logs, and many daemon smoke tests. The work is not complete because major internals and tests still depend on aria2-shaped JSON-RPC, `Gid`, `Job`, compatibility terminology, and migration adapters.
 
-The most recent completed checkpoint is Checkpoint 114, HTTP Native Transfer Contract. The next checkpoint is Checkpoint 115, FTP Native Transfer Contract. Its purpose is to close FTP/FTPS feature-matrix gaps for resume, credentials, FTPS policy, proxy behavior, and native verification anchors.
+The most recent completed checkpoint is Checkpoint 115, FTP Native Transfer Contract. The next checkpoint is Checkpoint 116, SFTP Native Transfer Contract. Its purpose is to close SFTP feature-matrix gaps for password/key authentication, known_hosts policy, proxy behavior, resume, and native verification anchors.
 
 Current legacy-surface evidence includes remaining references to JSON-RPC methods, `Gid`, `gid`, `task_migration_`, `parity`, `compatibility`, and `legacy` outside the migrated session smoke tests. This is expected during the transition, but it is not acceptable at completion.
 
@@ -69,7 +69,7 @@ Protocol implementation should use mature Rust libraries already chosen by the p
 | Core runtime | Structured logs | JSONL operational logs with redaction and task correlation | `docs/logging-contract.md`, logging helpers, daemon smoke tests | Partial | CP107 |
 | Core runtime | Hooks | Modern lifecycle hooks or event-consumer model | task start, completion, and failure hooks use native CLI names, strict `[hooks]` TOML, native task identifiers, and native task summary projection for hook arguments | Covered | Regression |
 | HTTP/HTTPS | Basic transfers | Redirects, headers, auth, TLS, mTLS, cookies, netrc, proxy, compression, range, conditional GET, resume, remote metadata | `raria-http`, `single_download`, `native_api_smoke`, session smoke; CP114 validates native task request headers and daemon remote filename metadata | Covered | Regression |
-| FTP/FTPS | FTP transfers | FTP and explicit FTPS with auth, passive mode where useful, resume, proxy, remote metadata | `raria-ftp`, FTP/FTPS smoke tests | Partial | CP115 |
+| FTP/FTPS | FTP transfers | FTP and explicit FTPS with auth, passive mode where useful, resume, proxy, remote metadata | `raria-ftp`, FTP/FTPS smoke tests, single-download FTP/FTPS tests; CP115 validates context credentials for native task/daemon auth propagation | Covered | Regression |
 | SFTP | SFTP transfers | Password/key auth, known_hosts, proxy, resume, metadata | `raria-sftp`, SFTP smoke tests | Partial | CP116 |
 | Multi-source | Mirror failover | Multi-source tasks choose healthy mirrors, record failures, retry, and expose source health | source health and failover tests exist | Partial | CP117 |
 | Multi-source | Adaptive segments | Segment planning reacts to source health and runtime progress, including live rebalance | planning reacts to health; live rebalance is missing | Gap | CP118 |
@@ -442,6 +442,22 @@ Evidence: native task creation now validates configured HTTP header names and va
 Remaining after completion: continue HTTP/HTTPS closure for proxy/TLS/cookie/netrc verification anchors and remove any remaining public aria2-shaped HTTP option names.
 
 Next: Checkpoint 115.
+
+### Checkpoint 115: FTP Native Transfer Contract
+
+Status: complete
+
+Scope: close the native FTP credential contract so task-level credentials from `/api/v1/tasks` and daemon configuration apply to FTP probes and transfers, not only HTTP requests.
+
+Files: `docs/modernization/modernization-runbook.md`, `crates/raria-ftp/src/backend.rs`, `crates/raria-ftp/tests/ftp_smoke.rs`
+
+Validation: `cargo test -p raria-ftp --test ftp_smoke ftp_backend_uses_context_credentials_when_url_has_no_credentials -- --nocapture` failed before implementation with FTP login using `anonymous` and passed after implementation. `cargo test -p raria-ftp parse_ftp_url -- --nocapture` passed with 10 focused URL credential tests. `cargo test -p raria-ftp --test ftp_smoke` passed with 3 tests. `cargo test -p raria-ftp --test ftps_smoke` passed. `cargo test -p raria-ftp` passed with 12 unit tests, 3 FTP smoke tests, 1 FTPS smoke test, and doctests. `cargo test -p raria-cli --test single_download single_download_supports_ -- --nocapture` passed with 3 FTP/FTPS CLI tests. `cargo check --workspace --locked` passed. `cargo fmt --all --check` passed. `git diff --check` passed.
+
+Evidence: aria2 treats FTP/SFTP credentials as modern transfer behavior. raria already carries task-level credentials through `ProbeContext` and `OpenContext`; the FTP backend now uses those credentials for both `probe` and `open_from` when the URI does not provide credentials, while preserving URI credential precedence. Existing smoke coverage proves FTP size probing, REST resume, SOCKS5 proxy traversal, explicit FTPS with custom CA, and CLI FTP/FTPS downloads.
+
+Remaining after completion: continue SFTP native transfer closure.
+
+Next: Checkpoint 116.
 
 ## Validation Contract
 

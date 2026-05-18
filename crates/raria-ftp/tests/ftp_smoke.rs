@@ -4,7 +4,7 @@ use std::sync::{
 };
 
 use raria_ftp::backend::{FtpBackend, FtpBackendConfig};
-use raria_range::backend::{ByteSourceBackend, OpenContext, ProbeContext};
+use raria_range::backend::{ByteSourceBackend, Credentials, OpenContext, ProbeContext};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
 
@@ -306,6 +306,50 @@ async fn ftp_backend_probes_size_and_resumes_with_rest() {
         .await
         .expect("read ftp stream");
     assert_eq!(body, b"ftp-world");
+}
+
+#[tokio::test]
+async fn ftp_backend_uses_context_credentials_when_url_has_no_credentials() {
+    let fixture =
+        spawn_ftp_server("ctx-user", "ctx-pass", "/pub/context.bin", b"context-body").await;
+    let backend = FtpBackend::new();
+    let url = format!("ftp://127.0.0.1:{}/pub/context.bin", fixture.port)
+        .parse()
+        .expect("ftp url");
+    let credentials = Credentials {
+        username: "ctx-user".to_string(),
+        password: "ctx-pass".to_string(),
+    };
+
+    let probe = backend
+        .probe(
+            &url,
+            &ProbeContext {
+                auth: Some(credentials.clone()),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("probe should use context credentials");
+    assert_eq!(probe.size, Some(12));
+
+    let mut stream = backend
+        .open_from(
+            &url,
+            8,
+            &OpenContext {
+                auth: Some(credentials),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("open_from should use context credentials");
+    let mut body = Vec::new();
+    stream
+        .read_to_end(&mut body)
+        .await
+        .expect("read ftp stream");
+    assert_eq!(body, b"body");
 }
 
 #[tokio::test]

@@ -16,7 +16,9 @@
 
 use anyhow::{Context, Result};
 use async_trait::async_trait;
-use raria_range::backend::{ByteSourceBackend, ByteStream, FileProbe, OpenContext, ProbeContext};
+use raria_range::backend::{
+    ByteSourceBackend, ByteStream, Credentials, FileProbe, OpenContext, ProbeContext,
+};
 use std::path::PathBuf;
 use std::pin::Pin;
 use std::task::{self, Poll};
@@ -119,17 +121,26 @@ impl Default for FtpBackend {
 }
 
 /// Extract (host:port, user, password, path) from an FTP URL.
-fn parse_ftp_url(uri: &Url) -> Result<(String, String, String, String)> {
+fn parse_ftp_url(
+    uri: &Url,
+    fallback_auth: Option<&Credentials>,
+) -> Result<(String, String, String, String)> {
     let host = uri.host_str().context("FTP URL missing host")?;
     let port = uri.port().unwrap_or(21);
     let addr = format!("{host}:{port}");
 
     let user = if uri.username().is_empty() {
-        "anonymous".to_string()
+        fallback_auth
+            .map(|auth| auth.username.clone())
+            .unwrap_or_else(|| "anonymous".to_string())
     } else {
         percent_decode(uri.username())
     };
-    let password = uri.password().map(percent_decode).unwrap_or_default();
+    let password = uri
+        .password()
+        .map(percent_decode)
+        .or_else(|| fallback_auth.map(|auth| auth.password.clone()))
+        .unwrap_or_default();
     let path = percent_decode(uri.path());
 
     Ok((addr, user, password, path))
@@ -270,8 +281,9 @@ impl rustls::client::danger::ServerCertVerifier for NoVerifier {
 async fn connect_ftp(
     uri: &Url,
     config: &FtpBackendConfig,
+    auth: Option<&Credentials>,
 ) -> Result<(AsyncRustlsFtpStream, String)> {
-    let (addr, user, password, path) = parse_ftp_url(uri)?;
+    let (addr, user, password, path) = parse_ftp_url(uri, auth)?;
     let host = uri.host_str().context("FTP URL missing host")?;
 
     debug!(addr = %addr, user = %user, "connecting to FTP server");
@@ -306,10 +318,10 @@ async fn connect_ftp(
 
 #[async_trait]
 impl ByteSourceBackend for FtpBackend {
-    async fn probe(&self, uri: &Url, _ctx: &ProbeContext) -> Result<FileProbe> {
+    async fn probe(&self, uri: &Url, ctx: &ProbeContext) -> Result<FileProbe> {
         debug!(uri = %uri, "probing FTP resource");
 
-        let (mut ftp, path) = connect_ftp(uri, &self.config).await?;
+        let (mut ftp, path) = connect_ftp(uri, &self.config, ctx.auth.as_ref()).await?;
 
         // SIZE command to get file size. Not all servers support this.
         let size = match ftp.size(&path).await {
@@ -337,10 +349,10 @@ impl ByteSourceBackend for FtpBackend {
         })
     }
 
-    async fn open_from(&self, uri: &Url, offset: u64, _ctx: &OpenContext) -> Result<ByteStream> {
+    async fn open_from(&self, uri: &Url, offset: u64, ctx: &OpenContext) -> Result<ByteStream> {
         debug!(uri = %uri, offset, "opening FTP stream");
 
-        let (mut ftp, path) = connect_ftp(uri, &self.config).await?;
+        let (mut ftp, path) = connect_ftp(uri, &self.config, ctx.auth.as_ref()).await?;
 
         // If offset > 0, send REST command to resume from that point.
         if offset > 0 {
@@ -382,7 +394,7 @@ mod tests {
         let url: Url = "ftp://user:secret@ftp.example.com:2121/pub/file.zip"
             .parse()
             .unwrap();
-        let (addr, user, pass, path) = parse_ftp_url(&url).unwrap();
+        let (addr, user, pass, path) = parse_ftp_url(&url, None).unwrap();
         assert_eq!(addr, "ftp.example.com:2121");
         assert_eq!(user, "user");
         assert_eq!(pass, "secret");
@@ -392,7 +404,7 @@ mod tests {
     #[test]
     fn parse_ftp_url_anonymous() {
         let url: Url = "ftp://ftp.example.com/pub/file.zip".parse().unwrap();
-        let (addr, user, pass, path) = parse_ftp_url(&url).unwrap();
+        let (addr, user, pass, path) = parse_ftp_url(&url, None).unwrap();
         assert_eq!(addr, "ftp.example.com:21");
         assert_eq!(user, "anonymous");
         assert_eq!(pass, "");
@@ -400,16 +412,42 @@ mod tests {
     }
 
     #[test]
+    fn parse_ftp_url_uses_context_credentials_when_uri_has_none() {
+        let url: Url = "ftp://ftp.example.com/pub/file.zip".parse().unwrap();
+        let credentials = Credentials {
+            username: "ctx-user".to_string(),
+            password: "ctx-pass".to_string(),
+        };
+        let (_, user, pass, _) = parse_ftp_url(&url, Some(&credentials)).unwrap();
+        assert_eq!(user, "ctx-user");
+        assert_eq!(pass, "ctx-pass");
+    }
+
+    #[test]
+    fn parse_ftp_url_prefers_uri_credentials_over_context_credentials() {
+        let url: Url = "ftp://uri-user:uri-pass@ftp.example.com/pub/file.zip"
+            .parse()
+            .unwrap();
+        let credentials = Credentials {
+            username: "ctx-user".to_string(),
+            password: "ctx-pass".to_string(),
+        };
+        let (_, user, pass, _) = parse_ftp_url(&url, Some(&credentials)).unwrap();
+        assert_eq!(user, "uri-user");
+        assert_eq!(pass, "uri-pass");
+    }
+
+    #[test]
     fn parse_ftp_url_default_port() {
         let url: Url = "ftp://ftp.example.com/data/test.bin".parse().unwrap();
-        let (addr, _, _, _) = parse_ftp_url(&url).unwrap();
+        let (addr, _, _, _) = parse_ftp_url(&url, None).unwrap();
         assert!(addr.ends_with(":21"));
     }
 
     #[test]
     fn parse_ftp_url_custom_port() {
         let url: Url = "ftp://ftp.example.com:990/data/test.bin".parse().unwrap();
-        let (addr, _, _, _) = parse_ftp_url(&url).unwrap();
+        let (addr, _, _, _) = parse_ftp_url(&url, None).unwrap();
         assert_eq!(addr, "ftp.example.com:990");
     }
 
@@ -418,7 +456,7 @@ mod tests {
         let url: Url = "ftp://user:p%40ssword@ftp.example.com/f.zip"
             .parse()
             .unwrap();
-        let (_, _, pass, _) = parse_ftp_url(&url).unwrap();
+        let (_, _, pass, _) = parse_ftp_url(&url, None).unwrap();
         assert_eq!(pass, "p@ssword");
     }
 
@@ -427,21 +465,21 @@ mod tests {
         let url: Url = "ftp://ftp.example.com/a%20b/file%23name.zip"
             .parse()
             .unwrap();
-        let (_, _, _, path) = parse_ftp_url(&url).unwrap();
+        let (_, _, _, path) = parse_ftp_url(&url, None).unwrap();
         assert_eq!(path, "/a b/file#name.zip");
     }
 
     #[test]
     fn parse_ftp_url_root_path() {
         let url: Url = "ftp://ftp.example.com/".parse().unwrap();
-        let (_, _, _, path) = parse_ftp_url(&url).unwrap();
+        let (_, _, _, path) = parse_ftp_url(&url, None).unwrap();
         assert_eq!(path, "/");
     }
 
     #[test]
     fn parse_ftp_url_deep_path() {
         let url: Url = "ftp://ftp.example.com/a/b/c/d/file.tar.gz".parse().unwrap();
-        let (_, _, _, path) = parse_ftp_url(&url).unwrap();
+        let (_, _, _, path) = parse_ftp_url(&url, None).unwrap();
         assert_eq!(path, "/a/b/c/d/file.tar.gz");
     }
 
