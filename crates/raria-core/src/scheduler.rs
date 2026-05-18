@@ -4,7 +4,7 @@
 // and handles the waiting → active state transitions.
 
 use crate::job::{Gid, Status};
-use crate::native::TaskId;
+use crate::native::{NativeTaskIndex, TaskId};
 use crate::registry::JobRegistry;
 use parking_lot::RwLock;
 use std::collections::VecDeque;
@@ -38,21 +38,10 @@ impl Scheduler {
         }
     }
 
-    /// Enqueue a job GID at the back of the waiting queue.
-    pub fn enqueue(&self, gid: Gid) {
-        self.enqueue_task(TaskId::from_migration_gid(gid.as_raw()));
-    }
-
     /// Enqueue a native task id at the back of the waiting queue.
     pub fn enqueue_task(&self, task_id: TaskId) {
         let mut queue = self.queue.write();
         queue.push_back(task_id);
-    }
-
-    /// Enqueue a job GID at a specific position (0-indexed).
-    /// If `position` exceeds the queue length, it is appended to the end.
-    pub fn enqueue_at(&self, gid: Gid, position: usize) {
-        self.enqueue_task_at(TaskId::from_migration_gid(gid.as_raw()), position);
     }
 
     /// Enqueue a native task id at a specific position.
@@ -60,11 +49,6 @@ impl Scheduler {
         let mut queue = self.queue.write();
         let pos = position.min(queue.len());
         queue.insert(pos, task_id);
-    }
-
-    /// Remove a GID from the waiting queue.
-    pub fn dequeue(&self, gid: Gid) -> bool {
-        self.dequeue_task(&TaskId::from_migration_gid(gid.as_raw()))
     }
 
     /// Remove a native task id from the waiting queue.
@@ -84,35 +68,10 @@ impl Scheduler {
         queue.iter().cloned().collect()
     }
 
-    /// Return the current queue (in order).
-    pub fn waiting_queue(&self) -> Vec<Gid> {
-        let queue = self.queue.read();
-        queue.iter().filter_map(task_id_to_migration_gid).collect()
-    }
-
     /// The number of jobs in the waiting queue.
     pub fn queue_len(&self) -> usize {
         let queue = self.queue.read();
         queue.len()
-    }
-
-    /// Move a GID to a different position in the queue.
-    ///
-    /// Supports aria2-compatible position semantics:
-    /// - `PositionHow::Set`: absolute position from beginning
-    /// - `PositionHow::Cur`: relative to current position
-    /// - `PositionHow::End`: position from end
-    ///
-    /// Returns the new position index, or error if GID not found.
-    pub fn change_position(
-        &self,
-        gid: Gid,
-        pos: i32,
-        how: crate::engine::PositionHow,
-    ) -> anyhow::Result<usize> {
-        let mut queue = self.queue.write();
-        let task_id = TaskId::from_migration_gid(gid.as_raw());
-        change_task_position_locked(&mut queue, task_id, pos, how)
     }
 
     /// Move a native task id to a different position in the queue.
@@ -156,11 +115,12 @@ fn change_task_position_locked(
 }
 
 impl Scheduler {
-    /// Determine which GIDs should be promoted from Waiting → Active.
-    ///
-    /// Checks the registry for the count of currently Active jobs,
-    /// and returns GIDs from the front of the queue that can be activated.
-    pub fn jobs_to_activate(&self, registry: &JobRegistry) -> Vec<Gid> {
+    /// Determine which runtime bridge ids should be promoted from Waiting to Active.
+    pub fn jobs_to_activate(
+        &self,
+        registry: &JobRegistry,
+        native_task_index: &NativeTaskIndex,
+    ) -> Vec<Gid> {
         let max = self.max_concurrent.load(Ordering::Relaxed);
         let active_count = registry.by_status(Status::Active).len() as u32;
         if active_count >= max {
@@ -172,7 +132,11 @@ impl Scheduler {
         queue
             .iter()
             .take(slots)
-            .filter_map(task_id_to_migration_gid)
+            .filter_map(|task_id| {
+                registry
+                    .gid_for_task_id(task_id)
+                    .or_else(|| native_task_index.gid_for_task_id(task_id))
+            })
             .collect()
     }
 
@@ -206,18 +170,10 @@ impl Scheduler {
     }
 }
 
-fn task_id_to_migration_gid(task_id: &TaskId) -> Option<Gid> {
-    task_id
-        .as_str()
-        .strip_prefix("task_migration_")
-        .and_then(|raw| u64::from_str_radix(raw, 16).ok())
-        .map(Gid::from_raw)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::job::{Gid, Job, Status};
+    use crate::job::{Job, Status};
     use std::path::PathBuf;
 
     fn make_job(uri: &str) -> Job {
@@ -240,135 +196,146 @@ mod tests {
     #[test]
     fn enqueue_adds_to_back() {
         let sched = Scheduler::new(5);
-        let g1 = Gid::from_raw(1);
-        let g2 = Gid::from_raw(2);
+        let task1 = TaskId::new();
+        let task2 = TaskId::new();
 
-        sched.enqueue(g1);
-        sched.enqueue(g2);
+        sched.enqueue_task(task1.clone());
+        sched.enqueue_task(task2.clone());
 
-        let queue = sched.waiting_queue();
-        assert_eq!(queue, vec![g1, g2]);
+        let queue = sched.waiting_task_queue();
+        assert_eq!(queue, vec![task1, task2]);
     }
 
     #[test]
     fn enqueue_at_inserts_at_position() {
         let sched = Scheduler::new(5);
-        let g1 = Gid::from_raw(1);
-        let g2 = Gid::from_raw(2);
-        let g3 = Gid::from_raw(3);
+        let task1 = TaskId::new();
+        let task2 = TaskId::new();
+        let task3 = TaskId::new();
 
-        sched.enqueue(g1);
-        sched.enqueue(g3);
-        sched.enqueue_at(g2, 1); // insert between g1 and g3
+        sched.enqueue_task(task1.clone());
+        sched.enqueue_task(task3.clone());
+        sched.enqueue_task_at(task2.clone(), 1);
 
-        let queue = sched.waiting_queue();
-        assert_eq!(queue, vec![g1, g2, g3]);
+        let queue = sched.waiting_task_queue();
+        assert_eq!(queue, vec![task1, task2, task3]);
     }
 
     #[test]
     fn enqueue_at_beyond_length_appends() {
         let sched = Scheduler::new(5);
-        let g1 = Gid::from_raw(1);
-        let g2 = Gid::from_raw(2);
+        let task1 = TaskId::new();
+        let task2 = TaskId::new();
 
-        sched.enqueue(g1);
-        sched.enqueue_at(g2, 100);
+        sched.enqueue_task(task1.clone());
+        sched.enqueue_task_at(task2.clone(), 100);
 
-        let queue = sched.waiting_queue();
-        assert_eq!(queue, vec![g1, g2]);
+        let queue = sched.waiting_task_queue();
+        assert_eq!(queue, vec![task1, task2]);
     }
 
     #[test]
-    fn dequeue_removes_gid() {
+    fn dequeue_removes_task_id() {
         let sched = Scheduler::new(5);
-        let g1 = Gid::from_raw(1);
-        let g2 = Gid::from_raw(2);
-        sched.enqueue(g1);
-        sched.enqueue(g2);
+        let task1 = TaskId::new();
+        let task2 = TaskId::new();
+        sched.enqueue_task(task1.clone());
+        sched.enqueue_task(task2.clone());
 
-        assert!(sched.dequeue(g1));
-        assert_eq!(sched.waiting_queue(), vec![g2]);
+        assert!(sched.dequeue_task(&task1));
+        assert_eq!(sched.waiting_task_queue(), vec![task2]);
     }
 
     #[test]
     fn dequeue_nonexistent_returns_false() {
         let sched = Scheduler::new(5);
-        assert!(!sched.dequeue(Gid::from_raw(99)));
+        assert!(!sched.dequeue_task(&TaskId::new()));
     }
 
     #[test]
-    fn change_position_moves_gid() {
+    fn change_position_moves_task_id() {
         let sched = Scheduler::new(5);
-        let g1 = Gid::from_raw(1);
-        let g2 = Gid::from_raw(2);
-        let g3 = Gid::from_raw(3);
-        sched.enqueue(g1);
-        sched.enqueue(g2);
-        sched.enqueue(g3);
+        let task1 = TaskId::new();
+        let task2 = TaskId::new();
+        let task3 = TaskId::new();
+        sched.enqueue_task(task1.clone());
+        sched.enqueue_task(task2.clone());
+        sched.enqueue_task(task3.clone());
 
-        // Move g3 to front (POS_SET=0).
         use crate::engine::PositionHow;
-        let new_pos = sched.change_position(g3, 0, PositionHow::Set).unwrap();
+        let new_pos = sched
+            .change_task_position(task3.clone(), 0, PositionHow::Set)
+            .unwrap();
         assert_eq!(new_pos, 0);
-        assert_eq!(sched.waiting_queue(), vec![g3, g1, g2]);
+        assert_eq!(sched.waiting_task_queue(), vec![task3, task1, task2]);
     }
 
     #[test]
     fn change_position_nonexistent_returns_error() {
         let sched = Scheduler::new(5);
         use crate::engine::PositionHow;
-        let result = sched.change_position(Gid::from_raw(99), 0, PositionHow::Set);
+        let result = sched.change_task_position(TaskId::new(), 0, PositionHow::Set);
         assert!(result.is_err());
     }
 
     #[test]
     fn change_position_cur_moves_relative() {
         let sched = Scheduler::new(5);
-        let g1 = Gid::from_raw(1);
-        let g2 = Gid::from_raw(2);
-        let g3 = Gid::from_raw(3);
-        sched.enqueue(g1);
-        sched.enqueue(g2);
-        sched.enqueue(g3);
+        let task1 = TaskId::new();
+        let task2 = TaskId::new();
+        let task3 = TaskId::new();
+        sched.enqueue_task(task1.clone());
+        sched.enqueue_task(task2.clone());
+        sched.enqueue_task(task3.clone());
 
-        // g1 is at pos 0; move +1 relative → pos 1.
         use crate::engine::PositionHow;
-        let new_pos = sched.change_position(g1, 1, PositionHow::Cur).unwrap();
+        let new_pos = sched
+            .change_task_position(task1.clone(), 1, PositionHow::Cur)
+            .unwrap();
         assert_eq!(new_pos, 1);
-        assert_eq!(sched.waiting_queue(), vec![g2, g1, g3]);
+        assert_eq!(sched.waiting_task_queue(), vec![task2, task1, task3]);
     }
 
     #[test]
     fn change_position_end_moves_from_tail() {
         let sched = Scheduler::new(5);
-        let g1 = Gid::from_raw(1);
-        let g2 = Gid::from_raw(2);
-        let g3 = Gid::from_raw(3);
-        sched.enqueue(g1);
-        sched.enqueue(g2);
-        sched.enqueue(g3);
+        let task1 = TaskId::new();
+        let task2 = TaskId::new();
+        let task3 = TaskId::new();
+        sched.enqueue_task(task1.clone());
+        sched.enqueue_task(task2.clone());
+        sched.enqueue_task(task3.clone());
 
-        // Move g1 to end (POS_END=0 → len).
         use crate::engine::PositionHow;
-        let new_pos = sched.change_position(g1, 0, PositionHow::End).unwrap();
+        let new_pos = sched
+            .change_task_position(task1.clone(), 0, PositionHow::End)
+            .unwrap();
         assert_eq!(new_pos, 2);
-        assert_eq!(sched.waiting_queue(), vec![g2, g3, g1]);
+        assert_eq!(sched.waiting_task_queue(), vec![task2, task3, task1]);
     }
 
     #[test]
     fn jobs_to_activate_respects_concurrency() {
         let sched = Scheduler::new(2);
         let reg = JobRegistry::new();
+        let index = NativeTaskIndex::default();
 
-        let g1 = Gid::from_raw(1);
-        let g2 = Gid::from_raw(2);
-        let g3 = Gid::from_raw(3);
-        sched.enqueue(g1);
-        sched.enqueue(g2);
-        sched.enqueue(g3);
+        let j1 = make_job("https://example.test/1");
+        let j2 = make_job("https://example.test/2");
+        let j3 = make_job("https://example.test/3");
+        let g1 = j1.gid;
+        let g2 = j2.gid;
+        let task1 = j1.task_id.clone();
+        let task2 = j2.task_id.clone();
+        let task3 = j3.task_id.clone();
+        reg.insert(j1).unwrap();
+        reg.insert(j2).unwrap();
+        reg.insert(j3).unwrap();
+        sched.enqueue_task(task1);
+        sched.enqueue_task(task2);
+        sched.enqueue_task(task3);
 
-        // No active jobs → should activate first 2.
-        let to_activate = sched.jobs_to_activate(&reg);
+        let to_activate = sched.jobs_to_activate(&reg, &index);
         assert_eq!(to_activate.len(), 2);
         assert_eq!(to_activate, vec![g1, g2]);
     }
@@ -377,19 +344,23 @@ mod tests {
     fn jobs_to_activate_with_existing_active() {
         let sched = Scheduler::new(2);
         let reg = JobRegistry::new();
+        let index = NativeTaskIndex::default();
 
-        // Add an active job to the registry.
         let mut active_job = make_job("a");
         active_job.status = Status::Active;
         reg.insert(active_job).unwrap();
 
-        let g1 = Gid::from_raw(100);
-        let g2 = Gid::from_raw(200);
-        sched.enqueue(g1);
-        sched.enqueue(g2);
+        let j1 = make_job("https://example.test/1");
+        let j2 = make_job("https://example.test/2");
+        let g1 = j1.gid;
+        let task1 = j1.task_id.clone();
+        let task2 = j2.task_id.clone();
+        reg.insert(j1).unwrap();
+        reg.insert(j2).unwrap();
+        sched.enqueue_task(task1);
+        sched.enqueue_task(task2);
 
-        // 1 active → only 1 more slot available.
-        let to_activate = sched.jobs_to_activate(&reg);
+        let to_activate = sched.jobs_to_activate(&reg, &index);
         assert_eq!(to_activate.len(), 1);
         assert_eq!(to_activate[0], g1);
     }
@@ -398,14 +369,15 @@ mod tests {
     fn jobs_to_activate_at_capacity_returns_empty() {
         let sched = Scheduler::new(1);
         let reg = JobRegistry::new();
+        let index = NativeTaskIndex::default();
 
         let mut active_job = make_job("a");
         active_job.status = Status::Active;
         reg.insert(active_job).unwrap();
 
-        sched.enqueue(Gid::from_raw(100));
+        sched.enqueue_task(TaskId::new());
 
-        let to_activate = sched.jobs_to_activate(&reg);
+        let to_activate = sched.jobs_to_activate(&reg, &index);
         assert!(to_activate.is_empty());
     }
 
@@ -439,7 +411,7 @@ mod tests {
         let task_id = job.task_id.clone();
 
         reg.insert(job).unwrap();
-        sched.enqueue_task(TaskId::from_migration_gid(999));
+        sched.enqueue_task(TaskId::new());
         sched.enqueue_task(task_id.clone());
 
         let to_activate = sched.native_tasks_to_activate(&reg);

@@ -82,6 +82,7 @@ mod native_model_tests {
         assert!(rendered.len() > "task_".len());
         assert_ne!(rendered.len(), 16);
         assert!(!rendered.chars().all(|ch| ch.is_ascii_hexdigit()));
+        assert!(!rendered.starts_with("task_migration_"));
     }
 
     #[test]
@@ -264,6 +265,22 @@ mod native_persist_tests {
 
         assert_eq!(restored.gid, crate::job::Gid::from_raw(99));
     }
+
+    #[test]
+    fn task_row_requires_explicit_runtime_bridge_for_job_restore() {
+        let mut row = NativeTaskRow::new(
+            TaskId::parse("task_migration_0000000000000063").expect("task id"),
+            TaskLifecycle::Queued,
+        );
+        row.sources = vec!["https://example.com/file.iso".into()];
+        row.output_path = std::path::PathBuf::from("/tmp/file.iso");
+
+        let err = row
+            .to_job_for_migration()
+            .expect_err("task id fallback must not restore runtime job id");
+
+        assert_eq!(err.to_string(), "missing runtime bridge id");
+    }
 }
 
 #[cfg(test)]
@@ -372,17 +389,6 @@ mod native_projection_tests {
 
         assert_eq!(index.gid_for_task_id(&task_id), Some(gid));
         assert_eq!(index.task_id_for_gid(gid), Some(task_id));
-    }
-
-    #[test]
-    fn native_task_index_can_register_migration_ids() {
-        let mut index = NativeTaskIndex::default();
-        let gid = Gid::from_raw(42);
-
-        let task_id = index.register_migration_gid(gid);
-
-        assert_eq!(task_id.as_str(), "task_migration_000000000000002a");
-        assert_eq!(index.gid_for_task_id(&task_id), Some(gid));
     }
 
     #[test]

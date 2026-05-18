@@ -26,11 +26,6 @@ impl TaskId {
         &self.0
     }
 
-    /// Build the temporary migration identifier for an existing numeric job ID.
-    pub fn from_migration_gid(raw: u64) -> Self {
-        Self(format!("task_migration_{raw:016x}"))
-    }
-
     /// Parse a task identifier received from a native public surface.
     pub fn parse(value: impl Into<String>) -> Result<Self, NativeModelError> {
         let value = value.into();
@@ -66,13 +61,6 @@ impl NativeTaskIndex {
     pub fn register(&mut self, task_id: TaskId, gid: crate::job::Gid) {
         self.by_gid.insert(gid, task_id.clone());
         self.by_task_id.insert(task_id, gid);
-    }
-
-    /// Register a migration job using its deterministic temporary task id.
-    pub fn register_migration_gid(&mut self, gid: crate::job::Gid) -> TaskId {
-        let task_id = TaskId::from_migration_gid(gid.as_raw());
-        self.register(task_id.clone(), gid);
-        task_id
     }
 
     /// Resolve a native task id to the current runtime job id.
@@ -605,16 +593,10 @@ impl NativeTaskRow {
     /// Convert a migration task row back into the current job model.
     pub fn to_job_for_migration(&self) -> Result<crate::job::Job, NativeModelError> {
         self.validate_version()?;
-        let gid = if let Some(raw) = self.runtime_bridge_id {
-            crate::job::Gid::from_raw(raw)
-        } else {
-            let Some(raw) = self.task_id.as_str().strip_prefix("task_migration_") else {
-                return Err(NativeModelError::UnsupportedTaskIdForMigration);
-            };
-            u64::from_str_radix(raw, 16)
-                .map(crate::job::Gid::from_raw)
-                .map_err(|_| NativeModelError::UnsupportedTaskIdForMigration)?
-        };
+        let gid = self
+            .runtime_bridge_id
+            .map(crate::job::Gid::from_raw)
+            .ok_or(NativeModelError::MissingRuntimeBridgeId)?;
         let status = match self.lifecycle {
             TaskLifecycle::Queued => crate::job::Status::Waiting,
             TaskLifecycle::Running => crate::job::Status::Waiting,
@@ -960,9 +942,9 @@ pub enum NativeModelError {
     /// Native task row version is newer than this binary understands.
     #[error("unsupported native task row version")]
     UnsupportedTaskRowVersion,
-    /// Native task id cannot be mapped into the migration job model.
-    #[error("unsupported native task id for migration")]
-    UnsupportedTaskIdForMigration,
+    /// Native task row lacks the temporary private runtime bridge id.
+    #[error("missing runtime bridge id")]
+    MissingRuntimeBridgeId,
     /// Native task id is malformed.
     #[error("invalid native task id")]
     InvalidTaskId,

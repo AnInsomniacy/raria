@@ -4,11 +4,11 @@ This file is the authoritative recovery and execution document for completing ra
 
 ## Current State
 
-The current branch contains the committed modernization stream through Checkpoint 110, with Checkpoint 111 recorded in this runbook. The tree compiles with `cargo check --workspace --locked`, `cargo fmt --all --check` passes, and `git diff --check` reports no whitespace errors. Recent work touched the native API, daemon runtime, BitTorrent runtime, native task model, native configuration, Metalink parsing and dispatch, FTP backend, native API tests, daemon smoke tests, and modernization docs.
+The current branch contains the committed modernization stream through Checkpoint 111. The tree compiled with `cargo check --workspace --locked`, `cargo fmt --all --check` passed, and `git diff --check` reported no whitespace errors at the end of Checkpoint 111. Recent work touched the native API, daemon runtime, BitTorrent runtime, native task model, native configuration, Metalink parsing and dispatch, FTP backend, native API tests, daemon smoke tests, and modernization docs.
 
 The project is no longer a skeleton. It has working HTTP/HTTPS, FTP/FTPS, SFTP, Metalink, BitTorrent, segmented downloads, retry, resume, native API routes, native WebSocket events, redb-backed persistence, structured logs, and many daemon smoke tests. The work is not complete because major internals and tests still depend on aria2-shaped JSON-RPC, `Gid`, `Job`, compatibility terminology, and migration adapters.
 
-The most recent completed checkpoint is Checkpoint 111, Legacy Key-Value Config Parser Removal. The next checkpoint is Checkpoint 112, Native Identity And Persistence Cleanup. Its purpose is to continue replacing `Gid`, migration bridge IDs, and legacy persistence fallback with native task ownership.
+The most recent completed checkpoint is Checkpoint 112, Native Identity And Persistence Cleanup. The next checkpoint is Checkpoint 113, Native Persistence Schema Boundary. Its purpose is to continue replacing direct `Job` row ownership with versioned native persistence rows.
 
 Current legacy-surface evidence includes remaining references to JSON-RPC methods, `Gid`, `gid`, `task_migration_`, `parity`, `compatibility`, and `legacy` outside the migrated session smoke tests. This is expected during the transition, but it is not acceptable at completion.
 
@@ -59,8 +59,8 @@ Protocol implementation should use mature Rust libraries already chosen by the p
 | Public surface | Native CLI | CLI commands and options use raria names and native config/API concepts | `crates/raria-cli/src/main.rs`, native `--api-port` and native hook names; legacy RPC and BT crypto flags removed; retry help text no longer references aria2; many aria2-shaped options remain | Gap | CP111 |
 | Public surface | User documentation | Docs describe raria-native behavior only, with no compatibility claims except historical migration notes | README partially updated; old modernization docs and some crate docs still use compatibility wording | Partial | CP107 |
 | Configuration | Strict `raria.toml` | Native sections for daemon, API, downloads, network, HTTP, FTP, SFTP, BitTorrent, Metalink, storage, logging, hooks, and security | `crates/raria-core/src/native_config.rs`; hooks are native TOML; old aria2-style key-value parser deleted | Partial | CP111 |
-| Persistence | Versioned native store | Versioned task, source, file, segment, piece, tracker, event cursor, config, migration ledger, and external BT state references | Native metadata/task rows and native segments exist; `Job` rows and `Gid` fallback remain | Partial | CP109-CP113 |
-| Identity | Opaque task IDs | Public and internal task ownership use opaque `TaskId`, not aria2 GID semantics | `TaskId` exists; `Gid`, `task_migration_`, runtime bridge IDs remain | Partial | CP108-CP112 |
+| Persistence | Versioned native store | Versioned task, source, file, segment, piece, tracker, event cursor, config, migration ledger, and external BT state references | Native metadata/task rows and native segments exist; direct `Job` rows and explicit private runtime bridge IDs remain | Partial | CP109-CP113 |
+| Identity | Opaque task IDs | Public and internal task ownership use opaque `TaskId`, not aria2 GID semantics | `TaskId` owns task queue, persisted task rows, and native API identity; deterministic `task_migration_` generation and fallback decoding were removed; `Gid` remains as a private runtime bridge | Partial | CP108-CP112 |
 | Core runtime | Native task model | Protocol-neutral task graph with files, sources, segments, pieces, peers, trackers, policy, timestamps, and errors | Native projections exist; `Job` drives runtime state | Partial | CP108 |
 | Core runtime | Queue scheduling | Native queued/running/paused/seeding/completed/failed/removed scheduling with bounded active tasks and priorities | Scheduler now stores native task IDs; legacy queue adapters remain | Partial | CP109 |
 | Core runtime | Lifecycle controls | Pause, resume, remove, restart, shutdown, and session save operate through native task service | Native API has controls; engine still bridges to GID operations | Partial | CP97-CP109 |
@@ -106,12 +106,12 @@ Protocol implementation should use mature Rust libraries already chosen by the p
 | --- | --- | --- | --- | --- |
 | JSON-RPC server | `crates/raria-rpc/src/server.rs`, `/jsonrpc`, `aria2.*` methods, RPC smoke tests | Keeps aria2 API alive and distorts design | Native API and event tests cover all useful behavior | CP139 |
 | aria2 method names | `aria2.addUri`, `aria2.tellStatus`, `aria2.shutdown`, `aria2.saveSession`, old RPC tests | Encourages compatibility instead of native workflow | Session, daemon, logging, and protocol smoke tests use `/api/v1` only | CP97-CP103 |
-| `Gid` and `task_migration_` | `crates/raria-core/src/job.rs`, `engine.rs`, `scheduler.rs`, native index bridge | Prevents native task ownership and schema cleanup | Engine, scheduler, cancellation, events, logs, and persistence own `TaskId` | CP108-CP112 |
+| `Gid` runtime bridge | `crates/raria-core/src/job.rs`, `engine.rs`, native index bridge | Prevents final native task ownership and schema cleanup | Engine, cancellation, events, logs, and persistence own `TaskId` without `Job` bridge rows | CP113 |
 | `Job` runtime model | `Job` drives persisted runtime state and projections | Native task graph remains a facade | Native `Task` rows and in-memory state replace `Job` | CP108 |
 | legacy config parser | Historical `crates/raria-core/src/config_file.rs` module | Kept old config semantics alive | Deleted; runtime config uses strict native `raria.toml` | CP111 |
 | parity tests | `rpc_parity.rs`, `ws_parity.rs`, `multicall_parity.rs`, `options_parity.rs`, `ws_push.rs` | Tests the wrong product contract | Useful behavior moved to native contract tests, pure compatibility tests deleted | CP139-CP142 |
 | legacy event projection | `crates/raria-rpc/src/events.rs`, fallback from `DownloadEvent` to native | Event model remains partly aria2-shaped | Native event bus is sole daemon stream | CP100 |
-| legacy persistence fallback | old `Gid` segment rows, `NativeTaskRow::from_job_for_migration` | Blocks schema finalization | Migration fixtures prove cutover; old rows removed | CP112 |
+| legacy persistence fallback | old `Gid` segment rows, `NativeTaskRow::from_job_for_migration` | Blocks schema finalization | Migration fixtures prove cutover; old rows removed | CP113 |
 | compatibility wording | crate docs, README, old modernization docs, comments | Misleads future agents | Docs describe native raria only; old docs archived or rewritten | CP107 |
 | BT legacy encryption config | aria2 `bt-require-crypto` and `bt-min-crypto-level` public surfaces | Goal excludes MSE/ARC4 | Removed from CLI, key-value config ownership, runtime forwarding, and BT compatibility tests | CP110 |
 
@@ -394,6 +394,22 @@ Evidence: `raria-core` no longer exports `config_file`. The aria2-style key-valu
 Remaining after completion: remove remaining aria2-shaped CLI option names and continue native identity and persistence cleanup.
 
 Next: Checkpoint 112.
+
+### Checkpoint 112: Native Identity And Persistence Cleanup
+
+Status: complete
+
+Scope: remove deterministic `task_migration_` task identifiers and fallback decoding from native task rows, while preserving the temporary runtime `Gid` bridge only as an explicit private field until the native engine fully replaces `Job`.
+
+Files: `crates/raria-core/src/native.rs`, `crates/raria-core/src/engine.rs`, `crates/raria-core/src/scheduler.rs`, `crates/raria-core/src/lib.rs`, `crates/raria-rpc/src/methods.rs`, `docs/modernization/modernization-runbook.md`
+
+Validation: `cargo test -p raria-core task_row_requires_explicit_runtime_bridge_for_job_restore` failed before implementation because `task_migration_0000000000000063` restored runtime `Gid(99)` through fallback decoding, then passed after removal. `cargo test -p raria-core save_session_persists_native_task_rows` failed before implementation because saved rows still used deterministic `task_migration_` IDs, then passed after native task IDs were persisted. `cargo test -p raria-core native_task_index_resolves_task_ids_and_runtime_job_ids` passed. `cargo test -p raria-core native_tasks_to_activate_returns_task_ids_without_stale_queue_entries` passed. `cargo test -p raria-core scheduler::tests::` passed with 17 tests. `cargo test -p raria-core engine::tests::add_uri_with_position_inserts_into_waiting_queue` passed. `cargo test -p raria-core engine::tests::change_position` passed with 3 tests. `cargo test -p raria-rpc add_uri_position` passed after deleting stale `add_torrent` method tests that no longer matched the registered RPC surface. `cargo test -p raria-rpc tell_active_includes_seeding_jobs` passed. `cargo check --workspace --locked` passed. `cargo fmt --all --check` passed. `git diff --check` passed.
+
+Evidence: `TaskId::from_migration_gid`, `NativeTaskIndex::register_migration_gid`, scheduler GID queue wrappers, `waiting_queue` GID projection, and `NativeTaskRow::to_job_for_migration` fallback parsing were removed. `add_uri` now assigns opaque `TaskId::new()` when no caller-provided native task id exists. Scheduler queue operations now store and mutate native task ids directly, with runtime `Gid` activation resolved through the registry or private native task index. Native task rows must carry an explicit private `runtime_bridge_id` while `Job` remains the runtime model, so a crafted `task_migration_` string no longer recreates a runtime job id.
+
+Remaining after completion: direct `Job` row persistence and private runtime bridge IDs remain until the native persistence schema owns restore end to end.
+
+Next: Checkpoint 113.
 
 ## Validation Contract
 

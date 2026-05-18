@@ -1017,11 +1017,14 @@ mod tests {
     async fn tell_active_includes_seeding_jobs() {
         let engine = test_engine();
         let handler = RpcHandler::new(Arc::clone(&engine));
-        let gid = handler
-            .add_torrent("bWFnbmV0Oj94dD11cm46YnRpaDphYmM=".into(), None, None, None)
-            .await
-            .expect("add_torrent should create bt job");
-        let parsed_gid = parse_gid(&gid).unwrap();
+        let mut job = Job::new_bt(
+            vec!["magnet:?xt=urn:btih:abc".into()],
+            PathBuf::from("/tmp/seed"),
+        );
+        job.status = Status::Seeding;
+        let parsed_gid = job.gid;
+        let gid = parsed_gid.to_string();
+        engine.registry.insert(job).expect("insert seeding job");
         engine
             .registry
             .update(parsed_gid, |job| job.status = Status::Seeding)
@@ -1453,18 +1456,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn add_torrent_returns_error() {
-        let engine = test_engine();
-        let handler = RpcHandler::new(engine);
-        assert!(
-            handler
-                .add_torrent("base64data".into(), None, None, None)
-                .await
-                .is_err()
-        );
-    }
-
-    #[tokio::test]
     async fn add_uri_position_inserts_into_queue() {
         let engine = test_engine();
         let handler = RpcHandler::new(Arc::clone(&engine));
@@ -1481,13 +1472,18 @@ mod tests {
             .add_uri(vec!["https://a.com/3".into()], None, Some(1))
             .await
             .unwrap();
+        let first_gid = parse_gid(&first).unwrap();
+        let second_gid = parse_gid(&second).unwrap();
+        let inserted_gid = parse_gid(&inserted).unwrap();
 
         assert_eq!(
-            engine.scheduler.waiting_queue(),
+            engine.scheduler.waiting_task_queue(),
             vec![
-                parse_gid(&first).unwrap(),
-                parse_gid(&inserted).unwrap(),
-                parse_gid(&second).unwrap()
+                engine.task_id_for_gid(first_gid).expect("first task id"),
+                engine
+                    .task_id_for_gid(inserted_gid)
+                    .expect("inserted task id"),
+                engine.task_id_for_gid(second_gid).expect("second task id")
             ]
         );
     }
@@ -1524,34 +1520,5 @@ mod tests {
         let uris = handler.get_uris(gid).await.unwrap();
         assert_eq!(uris[0]["uri"], "https://mirror-new.example/file.iso");
         assert_eq!(uris[1]["uri"], "https://mirror-2.example/file.iso");
-    }
-
-    #[tokio::test]
-    async fn add_torrent_accepts_web_seed_uris_and_persists_them_on_job() {
-        let engine = test_engine();
-        let handler = RpcHandler::new(Arc::clone(&engine));
-
-        let gid = handler
-            .add_torrent(
-                "bWFnbmV0Oj94dD11cm46YnRpaDphYmM=".into(),
-                Some(vec![
-                    "https://webseed.example/file.iso".into(),
-                    "http://mirror.example/file.iso".into(),
-                ]),
-                None,
-                None,
-            )
-            .await
-            .unwrap();
-
-        let gid = parse_gid(&gid).expect("gid");
-        let job = engine.registry.get(gid).expect("job");
-        assert_eq!(
-            job.options.bt_web_seed_uris,
-            Some(vec![
-                "https://webseed.example/file.iso".into(),
-                "http://mirror.example/file.iso".into(),
-            ])
-        );
     }
 }

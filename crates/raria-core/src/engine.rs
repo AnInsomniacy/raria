@@ -896,7 +896,7 @@ impl Engine {
         } else {
             Job::new_range_with_options(spec.uris.clone(), out_path, options)
         };
-        job.task_id = task_id.unwrap_or_else(|| TaskId::from_migration_gid(job.gid.as_raw()));
+        job.task_id = task_id.unwrap_or_default();
         self.submit_job(job, queue_position)
     }
 
@@ -1000,7 +1000,8 @@ impl Engine {
 
     /// Get the GIDs eligible for activation (based on concurrency limit).
     pub fn activatable_jobs(&self) -> Vec<Gid> {
-        self.scheduler.jobs_to_activate(&self.registry)
+        self.scheduler
+            .jobs_to_activate(&self.registry, &self.native_task_index.lock())
     }
 
     /// Get the native task ids eligible for activation.
@@ -1957,7 +1958,8 @@ impl Engine {
         if job.status != Status::Waiting {
             anyhow::bail!("changePosition: job {gid} is not waiting");
         }
-        let new_pos = self.scheduler.change_position(gid, pos, how)?;
+        let task_id = self.task_id_for_gid(gid).context("native task not found")?;
+        let new_pos = self.scheduler.change_task_position(task_id, pos, how)?;
         debug!(%gid, new_pos, "changed position");
         Ok(new_pos)
     }
@@ -2727,10 +2729,13 @@ mod tests {
         let third = engine
             .add_uri_with_position(&default_spec(), Some(1))
             .unwrap();
+        let first_task_id = engine.task_id_for_gid(first.gid).expect("first task id");
+        let second_task_id = engine.task_id_for_gid(second.gid).expect("second task id");
+        let third_task_id = engine.task_id_for_gid(third.gid).expect("third task id");
 
         assert_eq!(
-            engine.scheduler.waiting_queue(),
-            vec![first.gid, third.gid, second.gid]
+            engine.scheduler.waiting_task_queue(),
+            vec![first_task_id, third_task_id, second_task_id]
         );
     }
 
@@ -3461,8 +3466,8 @@ mod tests {
         let new_pos = engine.change_position(h3.gid, 0, PositionHow::Set).unwrap();
         assert_eq!(new_pos, 0);
 
-        let queue = engine.scheduler.waiting_queue();
-        assert_eq!(queue[0], h3.gid);
+        let queue = engine.scheduler.waiting_task_queue();
+        assert_eq!(queue[0], engine.task_id_for_gid(h3.gid).expect("task id"));
     }
 
     #[test]
@@ -3476,8 +3481,15 @@ mod tests {
         let new_pos = engine.change_position(h1.gid, 2, PositionHow::Cur).unwrap();
         assert_eq!(new_pos, 2);
 
-        let queue = engine.scheduler.waiting_queue();
-        assert_eq!(queue, vec![h2.gid, h3.gid, h1.gid]);
+        let queue = engine.scheduler.waiting_task_queue();
+        assert_eq!(
+            queue,
+            vec![
+                engine.task_id_for_gid(h2.gid).expect("h2 task id"),
+                engine.task_id_for_gid(h3.gid).expect("h3 task id"),
+                engine.task_id_for_gid(h1.gid).expect("h1 task id")
+            ]
+        );
     }
 
     #[test]
@@ -3515,12 +3527,18 @@ mod tests {
         let store = engine.store.as_ref().unwrap();
         let rows = store.list_native_tasks().unwrap();
         assert_eq!(rows.len(), 2);
+        let h1_task_id = engine.task_id_for_gid(h1.gid).expect("h1 task id");
+        let h2_task_id = engine.task_id_for_gid(h2.gid).expect("h2 task id");
         assert!(rows.iter().any(|row| {
-            row.task_id.as_str() == format!("task_migration_{:016x}", h1.gid.as_raw())
+            row.task_id == h1_task_id
+                && !row.task_id.as_str().starts_with("task_migration_")
+                && row.runtime_bridge_id == Some(h1.gid.as_raw())
                 && row.lifecycle == crate::native::TaskLifecycle::Queued
         }));
         assert!(rows.iter().any(|row| {
-            row.task_id.as_str() == format!("task_migration_{:016x}", h2.gid.as_raw())
+            row.task_id == h2_task_id
+                && !row.task_id.as_str().starts_with("task_migration_")
+                && row.runtime_bridge_id == Some(h2.gid.as_raw())
                 && row.lifecycle == crate::native::TaskLifecycle::Paused
         }));
     }
