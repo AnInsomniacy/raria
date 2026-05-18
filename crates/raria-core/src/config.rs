@@ -188,12 +188,12 @@ pub struct GlobalConfig {
     pub bt_require_crypto: bool,
     /// Minimum accepted BitTorrent crypto level (aria2: --bt-min-crypto-level).
     pub bt_min_crypto_level: BtMinCryptoLevel,
-    /// Hook script fired when a download starts.
-    pub on_download_start: Option<PathBuf>,
-    /// Hook script fired when a download completes.
-    pub on_download_complete: Option<PathBuf>,
-    /// Hook script fired when a download errors.
-    pub on_download_error: Option<PathBuf>,
+    /// Hook script fired when a task starts running.
+    pub on_task_start: Option<PathBuf>,
+    /// Hook script fired when a task completes.
+    pub on_task_complete: Option<PathBuf>,
+    /// Hook script fired when a task fails.
+    pub on_task_fail: Option<PathBuf>,
 }
 
 impl Default for GlobalConfig {
@@ -254,9 +254,9 @@ impl Default for GlobalConfig {
             bt_piece_strategy: BtPieceStrategy::RarestFirst,
             bt_require_crypto: false,
             bt_min_crypto_level: BtMinCryptoLevel::Plain,
-            on_download_start: None,
-            on_download_complete: None,
-            on_download_error: None,
+            on_task_start: None,
+            on_task_complete: None,
+            on_task_fail: None,
         }
     }
 }

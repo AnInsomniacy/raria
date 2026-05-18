@@ -251,6 +251,22 @@ Remaining after completion: native hooks and lifecycle-event cleanup.
 
 Next: Checkpoint 103.
 
+### Checkpoint 103: Native Hook Lifecycle Cleanup
+
+Status: complete
+
+Scope: move daemon lifecycle hooks onto native task lifecycle names and native event delivery while preserving the useful hook behavior covered by session smoke tests.
+
+Files: `crates/raria-cli/src/hooks.rs`, `crates/raria-cli/src/main.rs`, `crates/raria-cli/src/daemon.rs`, `crates/raria-cli/tests/session_smoke.rs`, `crates/raria-core/src/config.rs`, `crates/raria-core/src/config_file.rs`
+
+Validation: `cargo test -p raria-cli daemon_accepts_native_task_hook_names` passed. `cargo test -p raria-core apply_config_native_hook_scripts` passed. `cargo test -p raria-cli --test session_smoke daemon_runs_on_task_start_hook` passed. `cargo test -p raria-cli --test session_smoke daemon_runs_on_task_complete_hook` passed. `cargo test -p raria-cli --test session_smoke daemon_runs_on_task_fail_hook` passed. `cargo test -p raria-cli --test session_smoke` passed with 18 tests. `cargo check --workspace --locked` passed. `cargo fmt --all --check` passed. `git diff --check` passed.
+
+Evidence: daemon hooks now use native public CLI names `--on-task-start`, `--on-task-complete`, and `--on-task-fail`. The hook runner subscribes to the native event bus and dispatches from `TaskStarted`, `TaskCompleted`, and `TaskFailed` events using `TaskId` lookup instead of the legacy `DownloadEvent` bus and public GID lookup. Session smoke tests prove start, completion, and failure hooks receive native task identifiers.
+
+Remaining after completion: strict native `raria.toml` hook configuration and legacy config parser cleanup.
+
+Next: Checkpoint 104.
+
 ## Validation Contract
 
 Run the smallest relevant command at each checkpoint. Record the command and result in the checkpoint ledger.

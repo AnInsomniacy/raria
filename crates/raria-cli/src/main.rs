@@ -83,6 +83,42 @@ mod tests {
         };
         assert_eq!(api_port, 7777);
     }
+
+    #[test]
+    fn daemon_accepts_native_task_hook_names() {
+        let cli = Cli::try_parse_from([
+            "raria",
+            "daemon",
+            "--on-task-start",
+            "/tmp/start.sh",
+            "--on-task-complete",
+            "/tmp/complete.sh",
+            "--on-task-fail",
+            "/tmp/fail.sh",
+        ])
+        .expect("parse native task hook names");
+        let Commands::Daemon {
+            on_task_start,
+            on_task_complete,
+            on_task_fail,
+            ..
+        } = cli.command
+        else {
+            panic!("expected daemon command");
+        };
+        assert_eq!(
+            on_task_start.unwrap(),
+            std::path::PathBuf::from("/tmp/start.sh")
+        );
+        assert_eq!(
+            on_task_complete.unwrap(),
+            std::path::PathBuf::from("/tmp/complete.sh")
+        );
+        assert_eq!(
+            on_task_fail.unwrap(),
+            std::path::PathBuf::from("/tmp/fail.sh")
+        );
+    }
 }
 
 #[derive(Parser)]
@@ -359,17 +395,17 @@ enum Commands {
         #[arg(short = 'i', long)]
         input_file: Option<PathBuf>,
 
-        /// Hook script fired when a download starts.
-        #[arg(long)]
-        on_download_start: Option<PathBuf>,
+        /// Hook script fired when a task starts running.
+        #[arg(long = "on-task-start", alias = "on-download-start")]
+        on_task_start: Option<PathBuf>,
 
-        /// Hook script fired when a download completes.
-        #[arg(long)]
-        on_download_complete: Option<PathBuf>,
+        /// Hook script fired when a task completes.
+        #[arg(long = "on-task-complete", alias = "on-download-complete")]
+        on_task_complete: Option<PathBuf>,
 
-        /// Hook script fired when a download errors.
-        #[arg(long)]
-        on_download_error: Option<PathBuf>,
+        /// Hook script fired when a task fails.
+        #[arg(long = "on-task-fail", alias = "on-download-error")]
+        on_task_fail: Option<PathBuf>,
 
         /// Legacy JSON-RPC secret token for migration-only authentication.
         #[arg(long)]
@@ -627,9 +663,9 @@ async fn main() -> Result<()> {
             http_user,
             http_passwd,
             input_file,
-            on_download_start,
-            on_download_complete,
-            on_download_error,
+            on_task_start,
+            on_task_complete,
+            on_task_fail,
             rpc_secret,
             rpc_allow_origin_all,
             load_cookies,
@@ -731,14 +767,14 @@ async fn main() -> Result<()> {
             if http_passwd.is_some() {
                 config.http_passwd = http_passwd;
             }
-            if on_download_start.is_some() {
-                config.on_download_start = on_download_start;
+            if on_task_start.is_some() {
+                config.on_task_start = on_task_start;
             }
-            if on_download_complete.is_some() {
-                config.on_download_complete = on_download_complete;
+            if on_task_complete.is_some() {
+                config.on_task_complete = on_task_complete;
             }
-            if on_download_error.is_some() {
-                config.on_download_error = on_download_error;
+            if on_task_fail.is_some() {
+                config.on_task_fail = on_task_fail;
             }
             if rpc_secret.is_some() {
                 config.rpc_secret = rpc_secret;

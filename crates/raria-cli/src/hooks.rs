@@ -1,14 +1,14 @@
 use anyhow::Result;
-use raria_core::progress::DownloadEvent;
+use raria_core::native::{NativeEvent, NativeEventType, TaskId};
 use std::path::PathBuf;
 use std::sync::Arc;
 use tracing::warn;
 
 #[derive(Clone, Debug, Default)]
 pub(crate) struct HookConfig {
-    pub on_download_start: Option<PathBuf>,
-    pub on_download_complete: Option<PathBuf>,
-    pub on_download_error: Option<PathBuf>,
+    pub on_task_start: Option<PathBuf>,
+    pub on_task_complete: Option<PathBuf>,
+    pub on_task_fail: Option<PathBuf>,
 }
 
 pub(crate) fn spawn_hook_runner(
@@ -16,14 +16,28 @@ pub(crate) fn spawn_hook_runner(
     hooks: HookConfig,
     shutdown: tokio_util::sync::CancellationToken,
 ) {
-    if hooks.on_download_start.is_none()
-        && hooks.on_download_complete.is_none()
-        && hooks.on_download_error.is_none()
+    let on_task_start = hooks.on_task_start.clone();
+    for task in engine.registry.by_status(raria_core::job::Status::Active) {
+        if let Some(ref script) = on_task_start {
+            let engine_ref = Arc::clone(&engine);
+            let script = script.clone();
+            let task_id = task.task_id.clone();
+            tokio::spawn(async move {
+                if let Err(error) = run_hook(engine_ref.as_ref(), &script, &task_id).await {
+                    warn!(error = %error, "hook execution failed");
+                }
+            });
+        }
+    }
+
+    if hooks.on_task_start.is_none()
+        && hooks.on_task_complete.is_none()
+        && hooks.on_task_fail.is_none()
     {
         return;
     }
 
-    let mut rx = engine.event_bus.subscribe();
+    let mut rx = engine.native_event_bus.subscribe();
     tokio::spawn(async move {
         loop {
             tokio::select! {
@@ -32,7 +46,7 @@ pub(crate) fn spawn_hook_runner(
                     let Ok(event) = received else {
                         continue;
                     };
-                    if let Err(error) = handle_event(&engine, &hooks, event).await {
+                    if let Err(error) = handle_native_event(&engine, &hooks, event).await {
                         warn!(error = %error, "hook execution failed");
                     }
                 }
@@ -41,25 +55,28 @@ pub(crate) fn spawn_hook_runner(
     });
 }
 
-async fn handle_event(
+async fn handle_native_event(
     engine: &raria_core::engine::Engine,
     hooks: &HookConfig,
-    event: DownloadEvent,
+    event: NativeEvent,
 ) -> Result<()> {
-    match event {
-        DownloadEvent::Started { gid } => {
-            if let Some(ref script) = hooks.on_download_start {
-                run_hook(engine, script, gid).await?;
+    let Some(task_id) = event.task_id else {
+        return Ok(());
+    };
+    match event.event_type {
+        NativeEventType::TaskStarted => {
+            if let Some(ref script) = hooks.on_task_start {
+                run_hook(engine, script, &task_id).await?;
             }
         }
-        DownloadEvent::Complete { gid } => {
-            if let Some(ref script) = hooks.on_download_complete {
-                run_hook(engine, script, gid).await?;
+        NativeEventType::TaskCompleted => {
+            if let Some(ref script) = hooks.on_task_complete {
+                run_hook(engine, script, &task_id).await?;
             }
         }
-        DownloadEvent::Error { gid, .. } => {
-            if let Some(ref script) = hooks.on_download_error {
-                run_hook(engine, script, gid).await?;
+        NativeEventType::TaskFailed => {
+            if let Some(ref script) = hooks.on_task_fail {
+                run_hook(engine, script, &task_id).await?;
             }
         }
         _ => {}
@@ -70,12 +87,12 @@ async fn handle_event(
 async fn run_hook(
     engine: &raria_core::engine::Engine,
     script: &std::path::Path,
-    gid: raria_core::job::Gid,
+    task_id: &TaskId,
 ) -> Result<()> {
     let job = engine
         .registry
-        .get(gid)
-        .ok_or_else(|| anyhow::anyhow!("job {gid} not found for hook"))?;
+        .get_by_task_id(task_id)
+        .ok_or_else(|| anyhow::anyhow!("task {} not found for hook", task_id.as_str()))?;
 
     let num_files = job
         .bt_files

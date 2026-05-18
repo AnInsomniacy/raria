@@ -1295,7 +1295,7 @@ async fn daemon_cli_basic_auth_applies_to_input_file_downloads() {
 
 #[cfg(unix)]
 #[tokio::test]
-async fn daemon_runs_on_download_start_hook() {
+async fn daemon_runs_on_task_start_hook() {
     let server = MockServer::start().await;
 
     Mock::given(method("HEAD"))
@@ -1342,7 +1342,7 @@ async fn daemon_runs_on_download_start_hook() {
         temp.path(),
         &session_file,
         None,
-        &["--on-download-start", script.to_string_lossy().as_ref()],
+        &["--on-task-start", script.to_string_lossy().as_ref()],
     )
     .await;
 
@@ -1374,7 +1374,7 @@ async fn daemon_runs_on_download_start_hook() {
 
 #[cfg(unix)]
 #[tokio::test]
-async fn daemon_runs_on_download_complete_hook() {
+async fn daemon_runs_on_task_complete_hook() {
     let server = MockServer::start().await;
 
     Mock::given(method("HEAD"))
@@ -1417,7 +1417,7 @@ async fn daemon_runs_on_download_complete_hook() {
         temp.path(),
         &session_file,
         None,
-        &["--on-download-complete", script.to_string_lossy().as_ref()],
+        &["--on-task-complete", script.to_string_lossy().as_ref()],
     )
     .await;
 
@@ -1455,7 +1455,7 @@ async fn daemon_runs_on_download_complete_hook() {
 
 #[cfg(unix)]
 #[tokio::test]
-async fn daemon_runs_on_download_error_hook() {
+async fn daemon_runs_on_task_fail_hook() {
     let server = MockServer::start().await;
 
     Mock::given(method("HEAD"))
@@ -1499,7 +1499,7 @@ async fn daemon_runs_on_download_error_hook() {
         &session_file,
         None,
         &[
-            "--on-download-error",
+            "--on-task-fail",
             script.to_string_lossy().as_ref(),
             "--max-file-not-found",
             "1",

@@ -354,22 +354,22 @@ pub fn apply_config_map_with_mode(
                     Some(value.clone())
                 };
             }
-            "on-download-start" => {
-                config.on_download_start = if value.is_empty() {
+            "on-task-start" | "on-download-start" => {
+                config.on_task_start = if value.is_empty() {
                     None
                 } else {
                     Some(PathBuf::from(value))
                 };
             }
-            "on-download-complete" => {
-                config.on_download_complete = if value.is_empty() {
+            "on-task-complete" | "on-download-complete" => {
+                config.on_task_complete = if value.is_empty() {
                     None
                 } else {
                     Some(PathBuf::from(value))
                 };
             }
-            "on-download-error" => {
-                config.on_download_error = if value.is_empty() {
+            "on-task-fail" | "on-download-error" => {
+                config.on_task_fail = if value.is_empty() {
                     None
                 } else {
                     Some(PathBuf::from(value))
@@ -558,25 +558,19 @@ mod tests {
     }
 
     #[test]
-    fn apply_config_hook_scripts() {
+    fn apply_config_native_hook_scripts() {
         let mut config = GlobalConfig::default();
         let mut map = HashMap::new();
-        map.insert("on-download-start".into(), "/tmp/start.sh".into());
-        map.insert("on-download-complete".into(), "/tmp/complete.sh".into());
-        map.insert("on-download-error".into(), "/tmp/error.sh".into());
+        map.insert("on-task-start".into(), "/tmp/start.sh".into());
+        map.insert("on-task-complete".into(), "/tmp/complete.sh".into());
+        map.insert("on-task-fail".into(), "/tmp/error.sh".into());
         apply_config_map(&mut config, &map);
+        assert_eq!(config.on_task_start, Some(PathBuf::from("/tmp/start.sh")));
         assert_eq!(
-            config.on_download_start,
-            Some(PathBuf::from("/tmp/start.sh"))
-        );
-        assert_eq!(
-            config.on_download_complete,
+            config.on_task_complete,
             Some(PathBuf::from("/tmp/complete.sh"))
         );
-        assert_eq!(
-            config.on_download_error,
-            Some(PathBuf::from("/tmp/error.sh"))
-        );
+        assert_eq!(config.on_task_fail, Some(PathBuf::from("/tmp/error.sh")));
     }
 
     #[test]

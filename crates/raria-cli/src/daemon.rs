@@ -178,9 +178,9 @@ pub(crate) async fn run_daemon_with_config(
     spawn_hook_runner(
         Arc::clone(&engine),
         HookConfig {
-            on_download_start: config.on_download_start.clone(),
-            on_download_complete: config.on_download_complete.clone(),
-            on_download_error: config.on_download_error.clone(),
+            on_task_start: config.on_task_start.clone(),
+            on_task_complete: config.on_task_complete.clone(),
+            on_task_fail: config.on_task_fail.clone(),
         },
         shutdown_token.clone(),
     );
