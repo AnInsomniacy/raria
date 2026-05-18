@@ -1166,7 +1166,8 @@ impl Engine {
             0,
             NativeEventType::TaskSourceFailed,
             Some(task_id.clone()),
-            NativeEventData::Error {
+            NativeEventData::SourceFailure {
+                uri: uri.to_string(),
                 code: "source_failed".to_string(),
                 message: error_msg.to_string(),
             },
@@ -2581,7 +2582,8 @@ mod tests {
         assert_eq!(source_failed.event_type, NativeEventType::TaskSourceFailed);
         assert_eq!(
             source_failed.data,
-            NativeEventData::Error {
+            NativeEventData::SourceFailure {
+                uri: "https://mirror.example/file.zip".to_string(),
                 code: "source_failed".to_string(),
                 message: "transient error: timeout".to_string(),
             }

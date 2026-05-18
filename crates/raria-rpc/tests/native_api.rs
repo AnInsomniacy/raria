@@ -1867,6 +1867,7 @@ mod tests {
 
         assert_eq!(json["type"], "task.source.failed");
         assert_eq!(json["taskId"], summary.task_id.as_str());
+        assert_eq!(json["data"]["uri"], "https://mirror.example/file.iso");
         assert_eq!(json["data"]["code"], "source_failed");
         assert_eq!(json["data"]["message"], "transient error: timeout");
         assert!(json.get("jsonrpc").is_none());

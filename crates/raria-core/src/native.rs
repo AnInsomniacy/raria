@@ -402,6 +402,15 @@ pub enum NativeEventData {
         /// Human-readable message.
         message: String,
     },
+    /// Source failure payload.
+    SourceFailure {
+        /// Source URI that failed.
+        uri: String,
+        /// Stable raria error code.
+        code: String,
+        /// Human-readable message.
+        message: String,
+    },
     /// BitTorrent metadata payload.
     BtMetadata {
         /// Torrent info hash.

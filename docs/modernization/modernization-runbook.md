@@ -8,7 +8,7 @@ The current branch contains the committed modernization stream through Checkpoin
 
 The project is no longer a skeleton. It has working HTTP/HTTPS, FTP/FTPS, SFTP, Metalink, BitTorrent, segmented downloads, retry, resume, native API routes, native WebSocket events, redb-backed persistence, structured logs, and many daemon smoke tests. The work is not complete because major internals and tests still depend on aria2-shaped JSON-RPC, `Gid`, `Job`, compatibility terminology, and migration adapters.
 
-The most recent completed checkpoint is Checkpoint 116, SFTP Native Transfer Contract. The next checkpoint is Checkpoint 117, Multi-Source Mirror Failover. Its purpose is to close source-health, retry, and failover behavior across multiple mirrors with native verification anchors.
+The most recent completed checkpoint is Checkpoint 117, Multi-Source Mirror Failover. The next checkpoint is Checkpoint 118, Adaptive Segmented Downloads. Its purpose is to close runtime segment planning and rebalance behavior with native verification anchors.
 
 Current legacy-surface evidence includes remaining references to JSON-RPC methods, `Gid`, `gid`, `task_migration_`, `parity`, `compatibility`, and `legacy` outside the migrated session smoke tests. This is expected during the transition, but it is not acceptable at completion.
 
@@ -71,7 +71,7 @@ Protocol implementation should use mature Rust libraries already chosen by the p
 | HTTP/HTTPS | Basic transfers | Redirects, headers, auth, TLS, mTLS, cookies, netrc, proxy, compression, range, conditional GET, resume, remote metadata | `raria-http`, `single_download`, `native_api_smoke`, session smoke; CP114 validates native task request headers and daemon remote filename metadata | Covered | Regression |
 | FTP/FTPS | FTP transfers | FTP and explicit FTPS with auth, passive mode where useful, resume, proxy, remote metadata | `raria-ftp`, FTP/FTPS smoke tests, single-download FTP/FTPS tests; CP115 validates context credentials for native task/daemon auth propagation | Covered | Regression |
 | SFTP | SFTP transfers | Password/key auth, known_hosts, proxy, resume, metadata | `raria-sftp`, SFTP backend and CLI smoke tests; CP116 validates context credentials for native task/daemon auth propagation | Covered | Regression |
-| Multi-source | Mirror failover | Multi-source tasks choose healthy mirrors, record failures, retry, and expose source health | source health and failover tests exist | Partial | CP117 |
+| Multi-source | Mirror failover | Multi-source tasks choose healthy mirrors, record failures, retry, and expose source health | source health and failover tests exist; CP117 native source failure events include failed mirror URI | Covered | Regression |
 | Multi-source | Adaptive segments | Segment planning reacts to source health and runtime progress, including live rebalance | planning reacts to health; live rebalance is missing | Gap | CP118 |
 | Resume | Crash recovery | Restart restores resumable range and BT tasks from native schemas | native segment rows and session restore exist; bridge rows remain | Partial | CP112 |
 | Integrity | Whole-file checksum | Enforce modern whole-file checksums and fail safely | checksum module and Metalink checksum daemon tests | Covered | Regression |
@@ -474,6 +474,22 @@ Evidence: aria2 treats FTP/SFTP credentials as modern transfer behavior. raria a
 Remaining after completion: continue multi-source and adaptive transfer checkpoints.
 
 Next: Checkpoint 117.
+
+### Checkpoint 117: Multi-Source Mirror Failover
+
+Status: complete
+
+Scope: close the native mirror-failover event contract so source health and event consumers can identify the exact mirror that failed while the task continues to another source.
+
+Files: `docs/modernization/modernization-runbook.md`, `crates/raria-core/src/native.rs`, `crates/raria-core/src/engine.rs`, `crates/raria-rpc/tests/native_api.rs`, `crates/raria-cli/tests/native_api_smoke.rs`
+
+Validation: `cargo test -p raria-core native_runtime_helpers_publish_native_progress_and_source_failure_events -- --nocapture` failed before implementation because `NativeEventData::SourceFailure` did not exist and passed after implementation. `cargo test -p raria-rpc --test native_api native_events_websocket_streams_native_source_failures -- --nocapture` passed. `cargo test -p raria-cli --test native_api_smoke daemon_native_events_include_source_failover -- --nocapture` passed. `cargo test -p raria-rpc --test native_api` passed with 36 tests. `cargo test -p raria-core native_source -- --nocapture` passed with 3 source-health tests. `cargo check --workspace --locked` passed. `cargo fmt --all --check` passed. `git diff --check` passed.
+
+Evidence: aria2's modern multi-source value includes mirror selection, server performance feedback, and failover. raria already records per-source health and can fail over to another mirror. `task.source.failed` native events now expose the failed source URI together with the stable error code and message, and daemon smoke coverage proves the event identifies the failed mirror while the task continues to a fallback source.
+
+Remaining after completion: continue adaptive segmented download checkpoint.
+
+Next: Checkpoint 118.
 
 ## Validation Contract
 

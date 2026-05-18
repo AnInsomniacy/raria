@@ -2614,6 +2614,10 @@ async fn daemon_native_events_include_source_failover() {
     .expect("timed out waiting for native source failure event");
 
     assert_eq!(event["taskId"], task_id);
+    assert_eq!(
+        event["data"]["uri"],
+        "gopher://example.invalid/source-failover.bin"
+    );
     assert_eq!(event["data"]["code"], "source_failed");
     assert!(
         event["data"]["message"]
