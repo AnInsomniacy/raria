@@ -1,23 +1,12 @@
 // BitTorrent gap tests.
 //
-// These tests document BitTorrent parity stop-lines against aria2 1.37.0.
-//
-// Open gaps stay indexed here with `#[ignore]` markers so the parity scripts can
-// map them into `.omx/parity/generated/bt-gap-capability-index.yaml`.
-// Once a gap is closed, replace the placeholder with an executable test and
-// remove the ignore marker so the generated index can go empty again.
+// These tests document modern BitTorrent stop-lines against the aria2 reference.
+// Legacy compatibility targets are deleted instead of tracked as open parity work.
 
 #[cfg(test)]
 mod tests {
     use anyhow::{Context, Result};
-    use librqbit::{
-        AddTorrent, AddTorrentOptions, CreateTorrentOptions, Session, SessionOptions,
-        create_torrent,
-    };
-    use raria_bt::service::{
-        BtService, BtServiceConfig, BtSource, PeerEncryptionMinLevel, PeerEncryptionMode,
-        PeerEncryptionPolicy,
-    };
+    use raria_bt::service::{BtService, BtServiceConfig, BtSource};
     use raria_core::job::Gid;
     use russh::keys::ssh_key::rand_core::OsRng;
     use russh::server::{Auth, Msg, Server as _, Session as RusshSession};
@@ -26,7 +15,7 @@ mod tests {
         Attrs, Data, FileAttributes, Handle, Name, OpenFlags, Status, StatusCode, Version,
     };
     use std::collections::HashMap;
-    use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener as StdTcpListener};
+    use std::net::SocketAddr;
     use std::sync::Arc;
     use std::time::Duration;
     use tempfile::tempdir;
@@ -36,128 +25,6 @@ mod tests {
     use tokio::time::{sleep, timeout};
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
-
-    fn reserve_port() -> u16 {
-        let listener = StdTcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
-        let port = listener.local_addr().expect("ephemeral port addr").port();
-        drop(listener);
-        port
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-    async fn bt_mse_pse_encryption() -> Result<()> {
-        let payload: Vec<u8> = (0..2 * 1024 * 1024)
-            .map(|idx| ((idx * 29) % 251) as u8)
-            .collect();
-        let source_root = tempdir().context("seed source tempdir")?;
-        let session_root = tempdir().context("seed session tempdir")?;
-        let file_name = "encrypted-fixture.bin";
-        let source_path = source_root.path().join(file_name);
-        std::fs::write(&source_path, &payload).context("write encrypted seed payload")?;
-
-        let torrent = create_torrent(
-            &source_path,
-            CreateTorrentOptions {
-                piece_length: Some(16 * 1024),
-                ..Default::default()
-            },
-        )
-        .await
-        .context("create encrypted torrent")?;
-        let torrent_bytes = torrent
-            .as_bytes()
-            .context("serialize encrypted torrent")?
-            .to_vec();
-
-        let listen_port = reserve_port();
-        let seed_session = Session::new_with_opts(
-            session_root.path().to_path_buf(),
-            SessionOptions {
-                disable_dht: true,
-                disable_dht_persistence: true,
-                listen_port_range: Some(listen_port..(listen_port + 1)),
-                enable_upnp_port_forwarding: false,
-                // Note: upstream librqbit 8.1.1 PeerConnectionOptions has no
-                // encryption_policy field. MSE/PE is not configurable.
-                peer_opts: None,
-                ..Default::default()
-            },
-        )
-        .await
-        .context("create encrypted seed session")?;
-
-        seed_session
-            .add_torrent(
-                AddTorrent::from_bytes(torrent.as_bytes().context("seed torrent bytes")?),
-                Some(AddTorrentOptions {
-                    paused: false,
-                    output_folder: Some(source_root.path().to_string_lossy().into_owned()),
-                    overwrite: true,
-                    ..Default::default()
-                }),
-            )
-            .await
-            .context("add encrypted seed torrent")?
-            .into_handle()
-            .context("encrypted seed handle")?
-            .wait_until_completed()
-            .await
-            .context("wait for encrypted seed completion")?;
-
-        let seed_addr = SocketAddr::new(
-            IpAddr::V4(Ipv4Addr::LOCALHOST),
-            seed_session
-                .tcp_listen_port()
-                .context("encrypted seed listen port")?,
-        );
-
-        let download_root = tempdir().context("encrypted download tempdir")?;
-        let service = BtService::with_config(
-            download_root.path().to_path_buf(),
-            BtServiceConfig {
-                disable_dht: true,
-                disable_dht_persistence: true,
-                initial_peers: Some(vec![seed_addr]),
-                peer_encryption_policy: PeerEncryptionPolicy {
-                    mode: PeerEncryptionMode::Require,
-                    min_crypto_level: PeerEncryptionMinLevel::Arc4,
-                },
-                ..Default::default()
-            },
-        )
-        .context("create encrypted bt service")?;
-
-        let handle = service
-            .add(
-                BtSource::TorrentBytes(torrent_bytes),
-                Gid::from_raw(901),
-                None,
-                None,
-                false,
-            )
-            .await
-            .context("add encrypted torrent to BtService")?;
-
-        timeout(Duration::from_secs(60), async {
-            loop {
-                let status = service.status(&handle).await.context("encrypted status")?;
-                if status.is_complete {
-                    return Ok::<_, anyhow::Error>(());
-                }
-                sleep(Duration::from_millis(100)).await;
-            }
-        })
-        .await
-        .context("encrypted BT completion timeout")??;
-
-        let out = std::fs::read(download_root.path().join(file_name))
-            .context("read encrypted download output")?;
-        assert_eq!(out, payload, "encrypted BT payload must match source");
-
-        service.shutdown().await;
-        seed_session.stop().await;
-        Ok(())
-    }
 
     struct RangeResponder {
         data: Arc<Vec<u8>>,

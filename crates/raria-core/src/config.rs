@@ -38,36 +38,6 @@ impl BtPieceStrategy {
     }
 }
 
-/// Minimum BitTorrent crypto level exposed through aria2-compatible configuration.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(rename_all = "kebab-case")]
-pub enum BtMinCryptoLevel {
-    /// Allow plaintext transport when encryption is not strictly required.
-    #[default]
-    Plain,
-    /// Require RC4 when protocol encryption is negotiated.
-    Arc4,
-}
-
-impl BtMinCryptoLevel {
-    /// Parse the aria2-style string form used by config files and CLI flags.
-    pub fn parse(value: &str) -> Option<Self> {
-        match value {
-            "plain" => Some(Self::Plain),
-            "arc4" => Some(Self::Arc4),
-            _ => None,
-        }
-    }
-
-    /// Return the canonical config/CLI string representation.
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Plain => "plain",
-            Self::Arc4 => "arc4",
-        }
-    }
-}
-
 /// Global configuration for the raria daemon.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GlobalConfig {
@@ -184,10 +154,6 @@ pub struct GlobalConfig {
     pub bt_enable_pex: bool,
     /// BT piece selection strategy forwarded into the BitTorrent runtime.
     pub bt_piece_strategy: BtPieceStrategy,
-    /// Require encrypted BitTorrent transport (aria2: --bt-require-crypto).
-    pub bt_require_crypto: bool,
-    /// Minimum accepted BitTorrent crypto level (aria2: --bt-min-crypto-level).
-    pub bt_min_crypto_level: BtMinCryptoLevel,
     /// Hook script fired when a task starts running.
     pub on_task_start: Option<PathBuf>,
     /// Hook script fired when a task completes.
@@ -252,8 +218,6 @@ impl Default for GlobalConfig {
             bt_dht_config_file: None,
             bt_enable_pex: true,
             bt_piece_strategy: BtPieceStrategy::RarestFirst,
-            bt_require_crypto: false,
-            bt_min_crypto_level: BtMinCryptoLevel::Plain,
             on_task_start: None,
             on_task_complete: None,
             on_task_fail: None,
@@ -379,8 +343,6 @@ mod tests {
         assert!(!cfg.rpc_allow_origin_all);
         assert_eq!(cfg.bt_piece_strategy, BtPieceStrategy::RarestFirst);
         assert!(cfg.bt_enable_pex);
-        assert!(!cfg.bt_require_crypto);
-        assert_eq!(cfg.bt_min_crypto_level, BtMinCryptoLevel::Plain);
     }
 
     #[test]
@@ -398,8 +360,6 @@ mod tests {
         assert_eq!(recovered.rpc_listen_port, cfg.rpc_listen_port);
         assert_eq!(recovered.bt_piece_strategy, BtPieceStrategy::RarestFirst);
         assert!(recovered.bt_enable_pex);
-        assert!(!recovered.bt_require_crypto);
-        assert_eq!(recovered.bt_min_crypto_level, BtMinCryptoLevel::Plain);
     }
 
     #[test]
@@ -413,19 +373,6 @@ mod tests {
             Some(BtPieceStrategy::RarestFirst)
         );
         assert_eq!(BtPieceStrategy::parse("unknown"), None);
-    }
-
-    #[test]
-    fn bt_min_crypto_level_parses_known_values() {
-        assert_eq!(
-            BtMinCryptoLevel::parse("plain"),
-            Some(BtMinCryptoLevel::Plain)
-        );
-        assert_eq!(
-            BtMinCryptoLevel::parse("arc4"),
-            Some(BtMinCryptoLevel::Arc4)
-        );
-        assert_eq!(BtMinCryptoLevel::parse("unknown"), None);
     }
 
     #[test]

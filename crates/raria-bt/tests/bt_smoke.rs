@@ -3,10 +3,7 @@ use librqbit::{
     AddTorrent, AddTorrentOptions, CreateTorrentOptions, PeerConnectionOptions, Session,
     SessionOptions, create_torrent,
 };
-use raria_bt::service::{
-    BtService, BtServiceConfig, BtSource, PeerEncryptionMinLevel, PeerEncryptionMode,
-    PeerEncryptionPolicy, PieceSelectionStrategy,
-};
+use raria_bt::service::{BtService, BtServiceConfig, BtSource, PieceSelectionStrategy};
 use raria_core::job::Gid;
 use std::fs;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener as StdTcpListener};
@@ -452,49 +449,6 @@ async fn bt_service_downloads_real_torrent_from_seed_peer() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[serial_test::serial]
-async fn bt_service_downloads_real_torrent_with_required_peer_encryption() {
-    let seed = start_seed_fixture_with_initial_peers(
-        4 * 1024 * 1024,
-        None,
-        // Note: upstream librqbit 8.1.1 PeerConnectionOptions has no
-        // encryption_policy field. Peer encryption (MSE/PE) is not
-        // configurable through the upstream API.
-        None,
-    )
-    .await
-    .expect("encrypted seed fixture");
-    let download_dir = tempdir().expect("download tempdir");
-    let service = BtService::with_config(
-        download_dir.path().to_path_buf(),
-        BtServiceConfig {
-            disable_dht: true,
-            disable_dht_persistence: true,
-            initial_peers: Some(vec![seed.seed_addr]),
-            peer_encryption_policy: PeerEncryptionPolicy {
-                mode: PeerEncryptionMode::Require,
-                min_crypto_level: PeerEncryptionMinLevel::Arc4,
-            },
-            ..Default::default()
-        },
-    )
-    .expect("create encrypted bt service");
-
-    let handle =
-        wait_for_bt_completion(&service, Gid::from_raw(101), seed.torrent_bytes.clone()).await;
-
-    assert_eq!(
-        fs::read(download_dir.path().join(&seed.output_name)).expect("read encrypted torrent"),
-        seed.payload
-    );
-
-    let status = service.status(&handle).await.expect("encrypted bt status");
-    assert!(status.is_complete, "encrypted BT transfer should complete");
-
-    service.shutdown().await;
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[serial_test::serial]
 async fn bt_service_status_exposes_step2_bt_metadata_fields() {
     let seed = start_seed_fixture(2 * 1024 * 1024)
         .await
@@ -559,7 +513,6 @@ async fn bt_service_completes_peer_download_through_socks5_proxy() {
             initial_peers: Some(vec![seed.seed_addr]),
             session_persistence_dir: None,
             piece_selection_strategy: PieceSelectionStrategy::Current,
-            peer_encryption_policy: PeerEncryptionPolicy::default(),
             ..Default::default()
         },
     )

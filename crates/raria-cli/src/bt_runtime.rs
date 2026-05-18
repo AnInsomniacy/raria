@@ -1,11 +1,8 @@
 use anyhow::{Context, Result};
 use base64::Engine as Base64Engine;
-use raria_bt::service::{
-    BtService, BtServiceConfig, BtSource, BtStatus, PeerEncryptionMinLevel, PeerEncryptionMode,
-    PeerEncryptionPolicy, PieceSelectionStrategy,
-};
+use raria_bt::service::{BtService, BtServiceConfig, BtSource, BtStatus, PieceSelectionStrategy};
 use raria_bt::torrent_meta::TorrentMeta;
-use raria_core::config::{BtMinCryptoLevel, BtPieceStrategy};
+use raria_core::config::BtPieceStrategy;
 use raria_core::engine::Engine;
 use raria_core::job::{BtCompletionDisposition, BtFile, BtPeer, Gid, Job, Status};
 use raria_core::logging::emit_structured_log;
@@ -67,17 +64,6 @@ fn bt_service_config(engine: &Engine) -> BtServiceConfig {
         piece_selection_strategy: match engine.config.bt_piece_strategy {
             BtPieceStrategy::Current => PieceSelectionStrategy::Current,
             BtPieceStrategy::RarestFirst => PieceSelectionStrategy::RarestFirst,
-        },
-        peer_encryption_policy: PeerEncryptionPolicy {
-            mode: if engine.config.bt_require_crypto {
-                PeerEncryptionMode::Require
-            } else {
-                PeerEncryptionMode::Prefer
-            },
-            min_crypto_level: match engine.config.bt_min_crypto_level {
-                BtMinCryptoLevel::Plain => PeerEncryptionMinLevel::Plain,
-                BtMinCryptoLevel::Arc4 => PeerEncryptionMinLevel::Arc4,
-            },
         },
         ..Default::default()
     }
@@ -619,11 +605,8 @@ mod tests {
     };
     use crate::bt_runtime::PieceSelectionStrategy;
     use librqbit::{CreateTorrentOptions, create_torrent};
-    use raria_bt::service::{
-        BtFileInfo, BtPeerInfo, BtStatus, PeerEncryptionMinLevel, PeerEncryptionMode,
-        PeerEncryptionPolicy,
-    };
-    use raria_core::config::{BtMinCryptoLevel, BtPieceStrategy, GlobalConfig, JobOptions};
+    use raria_bt::service::{BtFileInfo, BtPeerInfo, BtStatus};
+    use raria_core::config::{BtPieceStrategy, GlobalConfig, JobOptions};
     use raria_core::engine::{AddUriSpec, Engine};
     use raria_core::job::{BtPeer, BtSnapshot, Job, Status};
     use raria_core::native::{
@@ -734,37 +717,6 @@ mod tests {
         assert_eq!(
             bt_config.piece_selection_strategy,
             PieceSelectionStrategy::RarestFirst
-        );
-    }
-
-    #[test]
-    fn bt_service_config_forwards_bt_crypto_policy() {
-        let engine = Engine::new(GlobalConfig {
-            bt_require_crypto: true,
-            bt_min_crypto_level: BtMinCryptoLevel::Arc4,
-            ..Default::default()
-        });
-        let bt_config = bt_service_config(&engine);
-        assert_eq!(
-            bt_config.peer_encryption_policy,
-            PeerEncryptionPolicy {
-                mode: PeerEncryptionMode::Require,
-                min_crypto_level: PeerEncryptionMinLevel::Arc4,
-            }
-        );
-
-        let engine = Engine::new(GlobalConfig {
-            bt_require_crypto: false,
-            bt_min_crypto_level: BtMinCryptoLevel::Plain,
-            ..Default::default()
-        });
-        let bt_config = bt_service_config(&engine);
-        assert_eq!(
-            bt_config.peer_encryption_policy,
-            PeerEncryptionPolicy {
-                mode: PeerEncryptionMode::Prefer,
-                min_crypto_level: PeerEncryptionMinLevel::Plain,
-            }
         );
     }
 

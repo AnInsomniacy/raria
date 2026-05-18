@@ -4,11 +4,11 @@ This file is the authoritative recovery and execution document for completing ra
 
 ## Current State
 
-The current branch contains the committed modernization stream through Checkpoint 108, with Checkpoint 109 recorded in this runbook. The tree compiles with `cargo check --workspace --locked`, `cargo fmt --all --check` passes, and `git diff --check` reports no whitespace errors. Recent work touched the native API, daemon runtime, BitTorrent runtime, native task model, native configuration, Metalink parsing and dispatch, FTP backend, native API tests, daemon smoke tests, and modernization docs.
+The current branch contains the committed modernization stream through Checkpoint 109, with Checkpoint 110 recorded in this runbook. The tree compiles with `cargo check --workspace --locked`, `cargo fmt --all --check` passes, and `git diff --check` reports no whitespace errors. Recent work touched the native API, daemon runtime, BitTorrent runtime, native task model, native configuration, Metalink parsing and dispatch, FTP backend, native API tests, daemon smoke tests, and modernization docs.
 
 The project is no longer a skeleton. It has working HTTP/HTTPS, FTP/FTPS, SFTP, Metalink, BitTorrent, segmented downloads, retry, resume, native API routes, native WebSocket events, redb-backed persistence, structured logs, and many daemon smoke tests. The work is not complete because major internals and tests still depend on aria2-shaped JSON-RPC, `Gid`, `Job`, compatibility terminology, and migration adapters.
 
-The most recent completed checkpoint is Checkpoint 109, Legacy RPC CLI Flag Removal. The next checkpoint is Checkpoint 110, Native CLI And Config Surface Cleanup. Its purpose is to continue removing aria2-shaped CLI and legacy config surfaces once native tests cover the useful behavior.
+The most recent completed checkpoint is Checkpoint 110, BitTorrent Legacy Encryption Surface Removal. The next checkpoint is Checkpoint 111, Native CLI And Config Surface Cleanup. Its purpose is to continue removing aria2-shaped CLI and legacy config surfaces once native tests cover the useful behavior.
 
 Current legacy-surface evidence includes remaining references to JSON-RPC methods, `Gid`, `gid`, `task_migration_`, `parity`, `compatibility`, and `legacy` outside the migrated session smoke tests. This is expected during the transition, but it is not acceptable at completion.
 
@@ -56,7 +56,7 @@ Protocol implementation should use mature Rust libraries already chosen by the p
 | --- | --- | --- | --- | --- | --- |
 | Public surface | Native HTTP API | `/api/v1` resource API for health, config, stats, task creation, task reads, task controls, transfer policy, queue, files, sources, peers, trackers, seeding, session save, and daemon shutdown | `crates/raria-rpc/src/api.rs`, `crates/raria-rpc/tests/native_api.rs`, `crates/raria-cli/tests/native_api_smoke.rs` | Partial | CP97-CP103 |
 | Public surface | Native event stream | `/api/v1/events` emits typed raria event names and payloads without aria2 notification envelopes | `NativeEvent`, native event bus, daemon native event smoke tests; legacy event fallback still exists | Partial | CP100 |
-| Public surface | Native CLI | CLI commands and options use raria names and native config/API concepts | `crates/raria-cli/src/main.rs`, native `--api-port` and native hook names; `--rpc-port` alias removed; retry help text no longer references aria2; many aria2-shaped options remain | Gap | CP109 |
+| Public surface | Native CLI | CLI commands and options use raria names and native config/API concepts | `crates/raria-cli/src/main.rs`, native `--api-port` and native hook names; legacy RPC and BT crypto flags removed; retry help text no longer references aria2; many aria2-shaped options remain | Gap | CP111 |
 | Public surface | User documentation | Docs describe raria-native behavior only, with no compatibility claims except historical migration notes | README partially updated; old modernization docs and some crate docs still use compatibility wording | Partial | CP107 |
 | Configuration | Strict `raria.toml` | Native sections for daemon, API, downloads, network, HTTP, FTP, SFTP, BitTorrent, Metalink, storage, logging, hooks, and security | `crates/raria-core/src/native_config.rs`; hooks are native TOML; strict legacy parser rejects JSON-RPC keys; old parser remains for non-RPC migration debt | Partial | CP109 |
 | Persistence | Versioned native store | Versioned task, source, file, segment, piece, tracker, event cursor, config, migration ledger, and external BT state references | Native metadata/task rows and native segments exist; `Job` rows and `Gid` fallback remain | Partial | CP109-CP113 |
@@ -113,7 +113,7 @@ Protocol implementation should use mature Rust libraries already chosen by the p
 | legacy event projection | `crates/raria-rpc/src/events.rs`, fallback from `DownloadEvent` to native | Event model remains partly aria2-shaped | Native event bus is sole daemon stream | CP100 |
 | legacy persistence fallback | old `Gid` segment rows, `NativeTaskRow::from_job_for_migration` | Blocks schema finalization | Migration fixtures prove cutover; old rows removed | CP112 |
 | compatibility wording | crate docs, README, old modernization docs, comments | Misleads future agents | Docs describe native raria only; old docs archived or rewritten | CP107 |
-| BT legacy encryption config | `BtMinCryptoLevel`, `bt_require_crypto`, aria2 crypto comments | Goal excludes MSE/ARC4 | Removed or reclassified as unsupported modern transport policy | CP138 |
+| BT legacy encryption config | aria2 `bt-require-crypto` and `bt-min-crypto-level` public surfaces | Goal excludes MSE/ARC4 | Removed from CLI, key-value config ownership, runtime forwarding, and BT compatibility tests | CP110 |
 
 ## Excluded Legacy And Edge Features
 
@@ -362,6 +362,22 @@ Evidence: `raria daemon` no longer accepts `--rpc-secret` or `--rpc-allow-origin
 Remaining after completion: continue replacing aria2-shaped public CLI options and legacy config parser behavior after equivalent native coverage exists.
 
 Next: Checkpoint 110.
+
+### Checkpoint 110: BitTorrent Legacy Encryption Surface Removal
+
+Status: complete
+
+Scope: remove aria2 MSE/ARC4-facing BitTorrent encryption configuration from public CLI, legacy key-value config ownership, runtime forwarding, and compatibility tests.
+
+Files: `crates/raria-cli/src/main.rs`, `crates/raria-cli/src/bt_runtime.rs`, `crates/raria-core/src/config.rs`, `crates/raria-core/src/config_file.rs`, `crates/raria-bt/src/service.rs`, `crates/raria-bt/tests/bt_smoke.rs`, `crates/raria-bt/tests/bt_gap_ledger.rs`, `docs/modernization/modernization-runbook.md`
+
+Validation: `cargo test -p raria-cli daemon_rejects_legacy_bt_crypto_flags` failed before implementation and passed after the daemon flags were removed. `cargo test -p raria-core strict_mode_rejects_legacy_bt_crypto_keys` failed before implementation and passed after strict key rejection was added. `cargo test -p raria-cli bt_service_config_forwards_piece_strategy` passed. `cargo test -p raria-bt bt_service_session_options_enable_fastresume_and_json_persistence` passed. `cargo check --workspace --locked` passed. `cargo fmt --all --check` passed. `git diff --check` passed.
+
+Evidence: `raria daemon` no longer accepts `--bt-require-crypto` or `--bt-min-crypto-level`. Strict key-value config parsing rejects `bt-require-crypto` and `bt-min-crypto-level`. `GlobalConfig` no longer stores `bt_require_crypto`, `bt_min_crypto_level`, or `BtMinCryptoLevel`. The CLI BitTorrent runtime no longer forwards a peer encryption policy. `raria-bt` no longer exposes the unused local peer encryption policy types that were retained only for compatibility with an unsupported MSE/PE path. Compatibility tests and gap-ledger entries that treated unsupported MSE/ARC4 behavior as an implementation target were deleted.
+
+Remaining after completion: continue replacing aria2-shaped public CLI options and legacy config parser behavior after equivalent native coverage exists.
+
+Next: Checkpoint 111.
 
 ## Validation Contract
 

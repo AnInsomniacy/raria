@@ -23,10 +23,6 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tracing::{debug, info, warn};
 
-// These types were vendor-specific additions to librqbit.
-// Upstream 8.1.1 does not expose them, so we define them locally to
-// preserve raria-bt's public config API.
-
 /// Piece selection strategy for BitTorrent downloads.
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
@@ -36,42 +32,6 @@ pub enum PieceSelectionStrategy {
     RarestFirst,
     /// Download pieces in order (sequential).
     Current,
-}
-
-/// Minimum cryptographic level for peer encryption.
-#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "kebab-case")]
-pub enum PeerEncryptionMinLevel {
-    /// No encryption minimum.
-    #[default]
-    Plain,
-    /// RC4/ARC4 stream cipher minimum.
-    Arc4,
-}
-
-/// Peer encryption negotiation mode.
-#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "kebab-case")]
-pub enum PeerEncryptionMode {
-    /// Prefer encryption but allow plaintext.
-    #[default]
-    Prefer,
-    /// Require encryption — reject unencrypted peers.
-    Require,
-    /// Disable encryption negotiation entirely.
-    Disable,
-}
-
-/// Peer transport encryption policy.
-///
-/// Note: upstream librqbit 8.1.1 does not support MSE/PE natively.
-/// This struct is retained for raria configuration compatibility and future use.
-#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
-pub struct PeerEncryptionPolicy {
-    /// Encryption negotiation mode.
-    pub mode: PeerEncryptionMode,
-    /// Minimum acceptable cryptographic level.
-    pub min_crypto_level: PeerEncryptionMinLevel,
 }
 
 fn is_selected_file(selected_files: Option<&[usize]>, file_index: usize) -> bool {
@@ -116,9 +76,6 @@ fn bt_session_options(output_dir: &Path, config: &BtServiceConfig) -> SessionOpt
     SessionOptions {
         disable_dht: config.disable_dht,
         disable_dht_persistence: config.disable_dht_persistence,
-        // Note: upstream PeerConnectionOptions only has timeout fields.
-        // Encryption policy is stored in BtServiceConfig but not forwarded
-        // because upstream librqbit 8.1.1 does not support MSE/PE.
         peer_opts: None,
         dht_config: config.dht_config_filename.as_ref().map(|path| {
             librqbit::dht::PersistentDhtConfig {
@@ -250,8 +207,6 @@ pub struct BtServiceConfig {
     pub enable_pex: bool,
     /// Piece selection strategy forwarded into librqbit.
     pub piece_selection_strategy: PieceSelectionStrategy,
-    /// Peer transport encryption policy forwarded into librqbit.
-    pub peer_encryption_policy: PeerEncryptionPolicy,
 }
 
 impl Default for BtServiceConfig {
@@ -265,7 +220,6 @@ impl Default for BtServiceConfig {
             session_persistence_dir: None,
             enable_pex: true,
             piece_selection_strategy: PieceSelectionStrategy::default(),
-            peer_encryption_policy: PeerEncryptionPolicy::default(),
         }
     }
 }
@@ -861,10 +815,6 @@ mod tests {
                 session_persistence_dir: None,
                 enable_pex: true,
                 piece_selection_strategy: PieceSelectionStrategy::Current,
-                peer_encryption_policy: PeerEncryptionPolicy {
-                    mode: PeerEncryptionMode::Require,
-                    min_crypto_level: PeerEncryptionMinLevel::Arc4,
-                },
             },
         );
 

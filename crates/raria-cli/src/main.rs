@@ -8,7 +8,7 @@ mod util;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use raria_core::config::{BtMinCryptoLevel, GlobalConfig};
+use raria_core::config::GlobalConfig;
 use std::ffi::OsString;
 use std::path::PathBuf;
 use tracing::{error, info};
@@ -40,41 +40,6 @@ mod tests {
     use clap::Parser;
 
     #[test]
-    fn daemon_bt_require_crypto_is_none_when_flag_is_omitted() {
-        let cli = Cli::try_parse_from(["raria", "daemon"]).expect("parse daemon args");
-        let Commands::Daemon {
-            bt_require_crypto, ..
-        } = cli.command
-        else {
-            panic!("expected daemon command");
-        };
-        assert_eq!(bt_require_crypto, None);
-    }
-
-    #[test]
-    fn daemon_bt_require_crypto_supports_presence_and_explicit_false() {
-        let cli =
-            Cli::try_parse_from(["raria", "daemon", "--bt-require-crypto"]).expect("parse true");
-        let Commands::Daemon {
-            bt_require_crypto, ..
-        } = cli.command
-        else {
-            panic!("expected daemon command");
-        };
-        assert_eq!(bt_require_crypto, Some(true));
-
-        let cli = Cli::try_parse_from(["raria", "daemon", "--bt-require-crypto=false"])
-            .expect("parse false");
-        let Commands::Daemon {
-            bt_require_crypto, ..
-        } = cli.command
-        else {
-            panic!("expected daemon command");
-        };
-        assert_eq!(bt_require_crypto, Some(false));
-    }
-
-    #[test]
     fn daemon_accepts_native_api_port_name() {
         let cli = Cli::try_parse_from(["raria", "daemon", "--api-port", "7777"])
             .expect("parse native API port");
@@ -99,6 +64,25 @@ mod tests {
         for flag in ["--rpc-secret", "--rpc-allow-origin-all"] {
             let err = match Cli::try_parse_from(["raria", "daemon", flag, "value"]) {
                 Ok(_) => panic!("legacy RPC flag {flag} must be rejected"),
+                Err(error) => error,
+            };
+
+            assert!(
+                err.to_string().contains("unexpected argument"),
+                "unexpected parse error for {flag}: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn daemon_rejects_legacy_bt_crypto_flags() {
+        for args in [
+            ["raria", "daemon", "--bt-require-crypto", ""],
+            ["raria", "daemon", "--bt-min-crypto-level", "arc4"],
+        ] {
+            let flag = args[2];
+            let err = match Cli::try_parse_from(args.into_iter().filter(|arg| !arg.is_empty())) {
+                Ok(_) => panic!("legacy BT crypto flag {flag} must be rejected"),
                 Err(error) => error,
             };
 
@@ -403,14 +387,6 @@ enum Commands {
         #[arg(long = "bt-piece-strategy")]
         bt_piece_strategy: Option<String>,
 
-        /// Require encrypted BitTorrent peer transport.
-        #[arg(long = "bt-require-crypto", num_args = 0..=1, default_missing_value = "true")]
-        bt_require_crypto: Option<bool>,
-
-        /// Minimum BitTorrent crypto level: `plain` or `arc4`.
-        #[arg(long = "bt-min-crypto-level")]
-        bt_min_crypto_level: Option<String>,
-
         /// Path to client certificate chain for mTLS.
         #[arg(long)]
         certificate: Option<PathBuf>,
@@ -687,8 +663,6 @@ async fn main() -> Result<()> {
             ca_certificate,
             bt_dht_config_file,
             bt_piece_strategy,
-            bt_require_crypto,
-            bt_min_crypto_level,
             certificate,
             private_key,
             user_agent,
@@ -769,18 +743,6 @@ async fn main() -> Result<()> {
                         bt_piece_strategy
                     )
                 })?;
-            }
-            if let Some(bt_require_crypto) = bt_require_crypto {
-                config.bt_require_crypto = bt_require_crypto;
-            }
-            if let Some(bt_min_crypto_level) = bt_min_crypto_level {
-                config.bt_min_crypto_level = BtMinCryptoLevel::parse(&bt_min_crypto_level)
-                    .ok_or_else(|| {
-                        anyhow::anyhow!(
-                            "invalid --bt-min-crypto-level '{}': expected 'plain' or 'arc4'",
-                            bt_min_crypto_level
-                        )
-                    })?;
             }
             if certificate.is_some() {
                 config.certificate = certificate;
