@@ -4,11 +4,11 @@ This file is the authoritative recovery and execution document for completing ra
 
 ## Current State
 
-The current branch contains the committed modernization stream through Checkpoint 107, with Checkpoint 108 recorded in this runbook. The tree compiles with `cargo check --workspace --locked`, `cargo fmt --all --check` passes, and `git diff --check` reports no whitespace errors. Recent work touched the native API, daemon runtime, BitTorrent runtime, native task model, native configuration, Metalink parsing and dispatch, FTP backend, native API tests, daemon smoke tests, and modernization docs.
+The current branch contains the committed modernization stream through Checkpoint 108, with Checkpoint 109 recorded in this runbook. The tree compiles with `cargo check --workspace --locked`, `cargo fmt --all --check` passes, and `git diff --check` reports no whitespace errors. Recent work touched the native API, daemon runtime, BitTorrent runtime, native task model, native configuration, Metalink parsing and dispatch, FTP backend, native API tests, daemon smoke tests, and modernization docs.
 
 The project is no longer a skeleton. It has working HTTP/HTTPS, FTP/FTPS, SFTP, Metalink, BitTorrent, segmented downloads, retry, resume, native API routes, native WebSocket events, redb-backed persistence, structured logs, and many daemon smoke tests. The work is not complete because major internals and tests still depend on aria2-shaped JSON-RPC, `Gid`, `Job`, compatibility terminology, and migration adapters.
 
-The most recent completed checkpoint is Checkpoint 108, Legacy RPC Config Key Rejection. The next checkpoint is Checkpoint 109, Native CLI And Config Surface Cleanup. Its purpose is to continue removing aria2-shaped CLI and legacy config surfaces once native tests cover the useful behavior.
+The most recent completed checkpoint is Checkpoint 109, Legacy RPC CLI Flag Removal. The next checkpoint is Checkpoint 110, Native CLI And Config Surface Cleanup. Its purpose is to continue removing aria2-shaped CLI and legacy config surfaces once native tests cover the useful behavior.
 
 Current legacy-surface evidence includes remaining references to JSON-RPC methods, `Gid`, `gid`, `task_migration_`, `parity`, `compatibility`, and `legacy` outside the migrated session smoke tests. This is expected during the transition, but it is not acceptable at completion.
 
@@ -346,6 +346,22 @@ Evidence: strict key-value config parsing now rejects `rpc-listen-port`, `enable
 Remaining after completion: continue replacing or deleting non-RPC legacy key-value config behavior after equivalent `raria.toml` coverage exists.
 
 Next: Checkpoint 109.
+
+### Checkpoint 109: Legacy RPC CLI Flag Removal
+
+Status: complete
+
+Scope: remove JSON-RPC auth and CORS flags from the daemon CLI while leaving the transitional JSON-RPC internals for the later RPC removal checkpoints.
+
+Files: `crates/raria-cli/src/main.rs`, `docs/modernization/modernization-runbook.md`
+
+Validation: `cargo test -p raria-cli daemon_rejects_legacy_rpc_auth_flags` failed before implementation and passed after the CLI fields were removed. `cargo test -p raria-cli daemon_rejects_legacy_rpc_port_name` passed. `cargo check --workspace --locked` passed. `cargo fmt --all --check` passed. `git diff --check` passed.
+
+Evidence: `raria daemon` no longer accepts `--rpc-secret` or `--rpc-allow-origin-all`. The daemon CLI no longer maps JSON-RPC auth or CORS flags into `GlobalConfig`. Transitional `GlobalConfig` and `raria-rpc` fields remain internal migration debt for the dedicated JSON-RPC deletion checkpoints.
+
+Remaining after completion: continue replacing aria2-shaped public CLI options and legacy config parser behavior after equivalent native coverage exists.
+
+Next: Checkpoint 110.
 
 ## Validation Contract
 

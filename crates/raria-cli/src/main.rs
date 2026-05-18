@@ -95,6 +95,21 @@ mod tests {
     }
 
     #[test]
+    fn daemon_rejects_legacy_rpc_auth_flags() {
+        for flag in ["--rpc-secret", "--rpc-allow-origin-all"] {
+            let err = match Cli::try_parse_from(["raria", "daemon", flag, "value"]) {
+                Ok(_) => panic!("legacy RPC flag {flag} must be rejected"),
+                Err(error) => error,
+            };
+
+            assert!(
+                err.to_string().contains("unexpected argument"),
+                "unexpected parse error for {flag}: {err}"
+            );
+        }
+    }
+
+    #[test]
     fn daemon_accepts_native_task_hook_names() {
         let cli = Cli::try_parse_from([
             "raria",
@@ -432,14 +447,6 @@ enum Commands {
         #[arg(long = "on-task-fail")]
         on_task_fail: Option<PathBuf>,
 
-        /// Legacy JSON-RPC secret token for migration-only authentication.
-        #[arg(long)]
-        rpc_secret: Option<String>,
-
-        /// Allow browser clients from any origin to access the legacy JSON-RPC route.
-        #[arg(long, default_value_t = false)]
-        rpc_allow_origin_all: bool,
-
         /// Path to Netscape cookie file
         #[arg(long)]
         load_cookies: Option<PathBuf>,
@@ -691,8 +698,6 @@ async fn main() -> Result<()> {
             on_task_start,
             on_task_complete,
             on_task_fail,
-            rpc_secret,
-            rpc_allow_origin_all,
             load_cookies,
             save_cookies,
             file_allocation,
@@ -801,10 +806,6 @@ async fn main() -> Result<()> {
             if on_task_fail.is_some() {
                 config.on_task_fail = on_task_fail;
             }
-            if rpc_secret.is_some() {
-                config.rpc_secret = rpc_secret;
-            }
-            config.rpc_allow_origin_all = rpc_allow_origin_all;
             if load_cookies.is_some() {
                 config.cookie_file = load_cookies;
             }
