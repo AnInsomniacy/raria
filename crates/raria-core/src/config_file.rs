@@ -96,11 +96,10 @@ pub fn apply_config_map_with_mode(
             "max-overall-upload-limit" => {
                 parse_int!(key, value, config.max_overall_upload_limit, mode);
             }
-            "rpc-listen-port" => {
-                parse_int!(key, value, config.rpc_listen_port, mode);
-            }
-            "enable-rpc" | "rpc" => {
-                config.enable_rpc = value == "true" || value == "1";
+            "rpc-listen-port" | "enable-rpc" | "rpc" | "rpc-secret" | "rpc-allow-origin-all"
+                if mode == ConfigParseMode::Strict =>
+            {
+                anyhow::bail!("legacy RPC config key '{}' is not supported", key);
             }
             "log-level" => {
                 config.log_level = value.clone();
@@ -227,13 +226,6 @@ pub fn apply_config_map_with_mode(
                 }
                 None => {}
             },
-            "rpc-secret" => {
-                config.rpc_secret = if value.is_empty() {
-                    None
-                } else {
-                    Some(value.clone())
-                };
-            }
             "save-session-interval" => match value.parse::<u64>() {
                 Ok(n) => config.save_session_interval = Some(n),
                 Err(_) if mode == ConfigParseMode::Strict => {
@@ -245,9 +237,6 @@ pub fn apply_config_map_with_mode(
                 }
                 Err(_) => config.save_session_interval = None,
             },
-            "rpc-allow-origin-all" => {
-                config.rpc_allow_origin_all = value == "true" || value == "1";
-            }
             "file-allocation" => {
                 match crate::file_alloc::FileAllocation::parse(value) {
                     Ok(m) => config.file_allocation = m,
@@ -448,31 +437,6 @@ mod tests {
     }
 
     #[test]
-    fn apply_config_map_sets_rpc_allow_origin_all() {
-        let mut config = GlobalConfig::default();
-        let mut map = HashMap::new();
-        map.insert("rpc-allow-origin-all".into(), "true".into());
-
-        apply_config_map(&mut config, &map);
-
-        assert!(config.rpc_allow_origin_all);
-    }
-
-    #[test]
-    fn apply_config_map_clears_rpc_allow_origin_all_with_false() {
-        let mut config = GlobalConfig {
-            rpc_allow_origin_all: true,
-            ..GlobalConfig::default()
-        };
-        let mut map = HashMap::new();
-        map.insert("rpc-allow-origin-all".into(), "false".into());
-
-        apply_config_map(&mut config, &map);
-
-        assert!(!config.rpc_allow_origin_all);
-    }
-
-    #[test]
     fn parse_empty_value() {
         let content = "all-proxy=";
         let map = parse_config_file(content);
@@ -605,20 +569,6 @@ mod tests {
     }
 
     #[test]
-    fn apply_config_rpc_enable_variants() {
-        let mut config = GlobalConfig::default();
-        let mut map = HashMap::new();
-        map.insert("enable-rpc".into(), "true".into());
-        apply_config_map(&mut config, &map);
-        assert!(config.enable_rpc);
-
-        config.enable_rpc = false;
-        map.insert("enable-rpc".into(), "1".into());
-        apply_config_map(&mut config, &map);
-        assert!(config.enable_rpc);
-    }
-
-    #[test]
     fn apply_config_quiet() {
         let mut config = GlobalConfig::default();
         let mut map = HashMap::new();
@@ -662,8 +612,6 @@ mod tests {
 dir=/home/user/downloads
 max-concurrent-downloads=8
 max-overall-download-limit=0
-rpc-listen-port=6800
-enable-rpc=true
 log-level=info
 all-proxy=http://proxy:3128
 check-certificate=true
@@ -676,8 +624,6 @@ user-agent=raria/1.0
         assert_eq!(config.dir, PathBuf::from("/home/user/downloads"));
         assert_eq!(config.max_concurrent_downloads, 8);
         assert_eq!(config.max_overall_download_limit, 0);
-        assert_eq!(config.rpc_listen_port, 6800);
-        assert!(config.enable_rpc);
         assert_eq!(config.log_level, "info");
         assert_eq!(config.all_proxy, Some("http://proxy:3128".into()));
         assert!(config.check_certificate);
@@ -858,6 +804,29 @@ user-agent=raria/1.0
         let result = apply_config_map_with_mode(&mut config, &map, ConfigParseMode::Strict);
         assert!(result.is_ok(), "strict mode must accept valid config");
         assert_eq!(config.max_concurrent_downloads, 10);
+    }
+
+    #[test]
+    fn strict_mode_rejects_legacy_rpc_keys() {
+        for key in [
+            "rpc-listen-port",
+            "enable-rpc",
+            "rpc",
+            "rpc-secret",
+            "rpc-allow-origin-all",
+        ] {
+            let mut config = GlobalConfig::default();
+            let mut map = HashMap::new();
+            map.insert(key.into(), "true".into());
+
+            let result = apply_config_map_with_mode(&mut config, &map, ConfigParseMode::Strict);
+
+            assert!(result.is_err(), "strict mode must reject {key}");
+            assert!(
+                result.unwrap_err().to_string().contains(key),
+                "error should name rejected key {key}"
+            );
+        }
     }
 
     #[test]
