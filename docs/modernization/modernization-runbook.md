@@ -235,6 +235,22 @@ Remaining after completion: native API route shape and documentation cleanup.
 
 Next: Checkpoint 102.
 
+### Checkpoint 102: Native API Route Shape and README Cleanup
+
+Status: complete
+
+Scope: align public route documentation with the implemented `/api/v1` resource API, document the native request and response field names for current control surfaces, and add route-shape coverage that rejects legacy RPC paths on the native router.
+
+Files: `README.md`, `crates/raria-rpc/tests/native_api.rs`, `docs/modernization/modernization-runbook.md`
+
+Validation: `cargo test -p raria-rpc --test native_api native_api_router_does_not_mount_legacy_rpc_paths` passed. `cargo test -p raria-rpc --test native_api` passed with 35 tests. `cargo check --workspace --locked` passed. `cargo fmt --all --check` passed. `git diff --check` passed.
+
+Evidence: the README now lists the current native control routes, native request and response field names, native error envelope, and native event envelope shape without documenting JSON-RPC usage. Native API route-shape coverage proves the standalone native router rejects `/jsonrpc`, `/rpc`, and `/api/v1/jsonrpc` paths.
+
+Remaining after completion: native hooks and lifecycle-event cleanup.
+
+Next: Checkpoint 103.
+
 ## Validation Contract
 
 Run the smallest relevant command at each checkpoint. Record the command and result in the checkpoint ledger.

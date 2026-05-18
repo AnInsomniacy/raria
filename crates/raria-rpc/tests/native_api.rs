@@ -111,6 +111,40 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn native_api_router_does_not_mount_legacy_rpc_paths() {
+        let engine = Arc::new(Engine::new(GlobalConfig::default()));
+        let cancel = CancellationToken::new();
+        let addrs = start_native_api_server(
+            Arc::clone(&engine),
+            &NativeApiConfig {
+                listen_addr: SocketAddr::from(([127, 0, 0, 1], 0)),
+                ..NativeApiConfig::default()
+            },
+            cancel.clone(),
+        )
+        .await
+        .expect("start native api");
+        let client = reqwest::Client::new();
+
+        for path in ["/jsonrpc", "/rpc", "/api/v1/jsonrpc"] {
+            let response = client
+                .post(format!("http://{}{}", addrs.http, path))
+                .json(&serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "method": "aria2.getVersion",
+                    "id": "legacy"
+                }))
+                .send()
+                .await
+                .expect("legacy rpc probe");
+
+            assert_eq!(response.status(), reqwest::StatusCode::NOT_FOUND);
+        }
+
+        cancel.cancel();
+    }
+
+    #[tokio::test]
     async fn tasks_endpoint_returns_native_task_projection() {
         let engine = Arc::new(Engine::new(GlobalConfig::default()));
         let handle = engine

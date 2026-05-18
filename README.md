@@ -28,7 +28,7 @@ The migration is still in progress. Several internal paths and tests continue to
 | SFTP                  | Password and key auth, strict known-host verification, proxy support                                                                                                                   |
 | BitTorrent            | Magnet and torrent ingestion, file selection intent, metadata projection, tracker override support, peer projection, `Active -> Seeding -> Complete`, one-shot BT completion semantics |
 | Metalink              | XML parsing, normalization, mirror priority handling, checksum and piece-checksum wiring, relation projection, daemon-path mirror failover                                             |
-| Daemon control plane  | Native `/api/v1` health, config, task, stats, task-control, and event routes, with remaining JSON-RPC code used as a migration harness                                                 |
+| Daemon control plane  | Native `/api/v1` health, config, task, transfer, stats, session, daemon-control, and event routes                                                                                       |
 | Runtime observability | Structured JSON file logs, session correlation, daemon lifecycle events, mirror/source failure events, BT lifecycle events, restore events, native control events, and WS emission logs |
 | Persistence           | `redb`-backed job/session persistence and restore across daemon restart                                                                                                                |
 
@@ -40,7 +40,7 @@ These behaviors are backed by repository tests and current code:
 - throttled active downloads respond correctly to runtime limit changes
 - signal-driven daemon shutdown cancels throttled active downloads promptly
 - mirror failover emits non-terminal `SourceFailed` events before eventual completion
-- source-failure events are available through the native event model and older migration notification path
+- source-failure events are available through the native event model
 - terminal checksum and piece-integrity failures reject invalid output instead of leaving corrupt files behind
 - structured log files redact obvious secrets and credential-bearing URLs on covered paths
 
@@ -55,6 +55,8 @@ Current native routes include:
 - `GET /api/v1/health`
 - `GET /api/v1/config`
 - `GET /api/v1/stats`
+- `GET /api/v1/transfer`
+- `PATCH /api/v1/transfer`
 - `GET /api/v1/tasks`
 - `POST /api/v1/tasks`
 - `GET /api/v1/tasks/{taskId}`
@@ -62,11 +64,32 @@ Current native routes include:
 - `POST /api/v1/tasks/{taskId}/pause`
 - `POST /api/v1/tasks/{taskId}/resume`
 - `POST /api/v1/tasks/{taskId}/restart`
+- `GET /api/v1/tasks/{taskId}/queue`
+- `PATCH /api/v1/tasks/{taskId}/queue`
 - `GET /api/v1/tasks/{taskId}/files`
+- `PATCH /api/v1/tasks/{taskId}/files`
 - `GET /api/v1/tasks/{taskId}/sources`
+- `PATCH /api/v1/tasks/{taskId}/sources`
+- `GET /api/v1/tasks/{taskId}/transfer`
+- `PATCH /api/v1/tasks/{taskId}/transfer`
+- `GET /api/v1/tasks/{taskId}/peers`
+- `GET /api/v1/tasks/{taskId}/trackers`
+- `PATCH /api/v1/tasks/{taskId}/trackers`
+- `GET /api/v1/tasks/{taskId}/bt/seeding`
+- `PATCH /api/v1/tasks/{taskId}/bt/seeding`
+- `POST /api/v1/session/save`
+- `POST /api/v1/daemon/shutdown`
 - `GET /api/v1/events`
 
-The event stream uses stable raria event names such as `task.started`, `task.progress`, `task.paused`, `task.completed`, `task.failed`, `task.removed`, and `task.source.failed`.
+Task responses use native field names such as `taskId`, `lifecycle`, `outputPath`, `files`, `sources`, `segments`, `completedBytes`, `totalBytes`, `downloadBytesPerSecond`, `activeConnections`, `estimatedSecondsRemaining`, `downloadBytesPerSecondLimit`, `uploadBytesPerSecondLimit`, `createdAt`, `updatedAt`, and `errorMessage`.
+
+Task creation accepts direct `sources`, a `metalink` object with `bytesBase64` or `path`, and BitTorrent options under `bt`, including `selectedFileIds`, `trackerUris`, `webSeedUris`, `deleteUnselectedFilesOnCompletion`, and `seeding`.
+
+Mutation routes use native field names. Global transfer policy uses `downloadBytesPerSecondLimit`, `uploadBytesPerSecondLimit`, and `maxActiveTasks`. Task transfer policy uses `downloadBytesPerSecondLimit`, `uploadBytesPerSecondLimit`, and `segments`. Queue placement uses absolute `position`. Source replacement uses `sources`. File selection uses `selectedFileIds`. Tracker policy uses `trackerUris`, `excludedTrackerUris`, `connectTimeoutSeconds`, `timeoutSeconds`, and `intervalSeconds`. BitTorrent seeding policy uses `targetRatio`, `stopAfterMinutes`, and `idleDownloadTimeoutSeconds`.
+
+API errors use a native JSON envelope with `code` and `message`. Current stable codes include `invalid_request`, `invalid_task_id`, `task_not_found`, `auth_required`, and `session_store_unavailable`.
+
+The event stream sends one JSON object per WebSocket message with `version`, `sequence`, `time`, `type`, `taskId`, and `data`. Stable raria event names include `task.created`, `task.started`, `task.resumed`, `task.progress`, `task.paused`, `task.completed`, `task.failed`, `task.removed`, `task.source.failed`, `task.bt.metadata.resolved`, `task.bt.seeding.started`, `task.bt.peer.updated`, and `task.bt.tracker.updated`.
 
 ## Structured Logging
 
