@@ -3,7 +3,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
-use raria_range::backend::{ByteSourceBackend, OpenContext, ProbeContext};
+use raria_range::backend::{ByteSourceBackend, Credentials, OpenContext, ProbeContext};
 use raria_sftp::backend::{SftpBackend, SftpBackendConfig};
 use russh::keys::ssh_key::{LineEnding, rand_core::OsRng};
 use russh::server::{Auth, Msg, Server as _, Session};
@@ -357,6 +357,49 @@ async fn sftp_backend_downloads_file_with_password_auth() {
         .await
         .expect("read sftp stream");
     assert_eq!(buf, b"-sftp");
+}
+
+#[tokio::test]
+async fn sftp_backend_uses_context_credentials_when_url_has_no_credentials() {
+    let fixture = spawn_sftp_server("/remote/context.txt", b"context-sftp").await;
+    let backend = SftpBackend::with_config(SftpBackendConfig::default());
+    let url = format!("sftp://127.0.0.1:{}/remote/context.txt", fixture.port)
+        .parse()
+        .expect("url");
+    let credentials = Credentials {
+        username: "test-user".to_string(),
+        password: "test-pass".to_string(),
+    };
+
+    let probe = backend
+        .probe(
+            &url,
+            &ProbeContext {
+                auth: Some(credentials.clone()),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("probe should use context credentials");
+    assert_eq!(probe.size, Some(12));
+
+    let mut stream = backend
+        .open_from(
+            &url,
+            8,
+            &OpenContext {
+                auth: Some(credentials),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("open_from should use context credentials");
+    let mut buf = Vec::new();
+    stream
+        .read_to_end(&mut buf)
+        .await
+        .expect("read sftp stream");
+    assert_eq!(buf, b"sftp");
 }
 
 #[tokio::test]

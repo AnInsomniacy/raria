@@ -18,7 +18,9 @@
 
 use anyhow::{Context, Result};
 use async_trait::async_trait;
-use raria_range::backend::{ByteSourceBackend, ByteStream, FileProbe, OpenContext, ProbeContext};
+use raria_range::backend::{
+    ByteSourceBackend, ByteStream, Credentials, FileProbe, OpenContext, ProbeContext,
+};
 use russh::client;
 use russh::keys::{PrivateKeyWithHashAlg, check_known_hosts_path, load_secret_key};
 use russh_sftp::client::SftpSession;
@@ -72,16 +74,25 @@ impl Default for SftpBackend {
 }
 
 /// Extract (host, port, user, password, path) from an SFTP URL.
-fn parse_sftp_url(uri: &Url) -> Result<(String, u16, String, String, String)> {
+fn parse_sftp_url(
+    uri: &Url,
+    fallback_auth: Option<&Credentials>,
+) -> Result<(String, u16, String, String, String)> {
     let host = uri.host_str().context("SFTP URL missing host")?.to_string();
     let port = uri.port().unwrap_or(22);
 
     let user = if uri.username().is_empty() {
-        "root".to_string()
+        fallback_auth
+            .map(|auth| auth.username.clone())
+            .unwrap_or_else(|| "root".to_string())
     } else {
         uri.username().to_string()
     };
-    let password = uri.password().unwrap_or("").to_string();
+    let password = uri
+        .password()
+        .map(ToString::to_string)
+        .or_else(|| fallback_auth.map(|auth| auth.password.clone()))
+        .unwrap_or_default();
     let path = uri.path().to_string();
 
     Ok((host, port, user, password, path))
@@ -175,8 +186,9 @@ impl client::Handler for SshHandler {
 async fn connect_sftp(
     uri: &Url,
     backend_config: &SftpBackendConfig,
+    auth: Option<&Credentials>,
 ) -> Result<(SftpSession, String)> {
-    let (host, port, user, password, path) = parse_sftp_url(uri)?;
+    let (host, port, user, password, path) = parse_sftp_url(uri, auth)?;
 
     debug!(host = %host, port, user = %user, "connecting via SSH");
 
@@ -236,10 +248,10 @@ async fn connect_sftp(
 
 #[async_trait]
 impl ByteSourceBackend for SftpBackend {
-    async fn probe(&self, uri: &Url, _ctx: &ProbeContext) -> Result<FileProbe> {
+    async fn probe(&self, uri: &Url, ctx: &ProbeContext) -> Result<FileProbe> {
         debug!(uri = %uri, "probing SFTP resource");
 
-        let (sftp, path) = connect_sftp(uri, &self.config).await?;
+        let (sftp, path) = connect_sftp(uri, &self.config, ctx.auth.as_ref()).await?;
 
         // stat() to get file metadata.
         let metadata = sftp
@@ -261,10 +273,10 @@ impl ByteSourceBackend for SftpBackend {
         })
     }
 
-    async fn open_from(&self, uri: &Url, offset: u64, _ctx: &OpenContext) -> Result<ByteStream> {
+    async fn open_from(&self, uri: &Url, offset: u64, ctx: &OpenContext) -> Result<ByteStream> {
         debug!(uri = %uri, offset, "opening SFTP stream");
 
-        let (sftp, path) = connect_sftp(uri, &self.config).await?;
+        let (sftp, path) = connect_sftp(uri, &self.config, ctx.auth.as_ref()).await?;
 
         // Open the remote file for reading.
         let mut file = sftp
@@ -335,7 +347,7 @@ mod tests {
         let url: Url = "sftp://user:secret@server.example.com:2222/home/user/file.zip"
             .parse()
             .unwrap();
-        let (host, port, user, pass, path) = parse_sftp_url(&url).unwrap();
+        let (host, port, user, pass, path) = parse_sftp_url(&url, None).unwrap();
         assert_eq!(host, "server.example.com");
         assert_eq!(port, 2222);
         assert_eq!(user, "user");
@@ -346,28 +358,54 @@ mod tests {
     #[test]
     fn parse_sftp_url_default_port() {
         let url: Url = "sftp://user@server.example.com/file.zip".parse().unwrap();
-        let (_, port, _, _, _) = parse_sftp_url(&url).unwrap();
+        let (_, port, _, _, _) = parse_sftp_url(&url, None).unwrap();
         assert_eq!(port, 22);
     }
 
     #[test]
     fn parse_sftp_url_default_user() {
         let url: Url = "sftp://server.example.com/file.zip".parse().unwrap();
-        let (_, _, user, _, _) = parse_sftp_url(&url).unwrap();
+        let (_, _, user, _, _) = parse_sftp_url(&url, None).unwrap();
         assert_eq!(user, "root");
+    }
+
+    #[test]
+    fn parse_sftp_url_uses_context_credentials_when_uri_has_none() {
+        let url: Url = "sftp://server.example.com/file.zip".parse().unwrap();
+        let credentials = Credentials {
+            username: "ctx-user".to_string(),
+            password: "ctx-pass".to_string(),
+        };
+        let (_, _, user, pass, _) = parse_sftp_url(&url, Some(&credentials)).unwrap();
+        assert_eq!(user, "ctx-user");
+        assert_eq!(pass, "ctx-pass");
+    }
+
+    #[test]
+    fn parse_sftp_url_prefers_uri_credentials_over_context_credentials() {
+        let url: Url = "sftp://uri-user:uri-pass@server.example.com/file.zip"
+            .parse()
+            .unwrap();
+        let credentials = Credentials {
+            username: "ctx-user".to_string(),
+            password: "ctx-pass".to_string(),
+        };
+        let (_, _, user, pass, _) = parse_sftp_url(&url, Some(&credentials)).unwrap();
+        assert_eq!(user, "uri-user");
+        assert_eq!(pass, "uri-pass");
     }
 
     #[test]
     fn parse_sftp_url_deep_path() {
         let url: Url = "sftp://user@host/a/b/c/file.tar.gz".parse().unwrap();
-        let (_, _, _, _, path) = parse_sftp_url(&url).unwrap();
+        let (_, _, _, _, path) = parse_sftp_url(&url, None).unwrap();
         assert_eq!(path, "/a/b/c/file.tar.gz");
     }
 
     #[test]
     fn parse_sftp_url_no_password() {
         let url: Url = "sftp://user@host/file".parse().unwrap();
-        let (_, _, _, pass, _) = parse_sftp_url(&url).unwrap();
+        let (_, _, _, pass, _) = parse_sftp_url(&url, None).unwrap();
         assert_eq!(pass, "");
     }
 
