@@ -32,7 +32,7 @@ pub(crate) async fn run_daemon_with_config(
     header_args: Vec<String>,
 ) -> Result<()> {
     let default_headers = parse_header_args(&header_args)?;
-    let rpc_port = config.rpc_listen_port;
+    let api_port = config.rpc_listen_port;
 
     std::fs::create_dir_all(&config.dir).context("failed to create download directory")?;
 
@@ -185,10 +185,10 @@ pub(crate) async fn run_daemon_with_config(
         shutdown_token.clone(),
     );
     let rpc_config = RpcServerConfig {
-        listen_addr: std::net::SocketAddr::from(([0, 0, 0, 0], rpc_port)),
+        listen_addr: std::net::SocketAddr::from(([0, 0, 0, 0], api_port)),
     };
     let rpc_addrs = start_rpc_server(Arc::clone(&engine), &rpc_config, rpc_cancel.clone()).await?;
-    info!(rpc = %rpc_addrs.rpc, "RPC server ready");
+    info!(rpc = %rpc_addrs.rpc, "native API server ready");
     if !config.quiet {
         println!(
             "raria daemon running — API at http://{}/api/v1",

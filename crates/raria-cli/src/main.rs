@@ -85,6 +85,16 @@ mod tests {
     }
 
     #[test]
+    fn daemon_rejects_legacy_rpc_port_name() {
+        let err = match Cli::try_parse_from(["raria", "daemon", "--rpc-port", "7777"]) {
+            Ok(_) => panic!("legacy RPC port name must be rejected"),
+            Err(error) => error,
+        };
+
+        assert!(err.to_string().contains("unexpected argument"));
+    }
+
+    #[test]
     fn daemon_accepts_native_task_hook_names() {
         let cli = Cli::try_parse_from([
             "raria",
@@ -319,7 +329,7 @@ enum Commands {
         save_session_interval: Option<u64>,
 
         /// Native API listen port.
-        #[arg(long = "api-port", alias = "rpc-port", default_value_t = 6800)]
+        #[arg(long = "api-port", default_value_t = 6800)]
         api_port: u16,
 
         /// Maximum download speed (bytes/sec, 0 = unlimited)

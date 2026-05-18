@@ -48,21 +48,16 @@ fn directory_has_state(path: &std::path::Path) -> bool {
         .any(|metadata| metadata.is_file() && metadata.len() > 0)
 }
 
-async fn wait_for_rpc_ready_with_child(port: u16, child: &mut ChildGuard) -> Result<(), String> {
+async fn wait_for_native_api_ready_with_child(
+    port: u16,
+    child: &mut ChildGuard,
+) -> Result<(), String> {
     let deadline = Instant::now() + Duration::from_secs(120);
     let client = reqwest::Client::new();
 
     loop {
-        let body = serde_json::json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "aria2.getVersion",
-            "params": [],
-        });
-
         if let Ok(resp) = client
-            .post(format!("http://127.0.0.1:{port}"))
-            .json(&body)
+            .get(format!("http://127.0.0.1:{port}/api/v1/health"))
             .send()
             .await
         {
@@ -82,7 +77,7 @@ async fn wait_for_rpc_ready_with_child(port: u16, child: &mut ChildGuard) -> Res
                     let _ = handle.read_to_string(&mut stderr);
                 }
                 return Err(format!(
-                    "daemon exited before RPC became ready on port {port}: {status}\nstdout:\n{stdout}\nstderr:\n{stderr}"
+                    "daemon exited before native API became ready on port {port}: {status}\nstdout:\n{stdout}\nstderr:\n{stderr}"
                 ));
             }
             Ok(None) => {}
@@ -91,7 +86,7 @@ async fn wait_for_rpc_ready_with_child(port: u16, child: &mut ChildGuard) -> Res
 
         if Instant::now() >= deadline {
             return Err(format!(
-                "daemon RPC server did not become ready on port {port}"
+                "daemon native API did not become ready on port {port}"
             ));
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
@@ -111,13 +106,13 @@ async fn spawn_ready_daemon_with_args(
     extra_args: &[&str],
 ) -> (ChildGuard, u16) {
     for _ in 0..8 {
-        let rpc_port = allocate_port();
+        let api_port = allocate_port();
         let mut cmd = Command::new(cargo_bin("raria"));
         cmd.arg("daemon")
             .arg("-d")
             .arg(download_dir)
-            .arg("--rpc-port")
-            .arg(rpc_port.to_string())
+            .arg("--api-port")
+            .arg(api_port.to_string())
             .arg("--session-file")
             .arg(session_file)
             .stdout(Stdio::piped())
@@ -128,14 +123,14 @@ async fn spawn_ready_daemon_with_args(
         let child = cmd.spawn().expect("spawn daemon");
         let mut child = ChildGuard { child };
 
-        match wait_for_rpc_ready_with_child(rpc_port, &mut child).await {
-            Ok(()) => return (child, rpc_port),
-            Err(message) if message.contains("failed to bind RPC server") => continue,
+        match wait_for_native_api_ready_with_child(api_port, &mut child).await {
+            Ok(()) => return (child, api_port),
+            Err(message) if message.contains("failed to bind API server") => continue,
             Err(message) => panic!("{message}"),
         }
     }
 
-    panic!("failed to start daemon on a free RPC port after multiple attempts");
+    panic!("failed to start daemon on a free API port after multiple attempts");
 }
 
 async fn create_native_bt_task(
@@ -342,13 +337,13 @@ async fn daemon_binds_bt_fastresume_state_to_native_session_path() {
     let session_file = temp.path().join("bt-fastresume.session.redb");
     let expected_state_dir = temp.path().join("bt-fastresume.session.redb.bt-session");
     let old_download_scoped_dir = temp.path().join(".raria-bt-session");
-    let (mut child, rpc_port) = spawn_ready_daemon(temp.path(), &session_file).await;
+    let (mut child, api_port) = spawn_ready_daemon(temp.path(), &session_file).await;
     let client = reqwest::Client::new();
 
-    let task_id = create_native_bt_task(&client, rpc_port, temp.path(), &fixture, None).await;
-    wait_for_native_bt_tracker_announce(&client, rpc_port, &task_id, &fixture).await;
+    let task_id = create_native_bt_task(&client, api_port, temp.path(), &fixture, None).await;
+    wait_for_native_bt_tracker_announce(&client, api_port, &task_id, &fixture).await;
 
-    request_native_shutdown(&client, rpc_port).await;
+    request_native_shutdown(&client, api_port).await;
     wait_for_child_exit_after_native_shutdown(&mut child).await;
 
     assert!(
@@ -367,16 +362,16 @@ async fn daemon_bt_tracker_option_announces_to_tracker_on_real_daemon_path() {
     let fixture = spawn_bt_seed_fixture().await;
     let temp = tempdir().expect("tempdir");
     let session_file = temp.path().join("bt-download.session.redb");
-    let (mut child, rpc_port) = spawn_ready_daemon(temp.path(), &session_file).await;
+    let (mut child, api_port) = spawn_ready_daemon(temp.path(), &session_file).await;
     let client = reqwest::Client::new();
 
-    let task_id = create_native_bt_task(&client, rpc_port, temp.path(), &fixture, None).await;
+    let task_id = create_native_bt_task(&client, api_port, temp.path(), &fixture, None).await;
 
     let deadline = Instant::now() + Duration::from_secs(60);
     loop {
         let task_resp: serde_json::Value = client
             .get(format!(
-                "http://127.0.0.1:{rpc_port}/api/v1/tasks/{task_id}"
+                "http://127.0.0.1:{api_port}/api/v1/tasks/{task_id}"
             ))
             .send()
             .await
@@ -411,7 +406,7 @@ async fn daemon_bt_tracker_option_announces_to_tracker_on_real_daemon_path() {
         tokio::time::sleep(Duration::from_millis(250)).await;
     }
 
-    request_native_shutdown(&client, rpc_port).await;
+    request_native_shutdown(&client, api_port).await;
     wait_for_child_exit_after_native_shutdown(&mut child).await;
 }
 
@@ -423,7 +418,7 @@ async fn daemon_shutdown_persists_bt_dht_snapshot_before_periodic_dump_window() 
     let session_file = temp.path().join("bt-dht.session.redb");
     let dht_config_file = temp.path().join("bt-dht.json");
     let dht_config_arg = dht_config_file.to_string_lossy().to_string();
-    let (mut child, rpc_port) = spawn_ready_daemon_with_args(
+    let (mut child, api_port) = spawn_ready_daemon_with_args(
         temp.path(),
         &session_file,
         &["--bt-dht-config-file", &dht_config_arg],
@@ -431,14 +426,14 @@ async fn daemon_shutdown_persists_bt_dht_snapshot_before_periodic_dump_window() 
     .await;
     let client = reqwest::Client::new();
 
-    let _task_id = create_native_bt_task(&client, rpc_port, temp.path(), &fixture, None).await;
+    let _task_id = create_native_bt_task(&client, api_port, temp.path(), &fixture, None).await;
     assert!(
         !dht_config_file.exists(),
         "fresh daemon run should not persist DHT state before shutdown is requested"
     );
 
     let shutdown_started_at = Instant::now();
-    request_native_shutdown(&client, rpc_port).await;
+    request_native_shutdown(&client, api_port).await;
     wait_for_child_exit_after_native_shutdown(&mut child).await;
 
     assert!(
@@ -471,7 +466,7 @@ async fn daemon_log_file_contains_structured_bt_lifecycle_events() {
     let temp = tempdir().expect("tempdir");
     let session_file = temp.path().join("bt-log.session.redb");
     let log_path = temp.path().join("bt.log");
-    let (mut child, rpc_port) = spawn_ready_daemon_with_args(
+    let (mut child, api_port) = spawn_ready_daemon_with_args(
         temp.path(),
         &session_file,
         &["--log", log_path.to_str().unwrap()],
@@ -479,13 +474,13 @@ async fn daemon_log_file_contains_structured_bt_lifecycle_events() {
     .await;
     let client = reqwest::Client::new();
 
-    let task_id = create_native_bt_task(&client, rpc_port, temp.path(), &fixture, Some(1)).await;
+    let task_id = create_native_bt_task(&client, api_port, temp.path(), &fixture, Some(1)).await;
 
     let deadline = Instant::now() + Duration::from_secs(60);
     loop {
         let task_resp: serde_json::Value = client
             .get(format!(
-                "http://127.0.0.1:{rpc_port}/api/v1/tasks/{task_id}"
+                "http://127.0.0.1:{api_port}/api/v1/tasks/{task_id}"
             ))
             .send()
             .await
@@ -509,7 +504,7 @@ async fn daemon_log_file_contains_structured_bt_lifecycle_events() {
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
 
-    request_native_shutdown(&client, rpc_port).await;
+    request_native_shutdown(&client, api_port).await;
     wait_for_child_exit_after_native_shutdown(&mut child).await;
 
     let entries = std::fs::read_to_string(&log_path)

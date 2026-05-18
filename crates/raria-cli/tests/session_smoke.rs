@@ -30,7 +30,10 @@ fn allocate_port() -> u16 {
     port
 }
 
-async fn wait_for_rpc_ready_with_child(port: u16, child: &mut ChildGuard) -> Result<(), String> {
+async fn wait_for_native_api_ready_with_child(
+    port: u16,
+    child: &mut ChildGuard,
+) -> Result<(), String> {
     let deadline = Instant::now() + Duration::from_secs(60);
     let client = reqwest::Client::new();
 
@@ -284,15 +287,15 @@ async fn wait_for_native_completed_task_count(
 fn spawn_daemon(
     download_dir: &Path,
     session_file: &Path,
-    rpc_port: u16,
+    api_port: u16,
     input_file: Option<&Path>,
 ) -> ChildGuard {
     let mut cmd = Command::new(cargo_bin("raria"));
     cmd.arg("daemon")
         .arg("-d")
         .arg(download_dir)
-        .arg("--rpc-port")
-        .arg(rpc_port.to_string())
+        .arg("--api-port")
+        .arg(api_port.to_string())
         .arg("--session-file")
         .arg(session_file)
         .stdout(Stdio::piped())
@@ -310,7 +313,7 @@ fn spawn_daemon(
 fn spawn_daemon_with_extra_args(
     download_dir: &Path,
     session_file: &Path,
-    rpc_port: u16,
+    api_port: u16,
     input_file: Option<&Path>,
     extra_args: &[&str],
 ) -> ChildGuard {
@@ -318,8 +321,8 @@ fn spawn_daemon_with_extra_args(
     cmd.arg("daemon")
         .arg("-d")
         .arg(download_dir)
-        .arg("--rpc-port")
-        .arg(rpc_port.to_string())
+        .arg("--api-port")
+        .arg(api_port.to_string())
         .arg("--session-file")
         .arg(session_file)
         .stdout(Stdio::piped())
@@ -343,16 +346,16 @@ async fn spawn_ready_daemon(
     input_file: Option<&Path>,
 ) -> (ChildGuard, u16) {
     for _ in 0..8 {
-        let rpc_port = allocate_port();
-        let mut child = spawn_daemon(download_dir, session_file, rpc_port, input_file);
-        match wait_for_rpc_ready_with_child(rpc_port, &mut child).await {
-            Ok(()) => return (child, rpc_port),
-            Err(message) if message.contains("failed to bind RPC server") => continue,
+        let api_port = allocate_port();
+        let mut child = spawn_daemon(download_dir, session_file, api_port, input_file);
+        match wait_for_native_api_ready_with_child(api_port, &mut child).await {
+            Ok(()) => return (child, api_port),
+            Err(message) if message.contains("failed to bind API server") => continue,
             Err(message) => panic!("{message}"),
         }
     }
 
-    panic!("failed to start daemon on a free RPC port after multiple attempts");
+    panic!("failed to start daemon on a free API port after multiple attempts");
 }
 
 async fn spawn_ready_daemon_with_args(
@@ -362,22 +365,22 @@ async fn spawn_ready_daemon_with_args(
     extra_args: &[&str],
 ) -> (ChildGuard, u16) {
     for _ in 0..8 {
-        let rpc_port = allocate_port();
+        let api_port = allocate_port();
         let mut child = spawn_daemon_with_extra_args(
             download_dir,
             session_file,
-            rpc_port,
+            api_port,
             input_file,
             extra_args,
         );
-        match wait_for_rpc_ready_with_child(rpc_port, &mut child).await {
-            Ok(()) => return (child, rpc_port),
-            Err(message) if message.contains("failed to bind RPC server") => continue,
+        match wait_for_native_api_ready_with_child(api_port, &mut child).await {
+            Ok(()) => return (child, api_port),
+            Err(message) if message.contains("failed to bind API server") => continue,
             Err(message) => panic!("{message}"),
         }
     }
 
-    panic!("failed to start daemon on a free RPC port after multiple attempts");
+    panic!("failed to start daemon on a free API port after multiple attempts");
 }
 
 async fn graceful_shutdown(port: u16, child: &mut ChildGuard) {
@@ -748,10 +751,10 @@ async fn daemon_loads_jobs_from_input_file_on_startup() {
     )
     .expect("write input file");
 
-    let (mut child, rpc_port) =
+    let (mut child, api_port) =
         spawn_ready_daemon(temp.path(), &session_file, Some(&input_file)).await;
 
-    let jobs = wait_for_native_task_count(rpc_port, 2).await;
+    let jobs = wait_for_native_task_count(api_port, 2).await;
 
     assert_eq!(
         jobs.len(),
@@ -766,7 +769,7 @@ async fn daemon_loads_jobs_from_input_file_on_startup() {
     uri_counts.sort_unstable();
     assert_eq!(uri_counts, vec![1, 2]);
 
-    graceful_shutdown(rpc_port, &mut child).await;
+    graceful_shutdown(api_port, &mut child).await;
 }
 
 #[tokio::test]
@@ -785,7 +788,7 @@ async fn daemon_conditional_get_skips_download_when_remote_is_not_modified() {
     let cached_path = temp.path().join("cached.bin");
     std::fs::write(&cached_path, b"cached-copy").expect("write cached copy");
 
-    let (mut child, rpc_port) = spawn_ready_daemon_with_args(
+    let (mut child, api_port) = spawn_ready_daemon_with_args(
         temp.path(),
         &session_file,
         None,
@@ -794,7 +797,7 @@ async fn daemon_conditional_get_skips_download_when_remote_is_not_modified() {
     .await;
 
     let task_id = create_native_task(
-        rpc_port,
+        api_port,
         temp.path(),
         format!("{}/cached.bin", server.uri()),
         "cached.bin",
@@ -802,13 +805,13 @@ async fn daemon_conditional_get_skips_download_when_remote_is_not_modified() {
     )
     .await;
 
-    wait_for_native_task_lifecycle(rpc_port, &task_id, "completed").await;
+    wait_for_native_task_lifecycle(api_port, &task_id, "completed").await;
     assert_eq!(
         std::fs::read(&cached_path).expect("read cached file"),
         b"cached-copy"
     );
 
-    graceful_shutdown(rpc_port, &mut child).await;
+    graceful_shutdown(api_port, &mut child).await;
 }
 
 #[tokio::test]
@@ -833,10 +836,10 @@ async fn daemon_rejects_checksum_mismatch_before_marking_job_complete() {
 
     let temp = tempdir().expect("tempdir");
     let session_file = temp.path().join("checksum.session.redb");
-    let (mut child, rpc_port) = spawn_ready_daemon(temp.path(), &session_file, None).await;
+    let (mut child, api_port) = spawn_ready_daemon(temp.path(), &session_file, None).await;
 
     let task_id = create_native_task_with_checksum(
-        rpc_port,
+        api_port,
         temp.path(),
         format!("{}/checksum.bin", server.uri()),
         "checksum.bin",
@@ -844,7 +847,7 @@ async fn daemon_rejects_checksum_mismatch_before_marking_job_complete() {
     )
     .await;
 
-    let status_resp = wait_for_native_task_lifecycle(rpc_port, &task_id, "failed").await;
+    let status_resp = wait_for_native_task_lifecycle(api_port, &task_id, "failed").await;
     let error_message = status_resp["errorMessage"].as_str().expect("error message");
     assert!(
         error_message.contains("checksum"),
@@ -857,7 +860,7 @@ async fn daemon_rejects_checksum_mismatch_before_marking_job_complete() {
         "checksum mismatch should remove the invalid output file"
     );
 
-    graceful_shutdown(rpc_port, &mut child).await;
+    graceful_shutdown(api_port, &mut child).await;
 }
 
 #[tokio::test]
@@ -886,7 +889,7 @@ async fn daemon_periodically_saves_session_when_interval_is_enabled() {
 
     let temp = tempdir().expect("tempdir");
     let session_file = temp.path().join("periodic.session.redb");
-    let (mut child, rpc_port) = spawn_ready_daemon_with_args(
+    let (mut child, api_port) = spawn_ready_daemon_with_args(
         temp.path(),
         &session_file,
         None,
@@ -895,14 +898,14 @@ async fn daemon_periodically_saves_session_when_interval_is_enabled() {
     .await;
 
     let task_id = create_native_task(
-        rpc_port,
+        api_port,
         temp.path(),
         format!("{}/periodic.bin", server.uri()),
         "periodic.bin",
         1,
     )
     .await;
-    wait_for_native_task_any_lifecycle(rpc_port, &task_id, &["queued", "running", "completed"])
+    wait_for_native_task_any_lifecycle(api_port, &task_id, &["queued", "running", "completed"])
         .await;
 
     let save_deadline = Instant::now() + Duration::from_secs(10);
@@ -923,7 +926,7 @@ async fn daemon_periodically_saves_session_when_interval_is_enabled() {
         tokio::time::sleep(Duration::from_millis(200)).await;
     }
 
-    graceful_shutdown(rpc_port, &mut child).await;
+    graceful_shutdown(api_port, &mut child).await;
 }
 
 #[tokio::test]
@@ -931,7 +934,7 @@ async fn daemon_saves_session_when_native_save_session_is_called() {
     let server = MockServer::start().await;
 
     Mock::given(method("HEAD"))
-        .and(path("/rpc-save.bin"))
+        .and(path("/native-save.bin"))
         .respond_with(
             ResponseTemplate::new(200)
                 .insert_header("content-length", "262144")
@@ -941,7 +944,7 @@ async fn daemon_saves_session_when_native_save_session_is_called() {
         .await;
 
     Mock::given(method("GET"))
-        .and(path("/rpc-save.bin"))
+        .and(path("/native-save.bin"))
         .respond_with(
             ResponseTemplate::new(200)
                 .set_delay(Duration::from_secs(3))
@@ -951,21 +954,21 @@ async fn daemon_saves_session_when_native_save_session_is_called() {
         .await;
 
     let temp = tempdir().expect("tempdir");
-    let session_file = temp.path().join("rpc-save.session.redb");
-    let (mut child, rpc_port) = spawn_ready_daemon(temp.path(), &session_file, None).await;
+    let session_file = temp.path().join("native-save.session.redb");
+    let (mut child, api_port) = spawn_ready_daemon(temp.path(), &session_file, None).await;
 
     let task_id = create_native_task(
-        rpc_port,
+        api_port,
         temp.path(),
-        format!("{}/rpc-save.bin", server.uri()),
-        "rpc-save.bin",
+        format!("{}/native-save.bin", server.uri()),
+        "native-save.bin",
         1,
     )
     .await;
-    wait_for_native_task_any_lifecycle(rpc_port, &task_id, &["queued", "running", "completed"])
+    wait_for_native_task_any_lifecycle(api_port, &task_id, &["queued", "running", "completed"])
         .await;
 
-    let save_resp = native_post(rpc_port, "/api/v1/session/save").await;
+    let save_resp = native_post(api_port, "/api/v1/session/save").await;
     assert_eq!(save_resp["status"], "saved");
     assert_eq!(save_resp["sessionPath"].as_str(), session_file.to_str());
     assert!(save_resp.get("jsonrpc").is_none());
@@ -988,7 +991,7 @@ async fn daemon_saves_session_when_native_save_session_is_called() {
         tokio::time::sleep(Duration::from_millis(200)).await;
     }
 
-    graceful_shutdown(rpc_port, &mut child).await;
+    graceful_shutdown(api_port, &mut child).await;
 }
 
 #[cfg(unix)]
@@ -1018,17 +1021,17 @@ async fn daemon_saves_session_when_sigusr1_is_received() {
 
     let temp = tempdir().expect("tempdir");
     let session_file = temp.path().join("sigusr1.session.redb");
-    let (mut child, rpc_port) = spawn_ready_daemon(temp.path(), &session_file, None).await;
+    let (mut child, api_port) = spawn_ready_daemon(temp.path(), &session_file, None).await;
 
     let task_id = create_native_task(
-        rpc_port,
+        api_port,
         temp.path(),
         format!("{}/sigusr1.bin", server.uri()),
         "sigusr1.bin",
         1,
     )
     .await;
-    wait_for_native_task_any_lifecycle(rpc_port, &task_id, &["queued", "running", "completed"])
+    wait_for_native_task_any_lifecycle(api_port, &task_id, &["queued", "running", "completed"])
         .await;
 
     let daemon_pid = child.child.id() as i32;
@@ -1056,7 +1059,7 @@ async fn daemon_saves_session_when_sigusr1_is_received() {
         tokio::time::sleep(Duration::from_millis(200)).await;
     }
 
-    graceful_shutdown(rpc_port, &mut child).await;
+    graceful_shutdown(api_port, &mut child).await;
 }
 
 #[cfg(unix)]
@@ -1085,7 +1088,7 @@ async fn daemon_sigterm_shuts_down_promptly_while_throttled() {
 
     let temp = tempdir().expect("tempdir");
     let session_file = temp.path().join("sigterm-throttled.session.redb");
-    let (mut child, rpc_port) = spawn_ready_daemon_with_args(
+    let (mut child, api_port) = spawn_ready_daemon_with_args(
         temp.path(),
         &session_file,
         None,
@@ -1094,14 +1097,14 @@ async fn daemon_sigterm_shuts_down_promptly_while_throttled() {
     .await;
 
     let task_id = create_native_task(
-        rpc_port,
+        api_port,
         temp.path(),
         format!("{}/sigterm-throttled.bin", server.uri()),
         "sigterm-throttled.bin",
         1,
     )
     .await;
-    wait_for_native_task_progress(rpc_port, &task_id, 1).await;
+    wait_for_native_task_progress(api_port, &task_id, 1).await;
 
     nix::sys::signal::kill(
         nix::unistd::Pid::from_raw(child.child.id() as i32),
@@ -1162,7 +1165,7 @@ async fn daemon_cli_headers_apply_to_input_file_downloads() {
     let input_file = temp.path().join("uris.txt");
     std::fs::write(&input_file, format!("{}/daemon-header.bin\n", server.uri())).unwrap();
 
-    let (mut child, rpc_port) = spawn_ready_daemon_with_args(
+    let (mut child, api_port) = spawn_ready_daemon_with_args(
         temp.path(),
         &session_file,
         Some(&input_file),
@@ -1170,14 +1173,14 @@ async fn daemon_cli_headers_apply_to_input_file_downloads() {
     )
     .await;
 
-    wait_for_native_completed_task_count(rpc_port, 1).await;
+    wait_for_native_completed_task_count(api_port, 1).await;
 
     assert_eq!(
         std::fs::read(temp.path().join("daemon-header.bin")).expect("read downloaded file"),
         b"done"
     );
 
-    graceful_shutdown(rpc_port, &mut child).await;
+    graceful_shutdown(api_port, &mut child).await;
 }
 
 #[tokio::test]
@@ -1218,17 +1221,17 @@ async fn daemon_input_file_per_uri_headers_apply_to_downloads() {
     )
     .unwrap();
 
-    let (mut child, rpc_port) =
+    let (mut child, api_port) =
         spawn_ready_daemon(temp.path(), &session_file, Some(&input_file)).await;
 
-    wait_for_native_completed_task_count(rpc_port, 1).await;
+    wait_for_native_completed_task_count(api_port, 1).await;
 
     assert_eq!(
         std::fs::read(temp.path().join("input-header.bin")).expect("read downloaded file"),
         b"input"
     );
 
-    graceful_shutdown(rpc_port, &mut child).await;
+    graceful_shutdown(api_port, &mut child).await;
 }
 
 #[tokio::test]
@@ -1275,7 +1278,7 @@ async fn daemon_cli_basic_auth_applies_to_input_file_downloads() {
     let input_file = temp.path().join("uris.txt");
     std::fs::write(&input_file, format!("{}/daemon-auth.bin\n", server.uri())).unwrap();
 
-    let (mut child, rpc_port) = spawn_ready_daemon_with_args(
+    let (mut child, api_port) = spawn_ready_daemon_with_args(
         temp.path(),
         &session_file,
         Some(&input_file),
@@ -1283,14 +1286,14 @@ async fn daemon_cli_basic_auth_applies_to_input_file_downloads() {
     )
     .await;
 
-    wait_for_native_completed_task_count(rpc_port, 1).await;
+    wait_for_native_completed_task_count(api_port, 1).await;
 
     assert_eq!(
         std::fs::read(temp.path().join("daemon-auth.bin")).expect("read downloaded file"),
         b"auth"
     );
 
-    graceful_shutdown(rpc_port, &mut child).await;
+    graceful_shutdown(api_port, &mut child).await;
 }
 
 #[cfg(unix)]
@@ -1338,7 +1341,7 @@ async fn daemon_runs_on_task_start_hook() {
         std::fs::set_permissions(&script, perms).unwrap();
     }
 
-    let (mut child, rpc_port) = spawn_ready_daemon_with_args(
+    let (mut child, api_port) = spawn_ready_daemon_with_args(
         temp.path(),
         &session_file,
         None,
@@ -1347,7 +1350,7 @@ async fn daemon_runs_on_task_start_hook() {
     .await;
 
     let task_id = create_native_task(
-        rpc_port,
+        api_port,
         temp.path(),
         format!("{}/hook-start.bin", server.uri()),
         "hook-start.bin",
@@ -1369,7 +1372,7 @@ async fn daemon_runs_on_task_start_hook() {
     assert!(hook_data.contains("|1|"));
     assert!(hook_data.contains("hook-start.bin"));
 
-    graceful_shutdown(rpc_port, &mut child).await;
+    graceful_shutdown(api_port, &mut child).await;
 }
 
 #[cfg(unix)]
@@ -1413,7 +1416,7 @@ async fn daemon_runs_on_task_complete_hook() {
         std::fs::set_permissions(&script, perms).unwrap();
     }
 
-    let (mut child, rpc_port) = spawn_ready_daemon_with_args(
+    let (mut child, api_port) = spawn_ready_daemon_with_args(
         temp.path(),
         &session_file,
         None,
@@ -1422,7 +1425,7 @@ async fn daemon_runs_on_task_complete_hook() {
     .await;
 
     let task_id = create_native_task(
-        rpc_port,
+        api_port,
         temp.path(),
         format!("{}/hook-complete.bin", server.uri()),
         "hook-complete.bin",
@@ -1432,7 +1435,7 @@ async fn daemon_runs_on_task_complete_hook() {
 
     let deadline = Instant::now() + Duration::from_secs(20);
     loop {
-        let task = native_task(rpc_port, &task_id).await;
+        let task = native_task(api_port, &task_id).await;
         let lifecycle = task["lifecycle"].as_str().expect("native lifecycle");
         if lifecycle == "completed" && hook_out.is_file() {
             break;
@@ -1450,7 +1453,7 @@ async fn daemon_runs_on_task_complete_hook() {
     assert!(hook_data.contains("|1|"));
     assert!(hook_data.contains("hook-complete.bin"));
 
-    graceful_shutdown(rpc_port, &mut child).await;
+    graceful_shutdown(api_port, &mut child).await;
 }
 
 #[cfg(unix)]
@@ -1494,7 +1497,7 @@ async fn daemon_runs_on_task_fail_hook() {
         std::fs::set_permissions(&script, perms).unwrap();
     }
 
-    let (mut child, rpc_port) = spawn_ready_daemon_with_args(
+    let (mut child, api_port) = spawn_ready_daemon_with_args(
         temp.path(),
         &session_file,
         None,
@@ -1510,7 +1513,7 @@ async fn daemon_runs_on_task_fail_hook() {
     .await;
 
     let task_id = create_native_task(
-        rpc_port,
+        api_port,
         temp.path(),
         format!("{}/hook-error.bin", server.uri()),
         "hook-error.bin",
@@ -1520,7 +1523,7 @@ async fn daemon_runs_on_task_fail_hook() {
 
     let deadline = Instant::now() + Duration::from_secs(20);
     loop {
-        let task = native_task(rpc_port, &task_id).await;
+        let task = native_task(api_port, &task_id).await;
         let lifecycle = task["lifecycle"].as_str().expect("native lifecycle");
         if lifecycle == "failed" && hook_out.is_file() {
             break;
@@ -1537,7 +1540,7 @@ async fn daemon_runs_on_task_fail_hook() {
     assert!(hook_data.contains("|1|"));
     assert!(hook_data.contains("hook-error.bin"));
 
-    graceful_shutdown(rpc_port, &mut child).await;
+    graceful_shutdown(api_port, &mut child).await;
 }
 
 #[tokio::test]
@@ -1577,10 +1580,10 @@ async fn daemon_fails_over_to_next_mirror_when_first_mirror_fails() {
 
     let temp = tempdir().expect("tempdir");
     let session_file = temp.path().join("mirror.session.redb");
-    let (mut child, rpc_port) = spawn_ready_daemon(temp.path(), &session_file, None).await;
+    let (mut child, api_port) = spawn_ready_daemon(temp.path(), &session_file, None).await;
 
     let task_id = create_native_task_with_sources(
-        rpc_port,
+        api_port,
         temp.path(),
         vec![
             format!("{}/mirror.bin", primary.uri()),
@@ -1591,11 +1594,11 @@ async fn daemon_fails_over_to_next_mirror_when_first_mirror_fails() {
     )
     .await;
 
-    wait_for_native_task_lifecycle(rpc_port, &task_id, "completed").await;
+    wait_for_native_task_lifecycle(api_port, &task_id, "completed").await;
 
     assert_eq!(
         std::fs::read(temp.path().join("mirror.bin")).unwrap(),
         b"pass"
     );
-    graceful_shutdown(rpc_port, &mut child).await;
+    graceful_shutdown(api_port, &mut child).await;
 }
