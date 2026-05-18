@@ -1600,7 +1600,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn native_events_websocket_streams_raria_event_envelopes() {
+    async fn native_events_websocket_ignores_legacy_download_event_bus() {
         let engine = Arc::new(Engine::new(GlobalConfig::default()));
         let summary = engine
             .add_native_task(&AddUriSpec {
@@ -1647,25 +1647,18 @@ mod tests {
             speed: 64,
         });
 
-        let msg = tokio::time::timeout(std::time::Duration::from_secs(2), ws.next())
-            .await
-            .expect("event timeout")
-            .expect("event frame")
-            .expect("valid websocket frame");
-        let text = msg.into_text().expect("text frame");
-        let json: serde_json::Value = serde_json::from_str(&text).expect("event json");
-
-        assert_eq!(json["type"], "task.progress");
-        assert_eq!(json["taskId"], summary.task_id.as_str());
-        assert_eq!(json["data"]["completedBytes"], 128);
-        assert!(json.get("jsonrpc").is_none());
-        assert!(json.get("method").is_none());
+        let legacy_frame =
+            tokio::time::timeout(std::time::Duration::from_millis(250), ws.next()).await;
+        assert!(
+            legacy_frame.is_err(),
+            "native event stream must not forward legacy DownloadEvent bus messages"
+        );
 
         cancel.cancel();
     }
 
     #[tokio::test]
-    async fn native_events_websocket_prefers_native_event_bus() {
+    async fn native_events_websocket_streams_native_source_failures() {
         let engine = Arc::new(Engine::new(GlobalConfig::default()));
         let summary = engine
             .add_native_task(&AddUriSpec {
@@ -1696,12 +1689,6 @@ mod tests {
             .await
             .expect("connect native events");
 
-        engine.event_bus.publish(DownloadEvent::Progress {
-            gid: Gid::from_raw(77),
-            downloaded: 64,
-            total: Some(256),
-            speed: 32,
-        });
         engine
             .source_failed_native_task(
                 &summary.task_id,
@@ -1722,6 +1709,9 @@ mod tests {
         assert_eq!(json["taskId"], summary.task_id.as_str());
         assert_eq!(json["data"]["code"], "source_failed");
         assert_eq!(json["data"]["message"], "transient error: timeout");
+        assert!(json.get("jsonrpc").is_none());
+        assert!(json.get("method").is_none());
+        assert!(json.get("gid").is_none());
 
         cancel.cancel();
     }

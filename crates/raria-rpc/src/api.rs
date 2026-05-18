@@ -13,10 +13,9 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use raria_core::engine::{AddUriSpec, Engine};
 use raria_core::native::{
-    NativeEvent, NativeEventData, NativeEventType, NativePeerSnapshot, NativeTaskFile,
-    NativeTaskSummary, NativeTrackerSnapshot, TaskId, TaskSource,
+    NativePeerSnapshot, NativeTaskFile, NativeTaskSummary, NativeTrackerSnapshot, TaskId,
+    TaskSource,
 };
-use raria_core::progress::DownloadEvent;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::net::SocketAddr;
@@ -226,8 +225,6 @@ async fn handle_events_ws(
 
 async fn handle_events_client(mut socket: WebSocket, state: NativeApiState) {
     let mut native_events = state.engine.native_event_bus.subscribe();
-    let mut events = state.engine.event_bus.subscribe();
-    let mut received_native_event = false;
     let mut sequence = 1u64;
 
     loop {
@@ -235,31 +232,23 @@ async fn handle_events_client(mut socket: WebSocket, state: NativeApiState) {
             Ok(event) => {
                 let mut event = event;
                 event.sequence = sequence;
-                received_native_event = true;
-                Some(event)
+                event
             }
             Err(tokio::sync::broadcast::error::TryRecvError::Empty) => {
-                tokio::select! {
-                    biased;
-                    Ok(event) = native_events.recv() => {
+                match native_events.recv().await {
+                    Ok(event) => {
                         let mut event = event;
                         event.sequence = sequence;
-                        received_native_event = true;
-                        Some(event)
+                        event
                     }
-                    Ok(event) = events.recv(), if !received_native_event => {
-                        download_event_to_native(&state.engine, sequence, event)
-                    },
-                    else => break,
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                 }
             }
             Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_)) => continue,
             Err(tokio::sync::broadcast::error::TryRecvError::Closed) => break,
         };
 
-        let Some(native_event) = native_event else {
-            continue;
-        };
         sequence += 1;
 
         let Ok(text) = serde_json::to_string(&native_event) else {
@@ -268,79 +257,6 @@ async fn handle_events_client(mut socket: WebSocket, state: NativeApiState) {
         if socket.send(WsMessage::Text(text)).await.is_err() {
             break;
         }
-    }
-}
-
-fn download_event_to_native(
-    engine: &Engine,
-    sequence: u64,
-    event: DownloadEvent,
-) -> Option<NativeEvent> {
-    match event {
-        DownloadEvent::Started { gid } => Some(NativeEvent::new(
-            sequence,
-            NativeEventType::TaskStarted,
-            Some(task_id_for_event(engine, gid)?),
-            NativeEventData::Empty,
-        )),
-        DownloadEvent::Paused { gid } => Some(NativeEvent::new(
-            sequence,
-            NativeEventType::TaskPaused,
-            Some(task_id_for_event(engine, gid)?),
-            NativeEventData::Empty,
-        )),
-        DownloadEvent::Complete { gid } => Some(NativeEvent::new(
-            sequence,
-            NativeEventType::TaskCompleted,
-            Some(task_id_for_event(engine, gid)?),
-            NativeEventData::Empty,
-        )),
-        DownloadEvent::Error { gid, message } => Some(NativeEvent::new(
-            sequence,
-            NativeEventType::TaskFailed,
-            Some(task_id_for_event(engine, gid)?),
-            NativeEventData::Error {
-                code: "task_failed".to_string(),
-                message,
-            },
-        )),
-        DownloadEvent::Progress {
-            gid,
-            downloaded,
-            total,
-            speed,
-        } => Some(NativeEvent::new(
-            sequence,
-            NativeEventType::TaskProgress,
-            Some(task_id_for_event(engine, gid)?),
-            NativeEventData::Progress {
-                completed_bytes: downloaded,
-                total_bytes: total,
-                download_bytes_per_second: speed,
-            },
-        )),
-        DownloadEvent::SourceFailed { gid, message, .. } => Some(NativeEvent::new(
-            sequence,
-            NativeEventType::TaskSourceFailed,
-            Some(task_id_for_event(engine, gid)?),
-            NativeEventData::Error {
-                code: "source_failed".to_string(),
-                message,
-            },
-        )),
-        DownloadEvent::Stopped { gid } => Some(NativeEvent::new(
-            sequence,
-            NativeEventType::TaskRemoved,
-            Some(task_id_for_event(engine, gid)?),
-            NativeEventData::Empty,
-        )),
-        DownloadEvent::BtDownloadComplete { gid } => Some(NativeEvent::new(
-            sequence,
-            NativeEventType::TaskCompleted,
-            Some(task_id_for_event(engine, gid)?),
-            NativeEventData::Empty,
-        )),
-        DownloadEvent::StatusChanged { .. } => None,
     }
 }
 
@@ -1208,8 +1124,4 @@ fn parse_file_id(id: &str) -> Result<usize, NativeApiError> {
     id.strip_prefix("file_")
         .and_then(|raw| raw.parse::<usize>().ok())
         .ok_or(NativeApiError::InvalidRequest)
-}
-
-fn task_id_for_event(engine: &Engine, gid: raria_core::job::Gid) -> Option<TaskId> {
-    engine.task_id_for_gid(gid)
 }

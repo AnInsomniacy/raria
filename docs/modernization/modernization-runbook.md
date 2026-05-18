@@ -205,19 +205,35 @@ Next: Checkpoint 100.
 
 ### Checkpoint 100: Native Event Stream Cleanup
 
-Status: next
+Status: complete
 
 Scope: make `/api/v1/events` use raria-native event envelopes only, remove legacy JSON-RPC event fallback from public behavior, and keep useful lifecycle/progress/source/BT event coverage.
 
-Files: `crates/raria-core/src/native.rs`, `crates/raria-core/src/progress.rs`, `crates/raria-rpc/src/api.rs`, `crates/raria-rpc/src/events.rs`, `crates/raria-rpc/tests/native_api.rs`, `crates/raria-cli/tests/native_api_smoke.rs`
+Files: `crates/raria-rpc/src/api.rs`, `crates/raria-rpc/tests/native_api.rs`
 
-Validation: focused native WebSocket event tests, then `cargo test -p raria-rpc --test native_api`, `cargo test -p raria-cli --test native_api_smoke`, and `cargo check --workspace --locked`.
+Validation: `cargo test -p raria-rpc --test native_api native_events_websocket_ignores_legacy_download_event_bus` failed before implementation and passed after the fallback removal. `cargo test -p raria-rpc --test native_api native_events_websocket_streams_native_source_failures` passed. `cargo test -p raria-rpc --test native_api native_events_websocket_streams_native_lifecycle_events` passed. `cargo test -p raria-rpc --test native_api` passed with 33 tests. `cargo test -p raria-cli --test native_api_smoke` passed with 27 tests. `cargo check --workspace --locked` passed. `cargo fmt --all --check` passed. `git diff --check` passed.
 
-Evidence target: `/api/v1/events` emits typed native event records for lifecycle, progress, source failure, integrity failure, BT metadata, and BT seeding without `jsonrpc`, aria2 method names, `gid`, or compatibility notification envelopes.
+Evidence: `/api/v1/events` now subscribes only to the native event bus. The legacy `DownloadEvent` conversion fallback and its GID-to-task bridge helper were removed from the native API. Native WebSocket tests prove legacy `DownloadEvent` bus messages are ignored, while native lifecycle and source failure events still stream with typed raria event records and without `jsonrpc`, aria2 method names, or `gid` fields.
 
 Remaining after completion: native task mutation cleanup.
 
 Next: Checkpoint 101.
+
+### Checkpoint 101: Native Task Mutation Cleanup
+
+Status: next
+
+Scope: finish native mutation routes for task transfer policy, queue position, sources, files, trackers, and seeding policy; remove any remaining compatibility assertions from these public task mutation flows after equivalent native tests exist.
+
+Files: `crates/raria-core/src/engine.rs`, `crates/raria-core/src/native.rs`, `crates/raria-rpc/src/api.rs`, `crates/raria-rpc/tests/native_api.rs`, `crates/raria-cli/tests/native_api_smoke.rs`
+
+Validation: focused mutation tests first, then `cargo test -p raria-rpc --test native_api`, `cargo test -p raria-cli --test native_api_smoke`, and `cargo check --workspace --locked`.
+
+Evidence target: native task mutation endpoints operate only on `TaskId` resources and raria-native field names. Mutation responses and tests do not expose `gid`, aria2 option names, JSON-RPC method names, or compatibility envelopes.
+
+Remaining after completion: native API route shape and documentation cleanup.
+
+Next: Checkpoint 102.
 
 ## Validation Contract
 
