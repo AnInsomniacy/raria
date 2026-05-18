@@ -33,8 +33,6 @@ pub mod cancel;
 pub mod checksum;
 /// Global configuration struct and defaults.
 pub mod config;
-/// Configuration file parser (aria2-format key=value).
-pub mod config_file;
 /// Central download engine — job lifecycle coordinator.
 pub mod engine;
 /// Pre-allocation strategies for download files (fallocate / trunc / none).

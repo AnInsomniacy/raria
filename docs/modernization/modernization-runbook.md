@@ -4,11 +4,11 @@ This file is the authoritative recovery and execution document for completing ra
 
 ## Current State
 
-The current branch contains the committed modernization stream through Checkpoint 109, with Checkpoint 110 recorded in this runbook. The tree compiles with `cargo check --workspace --locked`, `cargo fmt --all --check` passes, and `git diff --check` reports no whitespace errors. Recent work touched the native API, daemon runtime, BitTorrent runtime, native task model, native configuration, Metalink parsing and dispatch, FTP backend, native API tests, daemon smoke tests, and modernization docs.
+The current branch contains the committed modernization stream through Checkpoint 110, with Checkpoint 111 recorded in this runbook. The tree compiles with `cargo check --workspace --locked`, `cargo fmt --all --check` passes, and `git diff --check` reports no whitespace errors. Recent work touched the native API, daemon runtime, BitTorrent runtime, native task model, native configuration, Metalink parsing and dispatch, FTP backend, native API tests, daemon smoke tests, and modernization docs.
 
 The project is no longer a skeleton. It has working HTTP/HTTPS, FTP/FTPS, SFTP, Metalink, BitTorrent, segmented downloads, retry, resume, native API routes, native WebSocket events, redb-backed persistence, structured logs, and many daemon smoke tests. The work is not complete because major internals and tests still depend on aria2-shaped JSON-RPC, `Gid`, `Job`, compatibility terminology, and migration adapters.
 
-The most recent completed checkpoint is Checkpoint 110, BitTorrent Legacy Encryption Surface Removal. The next checkpoint is Checkpoint 111, Native CLI And Config Surface Cleanup. Its purpose is to continue removing aria2-shaped CLI and legacy config surfaces once native tests cover the useful behavior.
+The most recent completed checkpoint is Checkpoint 111, Legacy Key-Value Config Parser Removal. The next checkpoint is Checkpoint 112, Native Identity And Persistence Cleanup. Its purpose is to continue replacing `Gid`, migration bridge IDs, and legacy persistence fallback with native task ownership.
 
 Current legacy-surface evidence includes remaining references to JSON-RPC methods, `Gid`, `gid`, `task_migration_`, `parity`, `compatibility`, and `legacy` outside the migrated session smoke tests. This is expected during the transition, but it is not acceptable at completion.
 
@@ -58,7 +58,7 @@ Protocol implementation should use mature Rust libraries already chosen by the p
 | Public surface | Native event stream | `/api/v1/events` emits typed raria event names and payloads without aria2 notification envelopes | `NativeEvent`, native event bus, daemon native event smoke tests; legacy event fallback still exists | Partial | CP100 |
 | Public surface | Native CLI | CLI commands and options use raria names and native config/API concepts | `crates/raria-cli/src/main.rs`, native `--api-port` and native hook names; legacy RPC and BT crypto flags removed; retry help text no longer references aria2; many aria2-shaped options remain | Gap | CP111 |
 | Public surface | User documentation | Docs describe raria-native behavior only, with no compatibility claims except historical migration notes | README partially updated; old modernization docs and some crate docs still use compatibility wording | Partial | CP107 |
-| Configuration | Strict `raria.toml` | Native sections for daemon, API, downloads, network, HTTP, FTP, SFTP, BitTorrent, Metalink, storage, logging, hooks, and security | `crates/raria-core/src/native_config.rs`; hooks are native TOML; strict legacy parser rejects JSON-RPC keys; old parser remains for non-RPC migration debt | Partial | CP109 |
+| Configuration | Strict `raria.toml` | Native sections for daemon, API, downloads, network, HTTP, FTP, SFTP, BitTorrent, Metalink, storage, logging, hooks, and security | `crates/raria-core/src/native_config.rs`; hooks are native TOML; old aria2-style key-value parser deleted | Partial | CP111 |
 | Persistence | Versioned native store | Versioned task, source, file, segment, piece, tracker, event cursor, config, migration ledger, and external BT state references | Native metadata/task rows and native segments exist; `Job` rows and `Gid` fallback remain | Partial | CP109-CP113 |
 | Identity | Opaque task IDs | Public and internal task ownership use opaque `TaskId`, not aria2 GID semantics | `TaskId` exists; `Gid`, `task_migration_`, runtime bridge IDs remain | Partial | CP108-CP112 |
 | Core runtime | Native task model | Protocol-neutral task graph with files, sources, segments, pieces, peers, trackers, policy, timestamps, and errors | Native projections exist; `Job` drives runtime state | Partial | CP108 |
@@ -108,7 +108,7 @@ Protocol implementation should use mature Rust libraries already chosen by the p
 | aria2 method names | `aria2.addUri`, `aria2.tellStatus`, `aria2.shutdown`, `aria2.saveSession`, old RPC tests | Encourages compatibility instead of native workflow | Session, daemon, logging, and protocol smoke tests use `/api/v1` only | CP97-CP103 |
 | `Gid` and `task_migration_` | `crates/raria-core/src/job.rs`, `engine.rs`, `scheduler.rs`, native index bridge | Prevents native task ownership and schema cleanup | Engine, scheduler, cancellation, events, logs, and persistence own `TaskId` | CP108-CP112 |
 | `Job` runtime model | `Job` drives persisted runtime state and projections | Native task graph remains a facade | Native `Task` rows and in-memory state replace `Job` | CP108 |
-| legacy config parser | `crates/raria-core/src/config_file.rs`, `GlobalConfig` aria2 names | Keeps old config semantics alive | CLI and tests use strict `raria.toml`; strict mode rejects JSON-RPC keys; remaining parser removed or private test fixture only | CP109 |
+| legacy config parser | Historical `crates/raria-core/src/config_file.rs` module | Kept old config semantics alive | Deleted; runtime config uses strict native `raria.toml` | CP111 |
 | parity tests | `rpc_parity.rs`, `ws_parity.rs`, `multicall_parity.rs`, `options_parity.rs`, `ws_push.rs` | Tests the wrong product contract | Useful behavior moved to native contract tests, pure compatibility tests deleted | CP139-CP142 |
 | legacy event projection | `crates/raria-rpc/src/events.rs`, fallback from `DownloadEvent` to native | Event model remains partly aria2-shaped | Native event bus is sole daemon stream | CP100 |
 | legacy persistence fallback | old `Gid` segment rows, `NativeTaskRow::from_job_for_migration` | Blocks schema finalization | Migration fixtures prove cutover; old rows removed | CP112 |
@@ -378,6 +378,22 @@ Evidence: `raria daemon` no longer accepts `--bt-require-crypto` or `--bt-min-cr
 Remaining after completion: continue replacing aria2-shaped public CLI options and legacy config parser behavior after equivalent native coverage exists.
 
 Next: Checkpoint 111.
+
+### Checkpoint 111: Legacy Key-Value Config Parser Removal
+
+Status: complete
+
+Scope: delete the aria2-style key-value config parser and its legacy tests after confirming runtime configuration uses strict native `raria.toml`.
+
+Files: `crates/raria-core/src/config_file.rs`, `crates/raria-core/src/lib.rs`, `crates/raria-core/tests/island_wiring.rs`, `docs/modernization/modernization-runbook.md`
+
+Validation: `cargo test -p raria-core conf_path_overrides_defaults` passed before deletion and returned no matching tests after the old parser tests were removed. `cargo test -p raria-core --test island_wiring` passed with 4 native wiring tests. `cargo test -p raria-core --test native_config` passed with 8 tests. `cargo check --workspace --locked` passed. `cargo fmt --all --check` passed. `git diff --check` passed.
+
+Evidence: `raria-core` no longer exports `config_file`. The aria2-style key-value parser module was deleted. Remaining `island_wiring` tests no longer import or exercise compatibility parsing, and native configuration coverage continues to prove `raria.toml` rejects legacy field names while converting native sections into runtime configuration.
+
+Remaining after completion: remove remaining aria2-shaped CLI option names and continue native identity and persistence cleanup.
+
+Next: Checkpoint 112.
 
 ## Validation Contract
 
