@@ -1810,16 +1810,23 @@ impl Engine {
             if let Err(e) = store.put_job(job) {
                 error!(gid = %job.gid, error = %e, "failed to persist job");
             }
+            let row = NativeTaskRow::from_job_for_migration(job);
+            if let Err(e) = store.put_native_task(&row) {
+                error!(
+                    gid = %job.gid,
+                    task_id = %job.task_id.as_str(),
+                    error = %e,
+                    "failed to persist native task row"
+                );
+            }
         }
     }
 
     /// Look up a job by GID and persist it.
     fn persist_job_by_gid(&self, gid: Gid) {
-        if let Some(ref store) = self.store {
+        if self.store.is_some() {
             if let Some(job) = self.registry.get(gid) {
-                if let Err(e) = store.put_job(&job) {
-                    error!(%gid, error = %e, "failed to persist job");
-                }
+                self.persist_job(&job);
             }
         }
     }
@@ -3061,32 +3068,64 @@ mod tests {
     }
 
     #[test]
+    fn engine_persists_native_task_row_on_add_uri() {
+        let (engine, _dir) = engine_with_store();
+        let handle = engine.add_uri(&default_spec()).unwrap();
+        let task_id = engine.task_id_for_gid(handle.gid).expect("task id");
+
+        let store = engine.store.as_ref().unwrap();
+        let row = store
+            .get_native_task(&task_id)
+            .unwrap()
+            .expect("native task row");
+
+        assert_eq!(row.task_id, task_id);
+        assert_eq!(row.runtime_bridge_id, Some(handle.gid.as_raw()));
+        assert_eq!(row.lifecycle, crate::native::TaskLifecycle::Queued);
+        assert_eq!(row.sources, vec!["https://example.com/file.zip"]);
+        assert_eq!(row.output_path, PathBuf::from("/tmp/downloads/file.zip"));
+    }
+
+    #[test]
     fn engine_persists_on_activate() {
         let (engine, _dir) = engine_with_store();
         let handle = engine.add_uri(&default_spec()).unwrap();
+        let task_id = engine.task_id_for_gid(handle.gid).expect("task id");
         engine.activate_job(handle.gid).unwrap();
 
         let store = engine.store.as_ref().unwrap();
         let persisted = store.get_job(handle.gid).unwrap().unwrap();
         assert_eq!(persisted.status, Status::Active);
+        let row = store
+            .get_native_task(&task_id)
+            .unwrap()
+            .expect("native task row");
+        assert_eq!(row.lifecycle, crate::native::TaskLifecycle::Running);
     }
 
     #[test]
     fn engine_persists_on_complete() {
         let (engine, _dir) = engine_with_store();
         let handle = engine.add_uri(&default_spec()).unwrap();
+        let task_id = engine.task_id_for_gid(handle.gid).expect("task id");
         engine.activate_job(handle.gid).unwrap();
         engine.complete_job(handle.gid).unwrap();
 
         let store = engine.store.as_ref().unwrap();
         let persisted = store.get_job(handle.gid).unwrap().unwrap();
         assert_eq!(persisted.status, Status::Complete);
+        let row = store
+            .get_native_task(&task_id)
+            .unwrap()
+            .expect("native task row");
+        assert_eq!(row.lifecycle, crate::native::TaskLifecycle::Completed);
     }
 
     #[test]
     fn engine_persists_on_fail() {
         let (engine, _dir) = engine_with_store();
         let handle = engine.add_uri(&default_spec()).unwrap();
+        let task_id = engine.task_id_for_gid(handle.gid).expect("task id");
         engine.activate_job(handle.gid).unwrap();
         engine.fail_job(handle.gid, "network error").unwrap();
 
@@ -3094,30 +3133,47 @@ mod tests {
         let persisted = store.get_job(handle.gid).unwrap().unwrap();
         assert_eq!(persisted.status, Status::Error);
         assert_eq!(persisted.error_msg.as_deref(), Some("network error"));
+        let row = store
+            .get_native_task(&task_id)
+            .unwrap()
+            .expect("native task row");
+        assert_eq!(row.lifecycle, crate::native::TaskLifecycle::Failed);
     }
 
     #[test]
     fn engine_persists_on_pause() {
         let (engine, _dir) = engine_with_store();
         let handle = engine.add_uri(&default_spec()).unwrap();
+        let task_id = engine.task_id_for_gid(handle.gid).expect("task id");
         engine.activate_job(handle.gid).unwrap();
         engine.pause(handle.gid).unwrap();
 
         let store = engine.store.as_ref().unwrap();
         let persisted = store.get_job(handle.gid).unwrap().unwrap();
         assert_eq!(persisted.status, Status::Paused);
+        let row = store
+            .get_native_task(&task_id)
+            .unwrap()
+            .expect("native task row");
+        assert_eq!(row.lifecycle, crate::native::TaskLifecycle::Paused);
     }
 
     #[test]
     fn engine_persists_on_remove() {
         let (engine, _dir) = engine_with_store();
         let handle = engine.add_uri(&default_spec()).unwrap();
+        let task_id = engine.task_id_for_gid(handle.gid).expect("task id");
         engine.activate_job(handle.gid).unwrap();
         engine.remove(handle.gid).unwrap();
 
         let store = engine.store.as_ref().unwrap();
         let persisted = store.get_job(handle.gid).unwrap().unwrap();
         assert_eq!(persisted.status, Status::Removed);
+        let row = store
+            .get_native_task(&task_id)
+            .unwrap()
+            .expect("native task row");
+        assert_eq!(row.lifecycle, crate::native::TaskLifecycle::Removed);
     }
 
     #[test]

@@ -8,7 +8,7 @@ The current branch contains the committed modernization stream through Checkpoin
 
 The project is no longer a skeleton. It has working HTTP/HTTPS, FTP/FTPS, SFTP, Metalink, BitTorrent, segmented downloads, retry, resume, native API routes, native WebSocket events, redb-backed persistence, structured logs, and many daemon smoke tests. The work is not complete because major internals and tests still depend on aria2-shaped JSON-RPC, `Gid`, `Job`, compatibility terminology, and migration adapters.
 
-The most recent completed checkpoint is Checkpoint 112, Native Identity And Persistence Cleanup. The next checkpoint is Checkpoint 113, Native Persistence Schema Boundary. Its purpose is to continue replacing direct `Job` row ownership with versioned native persistence rows.
+The most recent completed checkpoint is Checkpoint 113, Native Persistence Schema Boundary. The next checkpoint is Checkpoint 114, HTTP Native Transfer Contract. Its purpose is to close the HTTP/HTTPS feature-matrix gaps for modern range transfers, resume, credentials, proxy/TLS behavior, and native verification anchors.
 
 Current legacy-surface evidence includes remaining references to JSON-RPC methods, `Gid`, `gid`, `task_migration_`, `parity`, `compatibility`, and `legacy` outside the migrated session smoke tests. This is expected during the transition, but it is not acceptable at completion.
 
@@ -59,7 +59,7 @@ Protocol implementation should use mature Rust libraries already chosen by the p
 | Public surface | Native CLI | CLI commands and options use raria names and native config/API concepts | `crates/raria-cli/src/main.rs`, native `--api-port` and native hook names; legacy RPC and BT crypto flags removed; retry help text no longer references aria2; many aria2-shaped options remain | Gap | CP111 |
 | Public surface | User documentation | Docs describe raria-native behavior only, with no compatibility claims except historical migration notes | README partially updated; old modernization docs and some crate docs still use compatibility wording | Partial | CP107 |
 | Configuration | Strict `raria.toml` | Native sections for daemon, API, downloads, network, HTTP, FTP, SFTP, BitTorrent, Metalink, storage, logging, hooks, and security | `crates/raria-core/src/native_config.rs`; hooks are native TOML; old aria2-style key-value parser deleted | Partial | CP111 |
-| Persistence | Versioned native store | Versioned task, source, file, segment, piece, tracker, event cursor, config, migration ledger, and external BT state references | Native metadata/task rows and native segments exist; direct `Job` rows and explicit private runtime bridge IDs remain | Partial | CP109-CP113 |
+| Persistence | Versioned native store | Versioned task, source, file, segment, piece, tracker, event cursor, config, migration ledger, and external BT state references | Native metadata/task rows and native segments exist; engine state changes now keep native rows current; direct `Job` rows and explicit private runtime bridge IDs remain as temporary fallback | Partial | CP109-CP113 |
 | Identity | Opaque task IDs | Public and internal task ownership use opaque `TaskId`, not aria2 GID semantics | `TaskId` owns task queue, persisted task rows, and native API identity; deterministic `task_migration_` generation and fallback decoding were removed; `Gid` remains as a private runtime bridge | Partial | CP108-CP112 |
 | Core runtime | Native task model | Protocol-neutral task graph with files, sources, segments, pieces, peers, trackers, policy, timestamps, and errors | Native projections exist; `Job` drives runtime state | Partial | CP108 |
 | Core runtime | Queue scheduling | Native queued/running/paused/seeding/completed/failed/removed scheduling with bounded active tasks and priorities | Scheduler now stores native task IDs; legacy queue adapters remain | Partial | CP109 |
@@ -410,6 +410,22 @@ Evidence: `TaskId::from_migration_gid`, `NativeTaskIndex::register_migration_gid
 Remaining after completion: direct `Job` row persistence and private runtime bridge IDs remain until the native persistence schema owns restore end to end.
 
 Next: Checkpoint 113.
+
+### Checkpoint 113: Native Persistence Schema Boundary
+
+Status: complete
+
+Scope: make native task rows the authoritative engine persistence boundary for runtime state changes and explicit session saves. Keep direct `Job` rows only as a temporary legacy restore fallback until the next deletion slice.
+
+Files: `crates/raria-core/src/engine.rs`, `docs/modernization/modernization-runbook.md`
+
+Validation: `cargo test -p raria-core engine_persists_native_task_row_on_add_uri` failed before implementation because `add_uri` wrote no native task row, then passed after `Engine::persist_job` began writing native rows. `cargo test -p raria-core engine_persists_on_activate` failed before implementation because lifecycle updates did not refresh native rows, then passed after the shared persistence helper was updated. `cargo test -p raria-core engine_persists_on` passed with 5 lifecycle tests covering activate, complete, fail, pause, and remove native-row state. `cargo test -p raria-core save_session_persists_native_task_rows` passed. `cargo test -p raria-core save_session_and_restore_preserve_native_source_health` passed. `cargo test -p raria-core engine_restore_prefers_native_task_rows_when_available` passed. `cargo check --workspace --locked` passed. `cargo fmt --all --check` passed. `git diff --check` passed.
+
+Evidence: `Engine::persist_job` now writes both the temporary direct `Job` row and the versioned `NativeTaskRow`. `Engine::persist_job_by_gid` routes through that helper, so add, activate, complete, fail, pause, remove, and other state changes using the helper keep native task rows current. Focused tests now assert native-row lifecycle values for queued, running, completed, failed, paused, and removed states.
+
+Remaining after completion: delete direct `Job` row writes, old `jobs` table restore fallback, and private runtime bridge fields after native rows cover all restore data.
+
+Next: Checkpoint 114.
 
 ## Validation Contract
 
