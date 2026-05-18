@@ -221,15 +221,15 @@ Next: Checkpoint 101.
 
 ### Checkpoint 101: Native Task Mutation Cleanup
 
-Status: next
+Status: complete
 
 Scope: finish native mutation routes for task transfer policy, queue position, sources, files, trackers, and seeding policy; remove any remaining compatibility assertions from these public task mutation flows after equivalent native tests exist.
 
-Files: `crates/raria-core/src/engine.rs`, `crates/raria-core/src/native.rs`, `crates/raria-rpc/src/api.rs`, `crates/raria-rpc/tests/native_api.rs`, `crates/raria-cli/tests/native_api_smoke.rs`
+Files: `crates/raria-rpc/src/api.rs`, `crates/raria-rpc/tests/native_api.rs`, `crates/raria-cli/tests/native_api_smoke.rs`
 
-Validation: focused mutation tests first, then `cargo test -p raria-rpc --test native_api`, `cargo test -p raria-cli --test native_api_smoke`, and `cargo check --workspace --locked`.
+Validation: `cargo test -p raria-rpc --test native_api task_mutation_routes_return_native_not_found_errors` failed before implementation and passed after missing-task detection was added. `cargo test -p raria-rpc --test native_api` passed with 34 tests. `cargo test -p raria-cli --test native_api_smoke` passed with 27 tests. `cargo check --workspace --locked` passed. `cargo fmt --all --check` passed. `git diff --check` passed.
 
-Evidence target: native task mutation endpoints operate only on `TaskId` resources and raria-native field names. Mutation responses and tests do not expose `gid`, aria2 option names, JSON-RPC method names, or compatibility envelopes.
+Evidence: native task mutation PATCH routes now check native task existence before mapping validation errors, so missing task resources return `task_not_found` with HTTP 404 instead of a generic invalid request. Mutation tests now use a shared recursive assertion to reject legacy public fields across tracker, seeding, transfer, source, queue, and file-selection responses, including `gid`, `jsonrpc`, aria2 option names, and compatibility field names.
 
 Remaining after completion: native API route shape and documentation cleanup.
 

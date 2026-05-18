@@ -13,6 +13,42 @@ mod tests {
     use std::sync::Arc;
     use tokio_util::sync::CancellationToken;
 
+    fn assert_no_legacy_public_fields(value: &serde_json::Value) {
+        match value {
+            serde_json::Value::Object(fields) => {
+                for legacy_field in [
+                    "gid",
+                    "jsonrpc",
+                    "method",
+                    "completedLength",
+                    "downloadSpeed",
+                    "max-download-limit",
+                    "max-upload-limit",
+                    "bt-tracker",
+                    "bt-stop-timeout",
+                    "seed-ratio",
+                    "how",
+                    "index",
+                    "announce",
+                ] {
+                    assert!(
+                        !fields.contains_key(legacy_field),
+                        "legacy public field {legacy_field} leaked in {value}"
+                    );
+                }
+                for nested in fields.values() {
+                    assert_no_legacy_public_fields(nested);
+                }
+            }
+            serde_json::Value::Array(values) => {
+                for nested in values {
+                    assert_no_legacy_public_fields(nested);
+                }
+            }
+            _ => {}
+        }
+    }
+
     #[tokio::test]
     async fn health_endpoint_returns_native_api_envelope() {
         let engine = Arc::new(Engine::new(GlobalConfig::default()));
@@ -925,7 +961,7 @@ mod tests {
         assert_eq!(trackers["trackers"][0]["connectTimeoutSeconds"], 3);
         assert_eq!(trackers["trackers"][0]["timeoutSeconds"], 9);
         assert_eq!(trackers["trackers"][0]["intervalSeconds"], 60);
-        assert!(trackers["trackers"][0].get("bt-tracker").is_none());
+        assert_no_legacy_public_fields(&trackers);
 
         let job = engine.registry.get(gid).expect("job");
         assert_eq!(
@@ -949,6 +985,60 @@ mod tests {
                 "https://tracker.example/announce".to_string()
             ])
         );
+
+        cancel.cancel();
+    }
+
+    #[tokio::test]
+    async fn task_mutation_routes_return_native_not_found_errors() {
+        let engine = Arc::new(Engine::new(GlobalConfig::default()));
+        let missing_task_id = TaskId::new();
+        let cancel = CancellationToken::new();
+        let addrs = start_native_api_server(
+            Arc::clone(&engine),
+            &NativeApiConfig {
+                listen_addr: SocketAddr::from(([127, 0, 0, 1], 0)),
+                ..NativeApiConfig::default()
+            },
+            cancel.clone(),
+        )
+        .await
+        .expect("start native api");
+        let client = reqwest::Client::new();
+
+        let response = client
+            .patch(format!(
+                "http://{}/api/v1/tasks/{}/transfer",
+                addrs.http, missing_task_id
+            ))
+            .json(&serde_json::json!({
+                "downloadBytesPerSecondLimit": 204800
+            }))
+            .send()
+            .await
+            .expect("transfer patch request");
+        assert_eq!(response.status(), reqwest::StatusCode::NOT_FOUND);
+        let error: serde_json::Value = response.json().await.expect("transfer error json");
+        assert_eq!(error["code"], "task_not_found");
+        assert!(error.get("jsonrpc").is_none());
+        assert!(error.get("gid").is_none());
+
+        let response = client
+            .patch(format!(
+                "http://{}/api/v1/tasks/{}/queue",
+                addrs.http, missing_task_id
+            ))
+            .json(&serde_json::json!({
+                "position": 0
+            }))
+            .send()
+            .await
+            .expect("queue patch request");
+        assert_eq!(response.status(), reqwest::StatusCode::NOT_FOUND);
+        let error: serde_json::Value = response.json().await.expect("queue error json");
+        assert_eq!(error["code"], "task_not_found");
+        assert!(error.get("jsonrpc").is_none());
+        assert!(error.get("gid").is_none());
 
         cancel.cancel();
     }
@@ -1005,8 +1095,7 @@ mod tests {
         assert_eq!(policy["targetRatio"], 1.5);
         assert_eq!(policy["stopAfterMinutes"], 45);
         assert_eq!(policy["idleDownloadTimeoutSeconds"], 7);
-        assert!(policy.get("seed-ratio").is_none());
-        assert!(policy.get("bt-stop-timeout").is_none());
+        assert_no_legacy_public_fields(&policy);
 
         let job = engine.registry.get(gid).expect("job");
         assert_eq!(job.options.seed_ratio, Some(1.5));
@@ -1083,7 +1172,7 @@ mod tests {
         assert_eq!(policy["downloadBytesPerSecondLimit"], 204800);
         assert_eq!(policy["uploadBytesPerSecondLimit"], 102400);
         assert_eq!(policy["segments"], 8);
-        assert!(policy.get("max-download-limit").is_none());
+        assert_no_legacy_public_fields(&policy);
 
         let job = engine.registry.get(gid).expect("job");
         assert_eq!(job.options.max_download_limit, 204800);
@@ -1168,7 +1257,7 @@ mod tests {
             sources["sources"][1]["uri"],
             "https://mirror-b.example/file.iso"
         );
-        assert!(sources.get("fileIndex").is_none());
+        assert_no_legacy_public_fields(&sources);
 
         let job = engine.registry.get(gid).expect("job");
         assert_eq!(
@@ -1328,7 +1417,7 @@ mod tests {
 
         assert_eq!(queue["position"], 0);
         assert_eq!(queue["taskId"], third.task_id.as_str());
-        assert!(queue.get("how").is_none());
+        assert_no_legacy_public_fields(&queue);
         assert_eq!(
             engine.scheduler.waiting_task_queue(),
             vec![third.task_id, first.task_id, second.task_id]
@@ -1406,7 +1495,7 @@ mod tests {
         assert_eq!(files["files"][0]["selected"], false);
         assert_eq!(files["files"][1]["id"], "file_1");
         assert_eq!(files["files"][1]["selected"], true);
-        assert!(files["files"][0].get("index").is_none());
+        assert_no_legacy_public_fields(&files);
 
         let job = engine.registry.get(gid).expect("job");
         assert_eq!(job.options.bt_selected_files, Some(vec![1]));

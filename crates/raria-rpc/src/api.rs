@@ -754,6 +754,7 @@ async fn handle_patch_task_files(
 ) -> Result<Json<FilesResponse>, NativeApiError> {
     require_auth(&state, &headers)?;
     let task_id = parse_task_id(&task_id)?;
+    ensure_native_task_exists(&state.engine, &task_id)?;
     let summary = state
         .engine
         .update_native_task_file_selection(&task_id, &request.selected_file_ids)
@@ -795,6 +796,7 @@ async fn handle_patch_task_sources(
 ) -> Result<Json<SourcesResponse>, NativeApiError> {
     require_auth(&state, &headers)?;
     let task_id = parse_task_id(&task_id)?;
+    ensure_native_task_exists(&state.engine, &task_id)?;
     let summary = state
         .engine
         .replace_native_task_sources(&task_id, &request.sources)
@@ -882,6 +884,7 @@ async fn handle_patch_task_bt_seeding(
 ) -> Result<Json<BtSeedingPolicyResponse>, NativeApiError> {
     require_auth(&state, &headers)?;
     let task_id = parse_task_id(&task_id)?;
+    ensure_native_task_exists(&state.engine, &task_id)?;
     let (target_ratio, stop_after_minutes, idle_download_timeout_seconds) = state
         .engine
         .update_native_bt_seeding_policy(
@@ -923,6 +926,7 @@ async fn handle_patch_task_queue(
 ) -> Result<Json<QueuePositionResponse>, NativeApiError> {
     require_auth(&state, &headers)?;
     let task_id = parse_task_id(&task_id)?;
+    ensure_native_task_exists(&state.engine, &task_id)?;
     let position = state
         .engine
         .change_native_queue_position(&task_id, request.position)
@@ -957,6 +961,7 @@ async fn handle_patch_task_transfer(
 ) -> Result<Json<TransferPolicyResponse>, NativeApiError> {
     require_auth(&state, &headers)?;
     let task_id = parse_task_id(&task_id)?;
+    ensure_native_task_exists(&state.engine, &task_id)?;
     let (download_limit, upload_limit, segments) = state
         .engine
         .update_native_transfer_policy(
@@ -1029,6 +1034,7 @@ async fn handle_patch_task_trackers(
 ) -> Result<Json<TrackersResponse>, NativeApiError> {
     require_auth(&state, &headers)?;
     let task_id = parse_task_id(&task_id)?;
+    ensure_native_task_exists(&state.engine, &task_id)?;
     state
         .engine
         .update_native_task_trackers(&task_id, &request.tracker_uris)
@@ -1124,4 +1130,11 @@ fn parse_file_id(id: &str) -> Result<usize, NativeApiError> {
     id.strip_prefix("file_")
         .and_then(|raw| raw.parse::<usize>().ok())
         .ok_or(NativeApiError::InvalidRequest)
+}
+
+fn ensure_native_task_exists(engine: &Engine, task_id: &TaskId) -> Result<(), NativeApiError> {
+    engine
+        .gid_for_task_id(task_id)
+        .map(|_| ())
+        .ok_or(NativeApiError::TaskNotFound)
 }
