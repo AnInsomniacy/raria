@@ -8,7 +8,7 @@ The current branch contains the committed modernization stream through Checkpoin
 
 The project is no longer a skeleton. It has working HTTP/HTTPS, FTP/FTPS, SFTP, Metalink, BitTorrent, segmented downloads, retry, resume, native API routes, native WebSocket events, redb-backed persistence, structured logs, and many daemon smoke tests. The work is not complete because major internals and tests still depend on aria2-shaped JSON-RPC, `Gid`, `Job`, compatibility terminology, and migration adapters.
 
-The most recent completed checkpoint is Checkpoint 106, Native API Port CLI Cleanup. The next checkpoint is Checkpoint 107, Native CLI And Config Surface Cleanup. Its purpose is to continue removing aria2-shaped CLI and legacy config surfaces once native tests cover the useful behavior.
+The most recent completed checkpoint is Checkpoint 107, Retry Help Text Cleanup. The next checkpoint is Checkpoint 108, Native CLI And Config Surface Cleanup. Its purpose is to continue removing aria2-shaped CLI and legacy config surfaces once native tests cover the useful behavior.
 
 Current legacy-surface evidence includes remaining references to JSON-RPC methods, `Gid`, `gid`, `task_migration_`, `parity`, `compatibility`, and `legacy` outside the migrated session smoke tests. This is expected during the transition, but it is not acceptable at completion.
 
@@ -56,9 +56,9 @@ Protocol implementation should use mature Rust libraries already chosen by the p
 | --- | --- | --- | --- | --- | --- |
 | Public surface | Native HTTP API | `/api/v1` resource API for health, config, stats, task creation, task reads, task controls, transfer policy, queue, files, sources, peers, trackers, seeding, session save, and daemon shutdown | `crates/raria-rpc/src/api.rs`, `crates/raria-rpc/tests/native_api.rs`, `crates/raria-cli/tests/native_api_smoke.rs` | Partial | CP97-CP103 |
 | Public surface | Native event stream | `/api/v1/events` emits typed raria event names and payloads without aria2 notification envelopes | `NativeEvent`, native event bus, daemon native event smoke tests; legacy event fallback still exists | Partial | CP100 |
-| Public surface | Native CLI | CLI commands and options use raria names and native config/API concepts | `crates/raria-cli/src/main.rs`, native `--api-port` and native hook names; `--rpc-port` alias removed; many aria2-shaped options remain | Gap | CP107 |
+| Public surface | Native CLI | CLI commands and options use raria names and native config/API concepts | `crates/raria-cli/src/main.rs`, native `--api-port` and native hook names; `--rpc-port` alias removed; retry help text no longer references aria2; many aria2-shaped options remain | Gap | CP108 |
 | Public surface | User documentation | Docs describe raria-native behavior only, with no compatibility claims except historical migration notes | README partially updated; old modernization docs and some crate docs still use compatibility wording | Partial | CP107 |
-| Configuration | Strict `raria.toml` | Native sections for daemon, API, downloads, network, HTTP, FTP, SFTP, BitTorrent, Metalink, storage, logging, hooks, and security | `crates/raria-core/src/native_config.rs`; hooks are native TOML; old parser remains for non-hook migration debt | Partial | CP107 |
+| Configuration | Strict `raria.toml` | Native sections for daemon, API, downloads, network, HTTP, FTP, SFTP, BitTorrent, Metalink, storage, logging, hooks, and security | `crates/raria-core/src/native_config.rs`; hooks are native TOML; old parser remains for non-hook migration debt | Partial | CP108 |
 | Persistence | Versioned native store | Versioned task, source, file, segment, piece, tracker, event cursor, config, migration ledger, and external BT state references | Native metadata/task rows and native segments exist; `Job` rows and `Gid` fallback remain | Partial | CP109-CP113 |
 | Identity | Opaque task IDs | Public and internal task ownership use opaque `TaskId`, not aria2 GID semantics | `TaskId` exists; `Gid`, `task_migration_`, runtime bridge IDs remain | Partial | CP108-CP112 |
 | Core runtime | Native task model | Protocol-neutral task graph with files, sources, segments, pieces, peers, trackers, policy, timestamps, and errors | Native projections exist; `Job` drives runtime state | Partial | CP108 |
@@ -108,7 +108,7 @@ Protocol implementation should use mature Rust libraries already chosen by the p
 | aria2 method names | `aria2.addUri`, `aria2.tellStatus`, `aria2.shutdown`, `aria2.saveSession`, old RPC tests | Encourages compatibility instead of native workflow | Session, daemon, logging, and protocol smoke tests use `/api/v1` only | CP97-CP103 |
 | `Gid` and `task_migration_` | `crates/raria-core/src/job.rs`, `engine.rs`, `scheduler.rs`, native index bridge | Prevents native task ownership and schema cleanup | Engine, scheduler, cancellation, events, logs, and persistence own `TaskId` | CP108-CP112 |
 | `Job` runtime model | `Job` drives persisted runtime state and projections | Native task graph remains a facade | Native `Task` rows and in-memory state replace `Job` | CP108 |
-| legacy config parser | `crates/raria-core/src/config_file.rs`, `GlobalConfig` aria2 names | Keeps old config semantics alive | CLI and tests use strict `raria.toml`; remaining parser removed or private test fixture only | CP107 |
+| legacy config parser | `crates/raria-core/src/config_file.rs`, `GlobalConfig` aria2 names | Keeps old config semantics alive | CLI and tests use strict `raria.toml`; remaining parser removed or private test fixture only | CP108 |
 | parity tests | `rpc_parity.rs`, `ws_parity.rs`, `multicall_parity.rs`, `options_parity.rs`, `ws_push.rs` | Tests the wrong product contract | Useful behavior moved to native contract tests, pure compatibility tests deleted | CP139-CP142 |
 | legacy event projection | `crates/raria-rpc/src/events.rs`, fallback from `DownloadEvent` to native | Event model remains partly aria2-shaped | Native event bus is sole daemon stream | CP100 |
 | legacy persistence fallback | old `Gid` segment rows, `NativeTaskRow::from_job_for_migration` | Blocks schema finalization | Migration fixtures prove cutover; old rows removed | CP112 |
@@ -314,6 +314,22 @@ Evidence: the daemon CLI now accepts only `--api-port` for the control listener.
 Remaining after completion: continue removing aria2-shaped CLI option names, JSON-RPC-specific daemon configuration, and the legacy key-value config parser after native replacements are covered.
 
 Next: Checkpoint 107.
+
+### Checkpoint 107: Retry Help Text Cleanup
+
+Status: complete
+
+Scope: remove aria2-specific retry wording from CLI help text and retry policy comments while preserving the existing retry behavior.
+
+Files: `crates/raria-cli/src/main.rs`, `crates/raria-cli/src/executor_config.rs`, `docs/modernization/modernization-runbook.md`
+
+Validation: `cargo test -p raria-cli executor_config` passed with 6 tests. `cargo test -p raria-cli daemon_accepts_native_api_port_name` passed. `cargo check --workspace --locked` passed. `cargo fmt --all --check` passed. `git diff --check` passed.
+
+Evidence: retry help text now describes raria behavior directly, including unlimited retries when the maximum retry count is zero. The retry policy comment now describes native retry wait semantics instead of referencing aria2.
+
+Remaining after completion: replace remaining aria2-shaped CLI option names and legacy config parser behavior after focused native coverage exists.
+
+Next: Checkpoint 108.
 
 ## Validation Contract
 

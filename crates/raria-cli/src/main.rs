@@ -201,15 +201,15 @@ enum Commands {
         #[arg(long, default_value_t = 0)]
         max_download_limit: u64,
 
-        /// Maximum retries per segment (aria2: --max-tries, 0 = infinite).
+        /// Maximum retry attempts per segment; 0 means unlimited retries.
         #[arg(long)]
         max_tries: Option<u32>,
 
-        /// Seconds to wait between retries (aria2: --retry-wait).
+        /// Seconds to wait between retry attempts.
         #[arg(long)]
         retry_wait: Option<u32>,
 
-        /// Minimum size in bytes for a split segment (aria2: --min-split-size).
+        /// Minimum size in bytes for a split segment.
         #[arg(long = "min-split-size")]
         min_split_size: Option<u64>,
 
@@ -336,15 +336,15 @@ enum Commands {
         #[arg(long, default_value_t = 0)]
         max_download_limit: u64,
 
-        /// Maximum retries per segment (aria2: --max-tries, 0 = infinite).
+        /// Maximum retry attempts per segment; 0 means unlimited retries.
         #[arg(long)]
         max_tries: Option<u32>,
 
-        /// Seconds to wait between retries (aria2: --retry-wait).
+        /// Seconds to wait between retry attempts.
         #[arg(long)]
         retry_wait: Option<u32>,
 
-        /// Minimum size in bytes for a split segment (aria2: --min-split-size).
+        /// Minimum size in bytes for a split segment.
         #[arg(long = "min-split-size")]
         min_split_size: Option<u64>,
 

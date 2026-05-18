@@ -10,8 +10,8 @@ pub(crate) fn apply_global_retry_policy(
         n => n,
     };
 
-    // aria2's `--retry-wait` is expressed in seconds. We map it to the executor's
-    // retry base delay in milliseconds.
+    // The native retry wait value is expressed in seconds. The range executor
+    // stores its base delay in milliseconds.
     //
     // NOTE: We intentionally do not allow a 0ms base delay because it would turn
     // retry loops into a busy loop under failure. When `retry_wait` is 0 (default),
