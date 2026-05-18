@@ -40,6 +40,11 @@ mod tests {
             file_allocation = "prealloc"
             conflict_policy = "rename"
 
+            [hooks]
+            task_started = "/hooks/task-started.sh"
+            task_completed = "/hooks/task-completed.sh"
+            task_failed = "/hooks/task-failed.sh"
+
             [logging]
             structured_log_path = "/logs/raria.jsonl"
             "#,
@@ -55,6 +60,18 @@ mod tests {
         assert_eq!(config.metalink.preferred_protocol.as_deref(), Some("https"));
         assert!(config.metalink.unique_protocols);
         assert_eq!(config.storage.file_allocation.as_str(), "prealloc");
+        assert_eq!(
+            config.hooks.task_started.as_deref(),
+            Some(std::path::Path::new("/hooks/task-started.sh"))
+        );
+        assert_eq!(
+            config.hooks.task_completed.as_deref(),
+            Some(std::path::Path::new("/hooks/task-completed.sh"))
+        );
+        assert_eq!(
+            config.hooks.task_failed.as_deref(),
+            Some(std::path::Path::new("/hooks/task-failed.sh"))
+        );
     }
 
     #[test]
@@ -81,6 +98,19 @@ mod tests {
             "#,
         )
         .expect_err("legacy names must fail");
+
+        assert!(err.to_string().contains("unknown field"));
+    }
+
+    #[test]
+    fn raria_toml_rejects_legacy_hook_names() {
+        let err = RariaConfig::from_toml_str(
+            r#"
+            [hooks]
+            on-download-start = "/tmp/start.sh"
+            "#,
+        )
+        .expect_err("legacy hook names must fail");
 
         assert!(err.to_string().contains("unknown field"));
     }
@@ -113,6 +143,11 @@ mod tests {
 
             [storage]
             file_allocation = "trunc"
+
+            [hooks]
+            task_started = "/hooks/start.sh"
+            task_completed = "/hooks/complete.sh"
+            task_failed = "/hooks/fail.sh"
             "#,
         )
         .expect("native config should parse");
@@ -135,6 +170,18 @@ mod tests {
         assert_eq!(global.metalink_preferred_locations, vec!["de"]);
         assert_eq!(global.metalink_preferred_protocol.as_deref(), Some("ftp"));
         assert!(global.metalink_unique_protocols);
+        assert_eq!(
+            global.on_task_start.as_deref(),
+            Some(std::path::Path::new("/hooks/start.sh"))
+        );
+        assert_eq!(
+            global.on_task_complete.as_deref(),
+            Some(std::path::Path::new("/hooks/complete.sh"))
+        );
+        assert_eq!(
+            global.on_task_fail.as_deref(),
+            Some(std::path::Path::new("/hooks/fail.sh"))
+        );
     }
 
     #[test]

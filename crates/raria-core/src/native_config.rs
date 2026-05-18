@@ -30,6 +30,9 @@ pub struct RariaConfig {
     /// Local storage settings.
     #[serde(default)]
     pub storage: StorageConfig,
+    /// Lifecycle hook settings.
+    #[serde(default)]
+    pub hooks: HooksConfig,
     /// Logging settings.
     #[serde(default)]
     pub logging: LoggingConfig,
@@ -68,6 +71,9 @@ impl RariaConfig {
             metalink_preferred_protocol: self.metalink.preferred_protocol.clone(),
             metalink_unique_protocols: self.metalink.unique_protocols,
             file_allocation: self.storage.file_allocation.to_runtime(),
+            on_task_start: self.hooks.task_started.clone(),
+            on_task_complete: self.hooks.task_completed.clone(),
+            on_task_fail: self.hooks.task_failed.clone(),
             ..GlobalConfig::default()
         };
 
@@ -269,6 +275,18 @@ pub enum ConflictPolicy {
     ReusePartial,
     /// Fail when output already exists.
     Fail,
+}
+
+/// Lifecycle hook settings.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(default, deny_unknown_fields)]
+pub struct HooksConfig {
+    /// Script run when a task starts running.
+    pub task_started: Option<PathBuf>,
+    /// Script run when a task completes.
+    pub task_completed: Option<PathBuf>,
+    /// Script run when a task fails.
+    pub task_failed: Option<PathBuf>,
 }
 
 /// Logging settings.

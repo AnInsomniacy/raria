@@ -354,27 +354,6 @@ pub fn apply_config_map_with_mode(
                     Some(value.clone())
                 };
             }
-            "on-task-start" | "on-download-start" => {
-                config.on_task_start = if value.is_empty() {
-                    None
-                } else {
-                    Some(PathBuf::from(value))
-                };
-            }
-            "on-task-complete" | "on-download-complete" => {
-                config.on_task_complete = if value.is_empty() {
-                    None
-                } else {
-                    Some(PathBuf::from(value))
-                };
-            }
-            "on-task-fail" | "on-download-error" => {
-                config.on_task_fail = if value.is_empty() {
-                    None
-                } else {
-                    Some(PathBuf::from(value))
-                };
-            }
             "auto-file-renaming" => {
                 config.auto_file_renaming = value == "true" || value == "1";
             }
@@ -555,22 +534,6 @@ mod tests {
             config.save_cookie_file,
             Some(PathBuf::from("/tmp/cookies.txt"))
         );
-    }
-
-    #[test]
-    fn apply_config_native_hook_scripts() {
-        let mut config = GlobalConfig::default();
-        let mut map = HashMap::new();
-        map.insert("on-task-start".into(), "/tmp/start.sh".into());
-        map.insert("on-task-complete".into(), "/tmp/complete.sh".into());
-        map.insert("on-task-fail".into(), "/tmp/error.sh".into());
-        apply_config_map(&mut config, &map);
-        assert_eq!(config.on_task_start, Some(PathBuf::from("/tmp/start.sh")));
-        assert_eq!(
-            config.on_task_complete,
-            Some(PathBuf::from("/tmp/complete.sh"))
-        );
-        assert_eq!(config.on_task_fail, Some(PathBuf::from("/tmp/error.sh")));
     }
 
     #[test]

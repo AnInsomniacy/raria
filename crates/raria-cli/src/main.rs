@@ -119,6 +119,21 @@ mod tests {
             std::path::PathBuf::from("/tmp/fail.sh")
         );
     }
+
+    #[test]
+    fn daemon_rejects_legacy_download_hook_names() {
+        let err = match Cli::try_parse_from([
+            "raria",
+            "daemon",
+            "--on-download-start",
+            "/tmp/start.sh",
+        ]) {
+            Ok(_) => panic!("legacy download hook names must be rejected"),
+            Err(error) => error,
+        };
+
+        assert!(err.to_string().contains("unexpected argument"));
+    }
 }
 
 #[derive(Parser)]
@@ -396,15 +411,15 @@ enum Commands {
         input_file: Option<PathBuf>,
 
         /// Hook script fired when a task starts running.
-        #[arg(long = "on-task-start", alias = "on-download-start")]
+        #[arg(long = "on-task-start")]
         on_task_start: Option<PathBuf>,
 
         /// Hook script fired when a task completes.
-        #[arg(long = "on-task-complete", alias = "on-download-complete")]
+        #[arg(long = "on-task-complete")]
         on_task_complete: Option<PathBuf>,
 
         /// Hook script fired when a task fails.
-        #[arg(long = "on-task-fail", alias = "on-download-error")]
+        #[arg(long = "on-task-fail")]
         on_task_fail: Option<PathBuf>,
 
         /// Legacy JSON-RPC secret token for migration-only authentication.
