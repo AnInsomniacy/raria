@@ -8,7 +8,7 @@ The current branch contains the committed modernization stream through Checkpoin
 
 The project is no longer a skeleton. It has working HTTP/HTTPS, FTP/FTPS, SFTP, Metalink, BitTorrent, segmented downloads, retry, resume, native API routes, native WebSocket events, redb-backed persistence, structured logs, and many daemon smoke tests. The work is not complete because major internals and tests still depend on aria2-shaped JSON-RPC, `Gid`, `Job`, compatibility terminology, and migration adapters.
 
-The most recent completed checkpoint is Checkpoint 104, Strict Native Hook Configuration. The next checkpoint is Checkpoint 105, Hook Runtime Contract Cleanup. Its purpose is to finish the runtime hook contract around native task lifecycle events and remove any remaining obsolete hook terminology from public docs and tests.
+The most recent completed checkpoint is Checkpoint 105, Hook Runtime Contract Cleanup. The next checkpoint is Checkpoint 106, Native CLI And Config Surface Cleanup. Its purpose is to remove remaining aria2-shaped CLI and legacy config surfaces once native tests cover the useful behavior.
 
 Current legacy-surface evidence includes remaining references to JSON-RPC methods, `Gid`, `gid`, `task_migration_`, `parity`, `compatibility`, and `legacy` outside the migrated session smoke tests. This is expected during the transition, but it is not acceptable at completion.
 
@@ -56,7 +56,7 @@ Protocol implementation should use mature Rust libraries already chosen by the p
 | --- | --- | --- | --- | --- | --- |
 | Public surface | Native HTTP API | `/api/v1` resource API for health, config, stats, task creation, task reads, task controls, transfer policy, queue, files, sources, peers, trackers, seeding, session save, and daemon shutdown | `crates/raria-rpc/src/api.rs`, `crates/raria-rpc/tests/native_api.rs`, `crates/raria-cli/tests/native_api_smoke.rs` | Partial | CP97-CP103 |
 | Public surface | Native event stream | `/api/v1/events` emits typed raria event names and payloads without aria2 notification envelopes | `NativeEvent`, native event bus, daemon native event smoke tests; legacy event fallback still exists | Partial | CP100 |
-| Public surface | Native CLI | CLI commands and options use raria names and native config/API concepts | `crates/raria-cli/src/main.rs`, native `--api-port`; many aria2-shaped options remain | Gap | CP106 |
+| Public surface | Native CLI | CLI commands and options use raria names and native config/API concepts | `crates/raria-cli/src/main.rs`, native `--api-port` and native hook names; many aria2-shaped options remain | Gap | CP106 |
 | Public surface | User documentation | Docs describe raria-native behavior only, with no compatibility claims except historical migration notes | README partially updated; old modernization docs and some crate docs still use compatibility wording | Partial | CP107 |
 | Configuration | Strict `raria.toml` | Native sections for daemon, API, downloads, network, HTTP, FTP, SFTP, BitTorrent, Metalink, storage, logging, hooks, and security | `crates/raria-core/src/native_config.rs`; hooks are native TOML; old parser remains for non-hook migration debt | Partial | CP106 |
 | Persistence | Versioned native store | Versioned task, source, file, segment, piece, tracker, event cursor, config, migration ledger, and external BT state references | Native metadata/task rows and native segments exist; `Job` rows and `Gid` fallback remain | Partial | CP109-CP113 |
@@ -67,7 +67,7 @@ Protocol implementation should use mature Rust libraries already chosen by the p
 | Core runtime | Progress and stats | Accurate per-task and global completed bytes, total bytes, speed, connections, ETA, and lifecycle counts | Native task projection now exposes output path, timestamps, segments, active connections, transfer limits, ETA, progress, and lifecycle; old event bus still feeds some paths | Partial | CP100 |
 | Core runtime | Runtime mutation | Safe mutation of limits, queue position, sources, file selection, trackers, and seeding policy | Native routes exist for several mutations; BT source graph and priorities incomplete | Partial | CP101-CP103 |
 | Core runtime | Structured logs | JSONL operational logs with redaction and task correlation | `docs/logging-contract.md`, logging helpers, daemon smoke tests | Partial | CP107 |
-| Core runtime | Hooks | Modern lifecycle hooks or event-consumer model | task start, completion, and failure hooks use native CLI names, strict `[hooks]` TOML, and native task identifiers | Partial | CP105 |
+| Core runtime | Hooks | Modern lifecycle hooks or event-consumer model | task start, completion, and failure hooks use native CLI names, strict `[hooks]` TOML, native task identifiers, and native task summary projection for hook arguments | Covered | Regression |
 | HTTP/HTTPS | Basic transfers | Redirects, headers, auth, TLS, mTLS, cookies, netrc, proxy, compression, range, conditional GET, resume, remote metadata | `raria-http`, `single_download`, `http_config_smoke`, session smoke | Partial | CP114 |
 | FTP/FTPS | FTP transfers | FTP and explicit FTPS with auth, passive mode where useful, resume, proxy, remote metadata | `raria-ftp`, FTP/FTPS smoke tests | Partial | CP115 |
 | SFTP | SFTP transfers | Password/key auth, known_hosts, proxy, resume, metadata | `raria-sftp`, SFTP smoke tests | Partial | CP116 |
@@ -282,6 +282,22 @@ Evidence: strict native `[hooks]` now accepts `task_started`, `task_completed`, 
 Remaining after completion: finish the hook runtime contract and remove obsolete hook wording outside the native lifecycle surface.
 
 Next: Checkpoint 105.
+
+### Checkpoint 105: Hook Runtime Contract Cleanup
+
+Status: complete
+
+Scope: route hook argument construction through the native task projection so lifecycle hooks depend on the native task contract instead of reading runtime `Job` fields directly.
+
+Files: `crates/raria-cli/src/hooks.rs`, `docs/modernization/modernization-runbook.md`
+
+Validation: `cargo test -p raria-cli hook_context` passed with 2 tests. `cargo test -p raria-cli --test session_smoke daemon_runs_on_task_start_hook` passed. `cargo test -p raria-cli --test session_smoke daemon_runs_on_task_complete_hook` passed. `cargo test -p raria-cli --test session_smoke daemon_runs_on_task_fail_hook` passed.
+
+Evidence: hook execution now builds `HookTaskContext` from `Engine::native_task_summary`, preserving native task id, file count, and output path as the hook argument contract. Focused tests cover multi-file BitTorrent file counts through the native projection and missing native task errors. Session smoke tests continue to prove start, completion, and failure hooks run against real daemon lifecycle events.
+
+Remaining after completion: remove remaining aria2-shaped CLI aliases, option names, and legacy config parser behavior after equivalent native tests exist.
+
+Next: Checkpoint 106.
 
 ## Validation Contract
 
