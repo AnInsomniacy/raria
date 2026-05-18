@@ -815,6 +815,70 @@ async fn daemon_conditional_get_skips_download_when_remote_is_not_modified() {
 }
 
 #[tokio::test]
+async fn daemon_native_task_uses_suggested_filename_when_filename_is_not_provided() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("HEAD"))
+        .and(path("/opaque"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-length", "4")
+                .insert_header("accept-ranges", "bytes")
+                .insert_header(
+                    "content-disposition",
+                    "attachment; filename=\"remote-name.bin\"",
+                ),
+        )
+        .mount(&server)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path("/opaque"))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(b"meta"))
+        .mount(&server)
+        .await;
+
+    let temp = tempdir().expect("tempdir");
+    let session_file = temp.path().join("suggested-filename.session.redb");
+    let (mut child, api_port) = spawn_ready_daemon(temp.path(), &session_file, None).await;
+
+    let response = reqwest::Client::new()
+        .post(format!("http://127.0.0.1:{api_port}/api/v1/tasks"))
+        .json(&serde_json::json!({
+            "sources": [format!("{}/opaque", server.uri())],
+            "downloadDir": temp.path(),
+            "segments": 1
+        }))
+        .send()
+        .await
+        .expect("send native task creation request");
+    assert!(
+        response.status().is_success(),
+        "native task creation should return success, got {}",
+        response.status()
+    );
+    let created: serde_json::Value = response.json().await.expect("parse native task response");
+    let task_id = created["taskId"].as_str().expect("task id").to_string();
+
+    let completed = wait_for_native_task_lifecycle(api_port, &task_id, "completed").await;
+
+    assert_eq!(
+        completed["outputPath"].as_str().expect("output path"),
+        temp.path().join("remote-name.bin").to_string_lossy()
+    );
+    assert_eq!(
+        std::fs::read(temp.path().join("remote-name.bin")).expect("read downloaded file"),
+        b"meta"
+    );
+    assert!(
+        !temp.path().join("opaque").exists(),
+        "daemon should not keep the URI-derived fallback filename"
+    );
+
+    graceful_shutdown(api_port, &mut child).await;
+}
+
+#[tokio::test]
 async fn daemon_rejects_checksum_mismatch_before_marking_job_complete() {
     let server = MockServer::start().await;
 

@@ -8,7 +8,7 @@ The current branch contains the committed modernization stream through Checkpoin
 
 The project is no longer a skeleton. It has working HTTP/HTTPS, FTP/FTPS, SFTP, Metalink, BitTorrent, segmented downloads, retry, resume, native API routes, native WebSocket events, redb-backed persistence, structured logs, and many daemon smoke tests. The work is not complete because major internals and tests still depend on aria2-shaped JSON-RPC, `Gid`, `Job`, compatibility terminology, and migration adapters.
 
-The most recent completed checkpoint is Checkpoint 113, Native Persistence Schema Boundary. The next checkpoint is Checkpoint 114, HTTP Native Transfer Contract. Its purpose is to close the HTTP/HTTPS feature-matrix gaps for modern range transfers, resume, credentials, proxy/TLS behavior, and native verification anchors.
+The most recent completed checkpoint is Checkpoint 114, HTTP Native Transfer Contract. The next checkpoint is Checkpoint 115, FTP Native Transfer Contract. Its purpose is to close FTP/FTPS feature-matrix gaps for resume, credentials, FTPS policy, proxy behavior, and native verification anchors.
 
 Current legacy-surface evidence includes remaining references to JSON-RPC methods, `Gid`, `gid`, `task_migration_`, `parity`, `compatibility`, and `legacy` outside the migrated session smoke tests. This is expected during the transition, but it is not acceptable at completion.
 
@@ -68,7 +68,7 @@ Protocol implementation should use mature Rust libraries already chosen by the p
 | Core runtime | Runtime mutation | Safe mutation of limits, queue position, sources, file selection, trackers, and seeding policy | Native routes exist for several mutations; BT source graph and priorities incomplete | Partial | CP101-CP103 |
 | Core runtime | Structured logs | JSONL operational logs with redaction and task correlation | `docs/logging-contract.md`, logging helpers, daemon smoke tests | Partial | CP107 |
 | Core runtime | Hooks | Modern lifecycle hooks or event-consumer model | task start, completion, and failure hooks use native CLI names, strict `[hooks]` TOML, native task identifiers, and native task summary projection for hook arguments | Covered | Regression |
-| HTTP/HTTPS | Basic transfers | Redirects, headers, auth, TLS, mTLS, cookies, netrc, proxy, compression, range, conditional GET, resume, remote metadata | `raria-http`, `single_download`, `http_config_smoke`, session smoke | Partial | CP114 |
+| HTTP/HTTPS | Basic transfers | Redirects, headers, auth, TLS, mTLS, cookies, netrc, proxy, compression, range, conditional GET, resume, remote metadata | `raria-http`, `single_download`, `native_api_smoke`, session smoke; CP114 validates native task request headers and daemon remote filename metadata | Covered | Regression |
 | FTP/FTPS | FTP transfers | FTP and explicit FTPS with auth, passive mode where useful, resume, proxy, remote metadata | `raria-ftp`, FTP/FTPS smoke tests | Partial | CP115 |
 | SFTP | SFTP transfers | Password/key auth, known_hosts, proxy, resume, metadata | `raria-sftp`, SFTP smoke tests | Partial | CP116 |
 | Multi-source | Mirror failover | Multi-source tasks choose healthy mirrors, record failures, retry, and expose source health | source health and failover tests exist | Partial | CP117 |
@@ -426,6 +426,22 @@ Evidence: `Engine::persist_job` now writes both the temporary direct `Job` row a
 Remaining after completion: delete direct `Job` row writes, old `jobs` table restore fallback, and private runtime bridge fields after native rows cover all restore data.
 
 Next: Checkpoint 114.
+
+### Checkpoint 114: HTTP Native Transfer Contract
+
+Status: complete
+
+Scope: close focused native HTTP task creation and metadata contracts for `/api/v1/tasks`.
+
+Files: `docs/modernization/modernization-runbook.md`, `crates/raria-cli/tests/session_smoke.rs`, `crates/raria-rpc/src/api.rs`, `crates/raria-rpc/tests/native_api.rs`
+
+Validation: `cargo test -p raria-rpc --test native_api task_creation_rejects_invalid_http_header_names -- --nocapture` failed before implementation with HTTP 200 instead of 400 and passed after header validation was added. `cargo test -p raria-cli --test session_smoke daemon_native_task_uses_suggested_filename_when_filename_is_not_provided -- --nocapture` passed. `cargo test -p raria-cli --test native_api_smoke daemon_native_task_create_applies -- --nocapture` passed with 2 tests. `cargo test -p raria-rpc --test native_api` passed with 36 tests. `cargo check --workspace --locked` passed. `cargo fmt --all --check` passed. `git diff --check` passed.
+
+Evidence: native task creation now validates configured HTTP header names and values before creating a task, so invalid request metadata is rejected at the `/api/v1/tasks` boundary instead of failing later in the transfer runtime. Daemon smoke coverage now proves a native HTTP task without an explicit filename uses the server `Content-Disposition` filename and does not keep the URI-derived fallback. Existing native daemon smoke tests continue to prove per-task headers and HTTP Basic auth are propagated into real HEAD and GET requests.
+
+Remaining after completion: continue HTTP/HTTPS closure for proxy/TLS/cookie/netrc verification anchors and remove any remaining public aria2-shaped HTTP option names.
+
+Next: Checkpoint 115.
 
 ## Validation Contract
 

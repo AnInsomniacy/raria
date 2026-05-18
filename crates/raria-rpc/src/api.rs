@@ -490,6 +490,8 @@ async fn handle_create_task(
         .map(|(name, value)| {
             let name = name.trim().to_string();
             anyhow::ensure!(!name.is_empty(), "header name must not be empty");
+            axum::http::HeaderName::from_bytes(name.as_bytes())?;
+            axum::http::HeaderValue::from_str(&value)?;
             Ok((name, value))
         })
         .collect::<Result<Vec<_>>>()

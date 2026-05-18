@@ -298,6 +298,43 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn task_creation_rejects_invalid_http_header_names() {
+        let engine = Arc::new(Engine::new(GlobalConfig::default()));
+        let cancel = CancellationToken::new();
+        let addrs = start_native_api_server(
+            Arc::clone(&engine),
+            &NativeApiConfig {
+                listen_addr: SocketAddr::from(([127, 0, 0, 1], 0)),
+                ..NativeApiConfig::default()
+            },
+            cancel.clone(),
+        )
+        .await
+        .expect("start native api");
+
+        let response = reqwest::Client::new()
+            .post(format!("http://{}/api/v1/tasks", addrs.http))
+            .json(&serde_json::json!({
+                "sources": ["https://example.com/file.iso"],
+                "downloadDir": "/tmp",
+                "filename": "file.iso",
+                "headers": {
+                    "Bad Header": "value"
+                }
+            }))
+            .send()
+            .await
+            .expect("task creation request");
+
+        assert_eq!(response.status(), reqwest::StatusCode::BAD_REQUEST);
+        let error: serde_json::Value = response.json().await.expect("error json");
+        assert_eq!(error["code"], "invalid_request");
+        assert!(engine.native_task_summaries().is_empty());
+
+        cancel.cancel();
+    }
+
+    #[tokio::test]
     async fn task_detail_resolves_native_task_index_ids() {
         let engine = Arc::new(Engine::new(GlobalConfig::default()));
         let handle = engine
