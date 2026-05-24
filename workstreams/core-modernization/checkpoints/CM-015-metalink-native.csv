@@ -1,0 +1,6 @@
+id,status,checkpoint,scope,target_files,acceptance,verification,notes
+CM-015.1,pending,Prune old Metalink scope,"Retained modern behavior","crates/raria-metalink; docs","Only modern manifest behavior with current product value remains.","Pending.","Do not preserve old XML compatibility."
+CM-015.2,pending,Close parser normalizer,"Metalink v4 and useful v3 data","crates/raria-metalink/src","Parsing and normalization produce native sources, files, checksums, priorities, and metadata sources.","Pending.","Keep parser small."
+CM-015.3,pending,Close mirror filters,"Location protocol priority unique protocol","raria-metalink; native config; tests","Filters apply through native configuration and task creation.","Pending.","Existing old matrix evidence is baseline."
+CM-015.4,pending,Close torrent metaurl,"Hybrid Metalink to BT path","raria-rpc metalink tasks; BT runtime","Torrent metaurl creates native BT tasks with WebSeed mirrors where supported.","Pending.","No aria2.addMetalink."
+CM-015.5,pending,Verify Metalink closure,"Focused parser and daemon tests","raria-metalink and native daemon tests","Modern Metalink tests pass and old XML baggage scans are clean.","Pending.","Delete stale docs and tests."

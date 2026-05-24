@@ -1,0 +1,6 @@
+id,status,checkpoint,scope,target_files,acceptance,verification,notes
+CM-018.1,pending,Close rate limiting,"Download and upload limits","crates/raria-core/src/limiter.rs; raria-range; raria-bt","Global and per-task limits are enforced where libraries expose hooks.","Pending.","Document unsupported BT upload hooks if any."
+CM-018.2,pending,Close retry classification,"Transient and permanent errors","raria-range; daemon runtime; core error types","Retry behavior uses typed native classification and bounded backoff.","Pending.","Keep policy small."
+CM-018.3,pending,Close DNS policy,"Resolver and host controls","reqwest config; protocol backends; native config","Supported DNS controls are exposed natively and unsupported ones are documented.","Pending.","No c-ares or custom DNS unless justified."
+CM-018.4,pending,Close interface policy,"Bind address interface IPv6","protocol backends; native config","Supported bind/interface/IP policy is exposed natively or documented as limitation.","Pending.","Prefer library hooks."
+CM-018.5,pending,Verify transfer policy,"Focused tests and docs","policy tests; ledgers","Rate, retry, DNS, and interface decisions are tested or documented.","Pending.","Avoid broad network scaffolding."

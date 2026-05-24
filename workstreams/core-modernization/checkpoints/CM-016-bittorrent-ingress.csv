@@ -1,0 +1,6 @@
+id,status,checkpoint,scope,target_files,acceptance,verification,notes
+CM-016.1,pending,Close torrent sources,"Torrent file bytes remote metadata","crates/raria-bt; crates/raria-rpc; daemon tests","Torrent inputs create native BT tasks and expose native metadata.","Pending.","No aria2.addTorrent."
+CM-016.2,pending,Close magnet metadata,"Magnet lifecycle","crates/raria-bt; crates/raria-cli/src/bt_runtime.rs","Magnet metadata resolution publishes native lifecycle and metadata events.","Pending.","Use focused local or deterministic tests where possible."
+CM-016.3,pending,Close DHT policy,"DHT enable persistence shutdown","crates/raria-bt; tests","DHT config and persistence are native and restore safely.","Pending.","Do not hand-roll DHT."
+CM-016.4,pending,Close tracker ingress,"UDP tracker and add-time trackers","crates/raria-bt; daemon tracker tests","Tracker URIs reach librqbit and native projection without aria2 fields.","Pending.","Existing UDP tracker smoke is baseline."
+CM-016.5,pending,Verify BT ingress,"Focused BT tests","raria-bt and daemon BT tests","BT ingress tests pass and compatibility-only tests are deleted.","Pending.","Use maintainer torrent fixtures only when needed."

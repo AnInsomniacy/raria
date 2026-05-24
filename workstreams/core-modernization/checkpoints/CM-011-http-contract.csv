@@ -1,0 +1,6 @@
+id,status,checkpoint,scope,target_files,acceptance,verification,notes
+CM-011.1,pending,Close request metadata,"Headers auth user agent filename","crates/raria-http; crates/raria-cli/tests","Native task metadata reaches reqwest probes and transfers safely.","Pending.","Existing native HTTP request-metadata evidence is baseline."
+CM-011.2,pending,Close TLS and mTLS,"Certificate behavior","crates/raria-http; tests","TLS verification, CA override, and client identity are native config/API behavior.","Pending.","Use focused local TLS tests."
+CM-011.3,pending,Close proxy cookie netrc,"HTTP policy","crates/raria-http; tests","Proxy, no-proxy, cookie load/save, and netrc behavior are native and verified.","Pending.","No browser-cookie import unless proven valuable."
+CM-011.4,pending,Close range and conditional requests,"Resume validators","crates/raria-http; raria-range; tests","Range, If-Range, conditional GET, metadata change, and resume behavior are safe.","Pending.","Protect against corruption."
+CM-011.5,pending,Verify HTTP contract,"Focused HTTP tests","raria-http and daemon native tests","Relevant HTTP tests pass without aria2 public fields.","Pending.","Avoid broad network tests unless final smoke requires them."

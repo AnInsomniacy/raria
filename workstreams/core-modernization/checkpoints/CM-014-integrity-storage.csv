@@ -1,0 +1,6 @@
+id,status,checkpoint,scope,target_files,acceptance,verification,notes
+CM-014.1,pending,Unify piece model,"Range Metalink BT pieces","crates/raria-core/src/native.rs; checksum and BT code","Piece state represents verification across range, Metalink, and BT where useful.","Pending.","Do not duplicate backend-owned piece scheduling."
+CM-014.2,pending,Close checksum policy,"Whole-file and piece checksums","crates/raria-core/src/checksum.rs; daemon tests","Checksum failures are terminal, native, and clean invalid output safely.","Pending.","Existing checksum tests are baseline."
+CM-014.3,pending,Close file allocation,"Disk allocation","crates/raria-core/src/file_alloc.rs; raria-range","none, preallocate, truncate, and platform fallocate behavior are native and resume-safe where supported.","Pending.","Document platform limitations."
+CM-014.4,pending,Close conflict policy,"Output collision behavior","crates/raria-core/src/rename.rs; daemon runtime","overwrite, rename, fail, and partial reuse behavior are explicit native policy.","Pending.","No silent compatibility behavior."
+CM-014.5,pending,Verify integrity storage,"Focused storage tests","core and daemon tests","Integrity and disk tests pass with completion based on verified state.","Pending.","Keep tests high value."

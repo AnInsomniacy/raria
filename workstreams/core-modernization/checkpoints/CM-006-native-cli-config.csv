@@ -1,0 +1,6 @@
+id,status,checkpoint,scope,target_files,acceptance,verification,notes
+CM-006.1,pending,Define final CLI surface,"Native command and option names","crates/raria-cli/src/main.rs; README.md","Public CLI names match raria-native concepts and do not expose aria2 aliases.","Pending.","Delete aliases instead of preserving them."
+CM-006.2,pending,Close raria.toml schema,"Strict native config","crates/raria-core/src/native_config.rs; tests","Strict TOML sections cover supported runtime behavior and reject stale keys.","Pending.","Unknown keys should fail."
+CM-006.3,pending,Remove legacy config fields,"Runtime config cleanup","crates/raria-core/src/config.rs; callers","Public config names no longer expose rpc_secret, rpc_listen_port, split, out, or aria2-shaped names.","Pending.","Internal transition fields must have delete conditions."
+CM-006.4,pending,Update user docs,"Native CLI and config docs","README.md; docs","Docs describe native CLI and raria.toml only.","Pending.","No compatibility guidance."
+CM-006.5,pending,Verify CLI config,"Focused tests and help scan","CLI tests; config tests; help output","Native config tests pass and stale option scans show no deleted public names.","Pending.","Keep tests narrow."

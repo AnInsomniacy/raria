@@ -1,0 +1,6 @@
+id,status,checkpoint,scope,target_files,acceptance,verification,notes
+CM-009.1,pending,Define versioned schema,"Native redb tables","crates/raria-core/src/persist.rs","Metadata, task, source, file, segment, piece, tracker, event cursor, and external BT state references have explicit schema versions.","Pending.","Do not serialize runtime structs blindly."
+CM-009.2,pending,Add migration fixtures,"Schema migration tests","crates/raria-core/tests; fixtures if needed","Previous native schema fixtures migrate or fail safely with clear errors.","Pending.","No aria2 storage compatibility fixtures."
+CM-009.3,pending,Cut direct Job row writes,"Old row removal","crates/raria-core/src/persist.rs; engine callers","Runtime state writes native rows without relying on direct Job rows.","Pending.","Delete old rows after tests prove coverage."
+CM-009.4,pending,Cut old Gid segment fallback,"Segment persistence cleanup","crates/raria-core/src/persist.rs; segment tests","Segment checkpoints are keyed by native task and schema version.","Pending.","Remove read-only fallback when no longer needed."
+CM-009.5,pending,Verify persistence closure,"Focused persistence tests","raria-core persistence tests","Schema tests pass and stale old-table scans are clean or documented.","Pending.","Run cargo check after integration."

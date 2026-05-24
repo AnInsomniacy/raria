@@ -1,0 +1,6 @@
+id,status,checkpoint,scope,target_files,acceptance,verification,notes
+CM-017.1,pending,Close WebSeed runtime,"BEP-17 and BEP-19 behavior","crates/raria-bt; daemon tests","WebSeed completion, failure, selected-file behavior, and status projection are native.","Pending.","Do not duplicate librqbit transfer logic unless required."
+CM-017.2,pending,Close file selection,"BT selected files","crates/raria-bt; raria-rpc API; tests","Pre-download and live file selection persist and restore through native policy.","Pending.","Delete legacy select-file public behavior."
+CM-017.3,pending,Close peer and tracker projection,"BT runtime resources","crates/raria-bt; raria-core native snapshots; API tests","Peers and trackers expose stable native fields without overfitting backend internals.","Pending.","Document unavailable backend fields."
+CM-017.4,pending,Close seeding and limits,"BT seeding controls","crates/raria-cli/src/bt_runtime.rs; raria-bt","Ratio, time, idle stop, seed-only lifecycle, and upload limits are enforced or documented as limitations.","Pending.","Avoid fake upload tests."
+CM-017.5,pending,Close fastresume restore,"BT persistence","crates/raria-bt; daemon tests","Fastresume state is referenced by native persistence and restored across daemon restart.","Pending.","Do not embed librqbit internals without public API."

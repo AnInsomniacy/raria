@@ -1,0 +1,6 @@
+id,status,checkpoint,scope,target_files,acceptance,verification,notes
+CM-010.1,pending,Verify range restore,"Range crash recovery","crates/raria-cli/tests/session_smoke.rs; native_api_smoke.rs","Interrupted range tasks restore from native segment and file state and resume safely.","Pending.","Use local fixtures."
+CM-010.2,pending,Verify BT restore,"BitTorrent recovery","crates/raria-bt; crates/raria-cli/tests","BT fastresume references restore through native task metadata across daemon restart.","Pending.","Do not embed backend internals unless API supports it."
+CM-010.3,pending,Verify session save,"Explicit and periodic save","daemon runtime and tests","Native session save writes all required state and no legacy public storage format.","Pending.","Keep SIGUSR1 coverage if useful."
+CM-010.4,pending,Verify terminal restore states,"Lifecycle recovery","core persistence and daemon tests","Completed, failed, paused, removed, running, and seeding states restore according to native policy.","Pending.","Focus on behavior not old field names."
+CM-010.5,pending,Close recovery docs,"Docs and ledger update","capability-ledger.csv; progress.md","Crash recovery status is accurately recorded.","Pending.","No compatibility claims."
