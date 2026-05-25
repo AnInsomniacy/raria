@@ -44,7 +44,8 @@ These behaviors are backed by repository tests and current code:
 - terminal checksum and piece-integrity failures reject invalid output instead of leaving corrupt files behind
 - structured log files redact obvious secrets and credential-bearing URLs on covered paths
 
-The durable verification contract lives in [`docs/verification-contract.md`](docs/verification-contract.md).
+The active modernization and verification contract lives in
+[`docs/core-modernization/overview.md`](docs/core-modernization/overview.md).
 
 ## Control Surface
 
@@ -101,7 +102,8 @@ The bounded logging contract currently covers:
 - core task lifecycle and failure paths
 - control-plane mutation and WebSocket event emission
 
-See [`docs/logging-contract.md`](docs/logging-contract.md) for the exact contract and non-goals.
+The active logging scope is tracked in
+[`docs/core-modernization/capability-ledger.csv`](docs/core-modernization/capability-ledger.csv).
 
 ## Quick Start
 
@@ -173,11 +175,7 @@ crates/
   raria-rpc       native HTTP JSON API, event stream, migration control harness
   raria-cli       CLI and daemon runtime wiring
 docs/
-  modernization/
-  practical-maturity.md
-  verification-contract.md
-  bt-stop-lines.md
-  logging-contract.md
+  core-modernization/
 ```
 
 ## Verification

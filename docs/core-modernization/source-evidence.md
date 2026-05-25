@@ -32,9 +32,10 @@ library ownership.
 
 ## Old raria Documents
 
-The previous modernization documents under `docs/modernization` are migration
-inputs only. Their useful evidence has been consolidated into this tracker.
-They are not an active authority after `CM-001` is verified.
+The previous docs tree was removed as an active source. Useful modernization,
+verification, logging, BitTorrent, and architecture evidence has been
+consolidated into this tracker. Those deleted documents are not an authority
+after `CM-001` is verified.
 
 Important migrated facts:
 

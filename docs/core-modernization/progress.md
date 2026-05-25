@@ -33,12 +33,11 @@ after tracker rebuild is CM-003, Native Surface Audit.
 ## Log
 
 2026-05-25 CM-001 verified
-Changed: Created the new root workstream tracker under
-`workstreams/core-modernization` with a native-only goal contract, deletion
-policy, library policy, restrained test policy, roadmap, capability ledger,
-dependency ledger, source evidence policy, progress log, and small checkpoint
-files. Retired the old `docs/modernization` runbook files as active authority
-and replaced them with a pointer README.
+Changed: Created the active tracker under `docs/core-modernization` with a
+native-only goal contract, deletion policy, library policy, restrained test
+policy, roadmap, capability ledger, dependency ledger, source evidence policy,
+progress log, and small checkpoint files. Removed the old docs files so
+`docs` contains only the active tracker.
 Verified: CSV parser validation passed for 24 files. `git diff --check`
 passed. Stale old-runbook reference scan passed.
 Remaining: Start CM-002 dependency policy verification.
