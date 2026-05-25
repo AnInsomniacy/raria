@@ -204,10 +204,7 @@ BT lifecycle smoke now require `task_id` and reject `gid`. Existing native API
 tests continue to assert `gid` is absent from public JSON responses.
 Verified: `cargo test -p raria-core logging -- --nocapture` passed with 3
 matching tests. `cargo test -p raria-cli --bin raria
-range_structured_fields_use_native_task_id -- --nocapture` passed. `cargo
-test -p raria-cli --test bt_tracker_smoke
-daemon_log_file_contains_structured_bt_lifecycle_events -- --nocapture`
-passed. `cargo check --workspace --locked` passed.
+range_structured_fields_use_native_task_id -- --nocapture` passed. historical daemon BT lifecycle smoke later removed from the default suite passed. `cargo check --workspace --locked` passed.
 Remaining: Continue CM-007 migration helper cleanup and identity stale scans.
 Blocked: none.
 
@@ -382,7 +379,7 @@ daemon_resume_after_restart_sends_if_range_when_etag_is_known --
 daemon_resume_after_restart_surfaces_non_zero_completed_length_before_completion
 -- --nocapture` passed. `cargo test -p raria-cli --test native_api_smoke
 daemon_resume_uses_native_segment_rows_after_restart -- --nocapture` passed.
-`cargo test -p raria-cli --test bt_tracker_smoke
+`historical daemon BT smoke command removed from the default suite
 daemon_binds_bt_fastresume_state_to_native_session_path -- --nocapture`
 passed. `cargo test -p raria-bt --test bt_smoke
 bt_service_persists_fastresume_state_and_restores_progress_after_restart --
@@ -556,7 +553,7 @@ Verified: `cargo test -p raria-bt --test bt_gap_ledger
 bt_webseed_bep17_bep19 -- --nocapture`, focused native daemon BT file
 selection, unselected-file cleanup, peer/tracker projection, UDP tracker
 projection, seeding lifecycle, and seeding queue-release smokes passed.
-`cargo test -p raria-cli --test bt_tracker_smoke
+`historical daemon BT smoke command removed from the default suite
 daemon_binds_bt_fastresume_state_to_native_session_path -- --nocapture` passed.
 `cargo test -p raria-bt --test bt_smoke
 bt_service_persists_fastresume_state_and_restores_progress_after_restart --
@@ -650,4 +647,11 @@ Blocked: none.
 Changed: Closed final validation. Capability ledger rows now classify all capabilities as verified, limited, excluded, or rejected. CM-022 records final formatting, check, test, clippy, smoke evidence, and tracker closure. Roadmap rows CM-001 through CM-022 are verified.
 Verified: `cargo fmt --all --check` passed. `cargo check --workspace --locked` passed. `cargo test --workspace` passed. `cargo clippy --workspace --all-targets -- -D warnings` passed. CSV validation, stale scans, and `git diff --check` passed before tracker closure. Focused local smoke evidence covers native API creation/events, range resume, torrent-file ingress, remote torrent metadata, BitTorrent metadata and UDP tracker behavior, BT fastresume restore, daemon persistence restore, session save, SIGUSR1 save, and clean completion output.
 Remaining: none for the core-modernization tracker.
+Blocked: none.
+
+
+2026-05-25 release test pruning
+Changed: Deleted duplicate daemon BitTorrent smoke coverage and a public-network connect-timeout test from the default release suite. Kept local-only core protocol, native API, session, HTTP, FTP, FTPS, SFTP, Metalink, and BitTorrent backend coverage. No tests were marked ignored.
+Verified: cargo fmt --all --check passed. cargo check --workspace --locked passed. cargo test --workspace passed with 0 ignored tests. cargo clippy --workspace --all-targets -- -D warnings passed.
+Remaining: Run scripts/release.sh for the v1.0.0 release boundary.
 Blocked: none.

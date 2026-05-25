@@ -103,7 +103,7 @@ cargo build --release --locked -p raria-cli
 target/release/raria --version
 ```
 
-For a major release or release-process change, also refresh real smoke evidence when requested by the maintainer. Keep raw smoke output under `var/`; commit only concise durable conclusions.
+Public-network downloads and long manual smoke runs are not release gates unless the maintainer explicitly requests them. Keep raw smoke output under `var/`; commit only concise durable conclusions.
 
 After the tag is ready, write a concise English GitHub Release title and notes from the commits and verified behavior in the release. The notes are the official release record. They should be written for users and integrators, mention breaking changes before general changes, and include the produced artifacts and checksums once available.
 

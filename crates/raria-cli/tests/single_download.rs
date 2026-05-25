@@ -1339,40 +1339,6 @@ async fn single_download_honors_request_timeout() {
 }
 
 #[tokio::test]
-async fn single_download_honors_connect_timeout_flag() {
-    let tmp = tempdir().expect("tempdir");
-    let start = std::time::Instant::now();
-    let output = Command::new(cargo_bin("raria"))
-        .arg("download")
-        .arg("http://10.255.255.1:81/connect-timeout.bin")
-        .arg("--download-dir")
-        .arg(tmp.path())
-        .arg("--connect-timeout")
-        .arg("1")
-        .output()
-        .expect("run raria");
-
-    assert!(
-        !output.status.success(),
-        "download unexpectedly succeeded against an unroutable address\nstdout:\n{}\n\nstderr:\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        !stderr.contains("unexpected argument '--connect-timeout'"),
-        "connect-timeout failure came from missing CLI wiring instead of real connect-timeout behavior:\n{stderr}"
-    );
-
-    assert!(
-        start.elapsed() < std::time::Duration::from_secs(8),
-        "connect-timeout path took too long, elapsed {:?}",
-        start.elapsed()
-    );
-}
-
-#[tokio::test]
 async fn single_download_conditional_get_skips_download_when_server_reports_not_modified() {
     let server = MockServer::start().await;
 

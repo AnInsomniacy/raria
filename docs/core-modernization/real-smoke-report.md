@@ -31,7 +31,7 @@ cargo test -p raria-ftp --test ftps_smoke
 cargo test -p raria-bt --test bt_smoke
 cargo test -p raria-bt --test bt_gap_ledger
 cargo test -p raria-bt --test dht_persistence
-cargo test -p raria-cli --test bt_tracker_smoke
+historical daemon BT smoke command removed from the default suite
 ```
 
 ## API Surface
@@ -54,7 +54,7 @@ CLI basics passed. Help, download help, bash completion, strict `raria.toml` loa
 
 Native API control passed. Local HTTP range completed `4,194,304` bytes with matching SHA-256, 12 fixture range requests, custom header propagation, `13,348,895` B/s sampled speed, slow-task pause/resume/restart/remove, idempotent repeated pause, queue patch, source replacement, per-task transfer patch, global transfer patch, event stream, session save, restore, and shutdown. Evidence: `reports/api-control-summary.json`.
 
-Protocol smoke passed. `single_download` passed 24 tests, `session_smoke` passed 19 tests, `native_api_smoke` passed 30 tests, CLI `sftp_smoke` passed 3 tests, FTP smoke passed 3 tests, FTPS smoke passed 1 test, BT smoke passed 11 tests, BT gap ledger passed 3 tests, DHT persistence passed 3 tests, and BT tracker smoke passed 4 tests.
+Protocol smoke passed. `single_download` passed 24 tests, `session_smoke` passed 19 tests, `native_api_smoke` passed 30 tests, CLI `sftp_smoke` passed 3 tests, FTP smoke passed 3 tests, FTPS smoke passed 1 test, BT smoke passed 11 tests, BT gap ledger passed 3 tests, DHT persistence passed 3 tests, and Duplicate daemon BT tracker smoke was later removed from the default suite.
 
 ## Bug Ledger
 

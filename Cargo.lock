@@ -3042,7 +3042,7 @@ dependencies = [
 
 [[package]]
 name = "raria-bt"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "hex",
@@ -3073,7 +3073,7 @@ dependencies = [
 
 [[package]]
 name = "raria-cli"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "base64",
@@ -3113,7 +3113,7 @@ dependencies = [
 
 [[package]]
 name = "raria-core"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -3143,7 +3143,7 @@ dependencies = [
 
 [[package]]
 name = "raria-ftp"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -3168,7 +3168,7 @@ dependencies = [
 
 [[package]]
 name = "raria-http"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3198,7 +3198,7 @@ dependencies = [
 
 [[package]]
 name = "raria-metalink"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "quick-xml",
@@ -3213,7 +3213,7 @@ dependencies = [
 
 [[package]]
 name = "raria-range"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3232,7 +3232,7 @@ dependencies = [
 
 [[package]]
 name = "raria-rpc"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -3254,7 +3254,7 @@ dependencies = [
 
 [[package]]
 name = "raria-sftp"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "async-trait",
