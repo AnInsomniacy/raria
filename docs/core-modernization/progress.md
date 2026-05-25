@@ -297,3 +297,28 @@ passed with 24 matching tests. `cargo check --workspace --locked` passed.
 `cargo fmt --all --check` passed.
 Remaining: Continue CM-008 native mutation policy.
 Blocked: none.
+
+2026-05-25 CM-008 partial
+Changed: Closed focused native mutation policy for this checkpoint. Native
+transfer policy now updates rate limiters through TaskId, and existing native
+mutation coverage verifies sources, trackers, seeding, queue position, BT file
+selection, and native not-found errors.
+Verified: `cargo test -p raria-core
+native_runtime_helpers_manage_rate_limiter_and_segment_state -- --nocapture`
+passed. `cargo test -p raria-rpc --test native_api
+task_transfer_patch_updates_native_runtime_limits -- --nocapture` passed.
+`cargo test -p raria-rpc --test native_api
+task_sources_patch_replaces_native_range_sources -- --nocapture` passed.
+`cargo test -p raria-rpc --test native_api
+task_trackers_patch_updates_native_bt_trackers -- --nocapture` passed. `cargo
+test -p raria-rpc --test native_api
+task_bt_seeding_patch_updates_native_seed_policy -- --nocapture` passed.
+`cargo test -p raria-rpc --test native_api
+task_queue_patch_updates_native_waiting_position -- --nocapture` passed.
+`cargo test -p raria-rpc --test native_api
+task_files_patch_updates_native_bt_file_selection -- --nocapture` passed.
+`cargo test -p raria-rpc --test native_api
+task_mutation_routes_return_native_not_found_errors -- --nocapture` passed.
+`cargo check --workspace --locked` passed. `cargo fmt --all --check` passed.
+Remaining: Run CM-008 runtime closure checks.
+Blocked: none.

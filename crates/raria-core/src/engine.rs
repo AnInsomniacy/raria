@@ -567,7 +567,7 @@ impl Engine {
             })
             .context("native task not found")?;
         if let Some(limit) = download_limit {
-            self.update_job_rate_limit(gid, limit)?;
+            self.update_native_task_rate_limit(task_id, limit)?;
         }
         let job = self.registry.get(gid).context("native task not found")?;
         Ok((
@@ -1551,6 +1551,15 @@ impl Engine {
         Ok(self.job_rate_limiter(gid, limit_bps))
     }
 
+    /// Hot-update the rate limiter for a native task.
+    pub fn update_native_task_rate_limit(&self, task_id: &TaskId, limit_bps: u64) -> Result<()> {
+        self.gid_for_task_id(task_id)
+            .context("native task not found")?;
+        let limiter = self.native_task_rate_limiter(task_id, limit_bps)?;
+        limiter.update_limit(limit_bps);
+        Ok(())
+    }
+
     /// Persist interrupted segment checkpoints for a native task.
     pub fn persist_native_interrupted_segments(
         &self,
@@ -2270,6 +2279,16 @@ mod tests {
             .native_task_rate_limiter(&created.task_id, 1024)
             .unwrap();
         assert!(limiter.is_limited());
+        engine
+            .update_native_task_rate_limit(&created.task_id, 2048)
+            .unwrap();
+        assert_eq!(
+            engine
+                .native_task_rate_limiter(&created.task_id, 0)
+                .unwrap()
+                .limit_bps(),
+            2048
+        );
 
         engine
             .persist_native_interrupted_segments(&created.task_id, &[segment], 512)

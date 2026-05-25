@@ -1246,7 +1246,13 @@ mod tests {
         assert_eq!(job.options.max_download_limit, 204800);
         assert_eq!(job.options.max_upload_limit, 102400);
         assert_eq!(job.options.max_connections, 8);
-        assert_eq!(engine.job_rate_limiter(gid, 0).limit_bps(), 204800);
+        assert_eq!(
+            engine
+                .native_task_rate_limiter(&summary.task_id, 0)
+                .expect("native rate limiter")
+                .limit_bps(),
+            204800
+        );
 
         let readback: serde_json::Value = client
             .get(format!(
