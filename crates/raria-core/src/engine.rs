@@ -3339,6 +3339,48 @@ mod tests {
     }
 
     #[test]
+    fn engine_restore_keeps_failed_jobs_in_history() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("failed.redb");
+        let store = Arc::new(Store::open(&db_path).unwrap());
+
+        let engine1 = Engine::with_store(default_config(), Arc::clone(&store));
+        let handle = engine1.add_uri(&default_spec()).unwrap();
+        engine1.activate_job(handle.gid).unwrap();
+        engine1.fail_job(handle.gid, "network error").unwrap();
+        let gid = handle.gid;
+        drop(engine1);
+
+        let engine2 = Engine::with_store(default_config(), Arc::clone(&store));
+        engine2.restore().unwrap();
+
+        let job = engine2.registry.get(gid).unwrap();
+        assert_eq!(job.status, Status::Error);
+        assert_eq!(engine2.scheduler.queue_len(), 0);
+    }
+
+    #[test]
+    fn engine_restore_keeps_removed_jobs_in_history() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("removed.redb");
+        let store = Arc::new(Store::open(&db_path).unwrap());
+
+        let engine1 = Engine::with_store(default_config(), Arc::clone(&store));
+        let handle = engine1.add_uri(&default_spec()).unwrap();
+        engine1.activate_job(handle.gid).unwrap();
+        engine1.remove(handle.gid).unwrap();
+        let gid = handle.gid;
+        drop(engine1);
+
+        let engine2 = Engine::with_store(default_config(), Arc::clone(&store));
+        engine2.restore().unwrap();
+
+        let job = engine2.registry.get(gid).unwrap();
+        assert_eq!(job.status, Status::Removed);
+        assert_eq!(engine2.scheduler.queue_len(), 0);
+    }
+
+    #[test]
     fn engine_restore_keeps_paused_jobs_paused() {
         let dir = tempfile::tempdir().unwrap();
         let db_path = dir.path().join("paused.redb");

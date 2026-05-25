@@ -367,3 +367,32 @@ segment, and BT tests passed. `cargo check --workspace --locked`,
 `git diff --check` passed.
 Remaining: Start CM-010 session save and crash recovery.
 Blocked: none.
+
+2026-05-25 CM-010 verified
+Changed: Closed native session save and crash recovery. Range restart,
+If-Range, preserved completed bytes, native segment row resume, BT fastresume
+binding, BT backend restart restore, explicit save, periodic save, SIGUSR1
+save, and terminal lifecycle recovery are verified. Added focused core restore
+coverage for failed and removed terminal history states.
+Verified: `cargo test -p raria-cli --test session_smoke
+daemon_resume_after_restart_issues_range_request -- --nocapture` passed.
+`cargo test -p raria-cli --test session_smoke
+daemon_resume_after_restart_sends_if_range_when_etag_is_known --
+--nocapture` passed. `cargo test -p raria-cli --test session_smoke
+daemon_resume_after_restart_surfaces_non_zero_completed_length_before_completion
+-- --nocapture` passed. `cargo test -p raria-cli --test native_api_smoke
+daemon_resume_uses_native_segment_rows_after_restart -- --nocapture` passed.
+`cargo test -p raria-cli --test bt_tracker_smoke
+daemon_binds_bt_fastresume_state_to_native_session_path -- --nocapture`
+passed. `cargo test -p raria-bt --test bt_smoke
+bt_service_persists_fastresume_state_and_restores_progress_after_restart --
+--nocapture` passed. `cargo test -p raria-cli --test session_smoke
+daemon_periodically_saves_session_when_interval_is_enabled -- --nocapture`
+passed. `cargo test -p raria-cli --test session_smoke
+daemon_saves_session_when_native_save_session_is_called -- --nocapture`
+passed. `cargo test -p raria-cli --test session_smoke
+daemon_saves_session_when_sigusr1_is_received -- --nocapture` passed.
+`cargo test -p raria-core engine_restore -- --nocapture` passed with 9
+matching tests.
+Remaining: Start CM-011 HTTP and HTTPS native transfer contract.
+Blocked: none.
