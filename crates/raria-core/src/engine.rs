@@ -727,6 +727,13 @@ impl Engine {
         let gid = self
             .gid_for_task_id(task_id)
             .context("native task not found")?;
+        if self
+            .registry
+            .get(gid)
+            .is_some_and(|job| job.status == Status::Paused)
+        {
+            return self.native_task_summary(task_id);
+        }
         self.registry
             .update(gid, |job| {
                 job.transition(Status::Paused)

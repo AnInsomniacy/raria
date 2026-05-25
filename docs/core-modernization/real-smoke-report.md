@@ -57,7 +57,7 @@ Protocol smoke passed. `single_download` passed 24 tests, `session_smoke` passed
 
 ## Bug Ledger
 
-`SMOKE-006` open. Pausing an already-paused metadata-only magnet task returns `404 task_not_found`. Evidence shows the task exists in the final `/api/v1/tasks` list as `paused`. Root cause is likely invalid lifecycle transition mapping in the pause route: `pause_native_task` returns an error for `Paused -> Paused`, and `handle_pause_task` maps every error to `TaskNotFound`.
+`SMOKE-006` fixed. Pausing an already-paused metadata-only magnet task returned `404 task_not_found` even though the task existed in `/api/v1/tasks` as `paused`. Root cause was non-idempotent native pause semantics: `pause_native_task` treated `Paused -> Paused` as an invalid transition and the API translated that error as not found. Regression coverage: `cargo test -p raria-rpc --test native_api task_detail_pause_and_resume_use_native_task_id`.
 
 No regression was observed for bounded HTTP ranges, nested output directories, native transfer speed, WebSocket event delivery, Apple HTTPS progress, torrent tracker/peer projection, session save/restore, or daemon shutdown.
 
@@ -67,4 +67,4 @@ Generated binaries, smoke scripts, session databases, logs, raw API payloads, an
 
 ## Next Engineering Target
 
-Fix native task mutation error mapping and idempotent lifecycle semantics. At minimum, pausing an already-paused task should not return `task_not_found`; use a native invalid-state error or make pause idempotent.
+Re-run the public magnet metadata smoke in the next full E2E pass and confirm the repeated `/api/v1/tasks/{taskId}/pause` call returns the current paused task summary.

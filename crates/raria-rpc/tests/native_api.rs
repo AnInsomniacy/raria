@@ -244,6 +244,20 @@ mod tests {
             .expect("pause json");
         assert_eq!(paused["lifecycle"], "paused");
 
+        let paused_again: serde_json::Value = client
+            .post(format!(
+                "http://{}/api/v1/tasks/{}/pause",
+                addrs.http, task_id
+            ))
+            .send()
+            .await
+            .expect("second pause request")
+            .json()
+            .await
+            .expect("second pause json");
+        assert_eq!(paused_again["lifecycle"], "paused");
+        assert_no_removed_public_fields(&paused_again);
+
         let resumed: serde_json::Value = client
             .post(format!(
                 "http://{}/api/v1/tasks/{}/resume",
