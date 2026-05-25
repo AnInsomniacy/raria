@@ -246,3 +246,21 @@ passed for 25 files. `git diff --check` passed. Stale migration helper scan
 passed.
 Remaining: Start CM-008 native task runtime model.
 Blocked: none.
+
+2026-05-25 CM-008 partial
+Changed: Started the native task runtime boundary. Native pause, resume,
+remove, and restart now resolve and mutate through TaskId-first paths instead
+of delegating through the old Gid lifecycle wrappers. Native lifecycle
+structured logs now use `task_id` fields.
+Verified: `cargo test -p raria-core
+native_lifecycle_log_fields_use_task_id_only -- --nocapture` passed. `cargo
+test -p raria-core native_lifecycle_operations_publish_native_events --
+--nocapture` passed. `cargo test -p raria-rpc --test native_api
+task_detail_pause_and_resume_use_native_task_id -- --nocapture` passed. `cargo
+test -p raria-rpc --test native_api
+native_events_websocket_streams_native_lifecycle_events -- --nocapture`
+passed. `cargo test -p raria-rpc --test native_api
+task_remove_and_restart_are_native_actions -- --nocapture` passed. `cargo
+check --workspace --locked` passed. `cargo fmt --all --check` passed.
+Remaining: Continue CM-008 range activation.
+Blocked: none.

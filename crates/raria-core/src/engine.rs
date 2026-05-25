@@ -38,6 +38,10 @@ use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
+fn native_task_log_fields(task_id: &TaskId) -> [(&'static str, String); 1] {
+    [("task_id", task_id.to_string())]
+}
+
 /// Input for planning a native segmented range download.
 #[derive(Debug, Clone, Copy)]
 pub struct NativeSegmentPlanningInput<'a> {
@@ -694,7 +698,29 @@ impl Engine {
         let gid = self
             .gid_for_task_id(task_id)
             .context("native task not found")?;
-        self.pause(gid)?;
+        self.registry
+            .update(gid, |job| {
+                job.transition(Status::Paused)
+                    .map_err(|e| anyhow::anyhow!("{e}"))
+            })
+            .context("native task not found")?
+            .context("pause failed")?;
+        self.cancel_registry.cancel(task_id);
+        self.scheduler.dequeue_task(task_id);
+        self.persist_job_by_gid(gid);
+        self.event_bus.publish(DownloadEvent::Paused { gid });
+        self.publish_native_task_event(
+            task_id.clone(),
+            NativeEventType::TaskPaused,
+            NativeEventData::Empty,
+        );
+        info!(task_id = %task_id, "native task paused");
+        emit_structured_log(
+            "INFO",
+            "raria::engine",
+            "native task paused",
+            native_task_log_fields(task_id),
+        );
         self.native_task_summary(task_id)
     }
 
@@ -703,7 +729,30 @@ impl Engine {
         let gid = self
             .gid_for_task_id(task_id)
             .context("native task not found")?;
-        self.unpause(gid)?;
+        self.registry
+            .update(gid, |job| {
+                job.transition(Status::Waiting)
+                    .map_err(|e| anyhow::anyhow!("{e}"))
+            })
+            .context("native task not found")?
+            .context("resume failed")?;
+        self.cancel_registry.register(task_id.clone());
+        self.scheduler.enqueue_task(task_id.clone());
+        self.persist_job_by_gid(gid);
+        self.work_notify.notify_one();
+        self.event_bus.publish(DownloadEvent::Started { gid });
+        self.publish_native_task_event(
+            task_id.clone(),
+            NativeEventType::TaskResumed,
+            NativeEventData::Empty,
+        );
+        info!(task_id = %task_id, "native task resumed");
+        emit_structured_log(
+            "INFO",
+            "raria::engine",
+            "native task resumed",
+            native_task_log_fields(task_id),
+        );
         self.native_task_summary(task_id)
     }
 
@@ -712,7 +761,28 @@ impl Engine {
         let gid = self
             .gid_for_task_id(task_id)
             .context("native task not found")?;
-        self.force_remove(gid)?;
+        self.cancel_registry.cancel(task_id);
+        self.scheduler.dequeue_task(task_id);
+        self.clear_job_rate_limiter(gid);
+        self.registry
+            .update(gid, |job| {
+                job.status = Status::Removed;
+            })
+            .context("native task not found")?;
+        self.persist_job_by_gid(gid);
+        self.event_bus.publish(DownloadEvent::Stopped { gid });
+        self.publish_native_task_event(
+            task_id.clone(),
+            NativeEventType::TaskRemoved,
+            NativeEventData::Empty,
+        );
+        info!(task_id = %task_id, "native task removed");
+        emit_structured_log(
+            "INFO",
+            "raria::engine",
+            "native task removed",
+            native_task_log_fields(task_id),
+        );
         self.native_task_summary(task_id)
     }
 
@@ -734,6 +804,17 @@ impl Engine {
         self.scheduler.enqueue_task(task_id.clone());
         self.persist_job_by_gid(gid);
         self.event_bus.publish(DownloadEvent::Started { gid });
+        self.publish_native_task_event(
+            task_id.clone(),
+            NativeEventType::TaskResumed,
+            NativeEventData::Empty,
+        );
+        emit_structured_log(
+            "INFO",
+            "raria::engine",
+            "native task restarted",
+            native_task_log_fields(task_id),
+        );
         self.work_notify.notify_one();
         self.native_task_summary(task_id)
     }
@@ -2666,6 +2747,15 @@ mod tests {
             NativeEventData::Empty,
         )
         .await;
+    }
+
+    #[test]
+    fn native_lifecycle_log_fields_use_task_id_only() {
+        let task_id = TaskId::new();
+
+        let fields = native_task_log_fields(&task_id);
+
+        assert_eq!(fields, [("task_id", task_id.to_string())]);
     }
 
     async fn assert_native_event(
