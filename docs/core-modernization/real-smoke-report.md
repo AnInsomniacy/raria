@@ -4,53 +4,67 @@ Date: 2026-05-25
 Binary: `var/releases/macos/raria`
 Version: `raria 0.1.0`
 Platform: macOS arm64
-SHA-256: `ef682fb2b31e2e7a59e6ad6e2bac174fe0675cc8fd9d3ffc9974c832ffbb8d81`
-Evidence root: `var/smoke-runs/20260525-091956-fixed-clean`
+SHA-256: `8cc5dae3c5ad9077d86fe0341ab4ba78514f3e033845cc5646b94c6baef9a2fd`
+Evidence root: `var/smoke-runs/20260525-100155-clean-e2e`
 
 ## Scope
 
-This run rebuilt the release binary, started the native daemon on an ephemeral port, exercised the native HTTP JSON API, used the three maintainer-selected public inputs, sampled transfer metrics, tested lifecycle controls, saved the session, and shut the daemon down through `/api/v1/daemon/shutdown`.
+This run cleared `var/`, rebuilt the release binary, created a fresh smoke directory, started native daemons on ephemeral ports, exercised CLI, native HTTP JSON API, WebSocket events, local controlled HTTP fixtures, and the three maintainer-selected public inputs. Large public downloads were bounded.
 
-The run intentionally bounded public downloads. Large artifacts were not downloaded to completion.
+Old JSON-RPC was not tested because it has been deleted. RPC coverage means `/api/v1` HTTP JSON resources and `/api/v1/events`.
+
+## Commands
+
+```bash
+find var -mindepth 1 ! -name README.md -exec rm -rf {} +
+cargo build --release -p raria-cli
+cp target/release/raria var/releases/macos/raria
+shasum -a 256 var/releases/macos/raria > var/releases/macos/raria.sha256
+node var/tmp/e2e-smoke.cjs
+node var/tmp/api-control-smoke.cjs
+cargo test -p raria-cli --test single_download
+cargo test -p raria-cli --test session_smoke
+cargo test -p raria-cli --test sftp_smoke
+cargo test -p raria-ftp --test ftp_smoke
+cargo test -p raria-ftp --test ftps_smoke
+```
 
 ## API Surface
 
-`/api/v1/health`, `/api/v1/config`, `/api/v1/stats`, `/api/v1/tasks`, `/api/v1/transfer`, `/api/v1/session/save`, and `/api/v1/daemon/shutdown` returned successful native JSON responses. The daemon reported `shuttingDown` and exited cleanly. No daemon process remained after shutdown.
+`/api/v1/health`, `/api/v1/config`, `/api/v1/stats`, `/api/v1/tasks`, `/api/v1/transfer`, `/api/v1/session/save`, and `/api/v1/daemon/shutdown` returned successful native JSON responses. `/api/v1/events` streamed `task.created`, `task.started`, `task.progress`, and `task.completed` for a controlled HTTP task.
 
-Focused validation also passed:
+Task control coverage passed for create, poll, queue read, queue patch, per-task transfer patch, source replacement, pause, resume, restart, remove, session save, restore, and shutdown. Evidence: `reports/api-control-summary.json`.
 
-```bash
-cargo test -p raria-core update_progress_projects_speed_after_delta
-cargo test -p raria-range multi_segment_passes_bounded_lengths_to_backend
-cargo test -p raria-cli --test native_api_smoke daemon_native_http_range_task_progresses_with_bounded_segments
-```
+No daemon process remained after shutdown checks.
 
 ## Public Input Results
 
-Local HTTP control passed. A nested `downloadDir` task completed `4194304` bytes, produced the expected SHA-256, exposed nonzero speed, and issued bounded segment ranges: `bytes=0-1048575`, `bytes=1048576-2097151`, `bytes=2097152-3145727`, and `bytes=3145728-4194303`. Peak sampled speed was `8153271` B/s. Evidence: `reports/local-http-control-summary.json`.
+Apple HTTPS passed. The IPSW task advanced to `37220986` sampled bytes in `3.52` seconds, reached `47140474` bytes after resume, exposed first nonzero speed at `0.50` seconds, peaked at `2832695652` B/s, showed 8 active connections during transfer, and accepted pause and resume. Evidence: `reports/https-apple-summary.json`.
 
-HTTPS Apple IPSW passed the bounded sample. The task accepted the public URL, created nested output directories, advanced from zero to `36593706` sampled bytes in `3.06` seconds, exposed first nonzero speed at `0.51` seconds, peaked at `614392320` B/s, and paused successfully. Evidence: `reports/https-apple-summary.json`.
+Magnet metadata passed with one API semantics bug. The KNOPPIX CD magnet resolved metadata in `3.52` seconds, exposed 9 files, reported total size `700612589`, and appeared as `paused` in the final task list. A later pause call returned `404 task_not_found` even though the task existed and was already paused. Evidence: `reports/magnet-metadata-summary.json` and `reports/api-final-summary.json`.
 
-Magnet metadata passed. The KNOPPIX CD magnet resolved metadata in `4.10` seconds, exposed 9 files, reported total size `700612589`, entered `paused` lifecycle for metadata-only mode, and accepted native BT seeding policy updates through `/api/v1/tasks/:task_id/bt/seeding`. Peers and trackers were not sampled after metadata-only pause. Evidence: `reports/magnet-metadata-summary.json`.
+Torrent-file bounded download passed. The KNOPPIX DVD torrent exposed trackers and a peer, applied selected-file policy, downloaded `798567` bytes, peaked at `19013` B/s, transitioned through seeding, and accepted pause and resume. Evidence: `reports/torrent-file-summary.json`.
 
-Torrent-file bounded download passed. The KNOPPIX DVD torrent was accepted, tracker and peer snapshots became visible, selected-file policy was applied, speed became nonzero, pause returned `paused`, and resume returned `running`. Peak sampled speed was `7782` B/s, and max sampled completed bytes was `798567`. Evidence: `reports/torrent-file-summary.json`.
+## Controlled Fixture Results
+
+Local HTTP passed. A nested `downloadDir` task completed `4194304` bytes, matched SHA-256, emitted 4 bounded range headers, preserved the custom request header, and peaked at `14884993` B/s. Evidence: `reports/local-http-control-summary.json`.
+
+CLI auth and redirect passed. Local basic auth and redirect downloads produced the expected SHA-256. Evidence: `reports/local-cli-auth-redirect-summary.json`.
+
+Session restore passed. A second daemon restored 7 saved tasks from the same native redb session. Evidence: `reports/api-control-summary.json`.
+
+Protocol smoke passed. `single_download` passed 24 tests, `session_smoke` passed 19 tests, `sftp_smoke` passed 3 tests, `ftp_smoke` passed 3 tests, and `ftps_smoke` passed 1 test.
 
 ## Bug Ledger
 
-`SMOKE-001` fixed. HTTP/HTTPS native range tasks now pass bounded segment lengths to the backend. HTTP emits `Range: bytes=start-end` when segment length is known. The executor still caps reads locally.
+`SMOKE-006` open. Pausing an already-paused metadata-only magnet task returns `404 task_not_found`. Evidence shows the task exists in the final `/api/v1/tasks` list as `paused`. Root cause is likely invalid lifecycle transition mapping in the pause route: `pause_native_task` returns an error for `Paused -> Paused`, and `handle_pause_task` maps every error to `TaskNotFound`.
 
-`SMOKE-002` fixed. Native range progress now updates `downloadBytesPerSecond` from real byte deltas. The API exposes nonzero speed during local HTTP and public HTTPS transfers.
-
-`SMOKE-003` fixed in the smoke harness. Magnet metadata probes now treat `totalBytes: null` as valid before metadata resolution.
-
-`SMOKE-004` fixed. Native range tasks now create nested output directories before opening files.
-
-`SMOKE-005` fixed. Spawned range task failures now transition the native task to `failed` instead of leaving it stuck as `running`.
+No regression was observed for bounded HTTP ranges, nested output directories, native transfer speed, WebSocket event delivery, Apple HTTPS progress, torrent tracker/peer projection, session save/restore, or daemon shutdown.
 
 ## Artifact Hygiene
 
-Generated binaries, session databases, logs, raw API payloads, and partial downloads are under `var/`, which is ignored except `var/README.md`. CLI help and completion checks wrote temporary files under `/tmp` only.
+Generated binaries, smoke scripts, session databases, logs, raw API payloads, and partial downloads are under `var/`, which is ignored except `var/README.md`. No matching temporary runtime artifacts were found outside `var/`.
 
 ## Next Engineering Target
 
-Continue from the active `docs/core-modernization/roadmap.csv` checkpoint. The HTTP/HTTPS smoke blocker is closed and should remain covered by focused native API, range executor, and engine speed regression tests.
+Fix native task mutation error mapping and idempotent lifecycle semantics. At minimum, pausing an already-paused task should not return `task_not_found`; use a native invalid-state error or make pause idempotent.
