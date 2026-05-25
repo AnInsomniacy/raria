@@ -264,3 +264,21 @@ task_remove_and_restart_are_native_actions -- --nocapture` passed. `cargo
 check --workspace --locked` passed. `cargo fmt --all --check` passed.
 Remaining: Continue CM-008 range activation.
 Blocked: none.
+
+2026-05-25 CM-008 partial
+Changed: Moved daemon range activation context to TaskId-only ownership.
+Range execution no longer stores runtime Gid in `RangeExecutionContext`; the
+remaining Gid bridge is resolved inside the current private persistence and
+event boundary.
+Verified: `cargo test -p raria-cli --bin raria
+interrupted_segment_persistence_does_not_create_legacy_rows -- --nocapture`
+passed. `cargo test -p raria-cli --bin raria
+range_structured_fields_use_native_task_id -- --nocapture` passed. `cargo
+test -p raria-cli --bin raria
+mirror_failover_publishes_source_failed_event_before_completion -- --nocapture`
+passed. `cargo test -p raria-cli --test session_smoke
+daemon_fails_over_to_next_mirror_when_first_mirror_fails -- --nocapture`
+passed. `cargo check --workspace --locked` passed. `cargo fmt --all --check`
+passed.
+Remaining: Continue CM-008 BT activation.
+Blocked: none.

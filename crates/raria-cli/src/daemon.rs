@@ -220,18 +220,17 @@ pub(crate) async fn run_daemon_with_config(
                     continue;
                 }
             };
-            let gid = activation.runtime_gid;
             let token = activation.cancel;
-            let range_context = RangeExecutionContext {
-                task_id: activation.task_id.clone(),
-                runtime_gid: gid,
-            };
+            let task_id = activation.task_id.clone();
 
             let engine_ref = Arc::clone(&engine);
 
             match activation.kind {
                 raria_core::job::JobKind::Range => {
                     let default_headers = default_headers.clone();
+                    let range_context = RangeExecutionContext {
+                        task_id: task_id.clone(),
+                    };
                     tokio::spawn(async move {
                         if let Err(e) = run_job_download(
                             engine_ref,
@@ -241,11 +240,12 @@ pub(crate) async fn run_daemon_with_config(
                         )
                         .await
                         {
-                            error!(%gid, error = %e, "job download task failed");
+                            error!(%task_id, error = %e, "range download task failed");
                         }
                     });
                 }
                 raria_core::job::JobKind::Bt => {
+                    let gid = activation.runtime_gid;
                     let bt_service = Arc::clone(&bt_service);
                     tokio::spawn(async move {
                         if let Err(e) = run_bt_download(engine_ref, gid, token, bt_service).await {
@@ -537,7 +537,6 @@ fn resolve_output_path(
 #[derive(Debug, Clone)]
 struct RangeExecutionContext {
     task_id: TaskId,
-    runtime_gid: Gid,
 }
 
 /// Plan download segments and restore checkpoint progress from persistent store.
@@ -702,7 +701,9 @@ async fn run_job_download(
     cancel: CancellationToken,
     default_headers: Vec<(String, String)>,
 ) -> Result<()> {
-    let gid = context.runtime_gid;
+    let gid = engine
+        .gid_for_task_id(&context.task_id)
+        .context("native task runtime bridge missing")?;
     let task = engine
         .native_range_execution_task(&context.task_id)
         .context("failed to build native range execution task")?;
@@ -1300,10 +1301,7 @@ mod tests {
         let task_id = engine.task_id_for_gid(handle.gid).expect("task id");
         run_job_download(
             Arc::clone(&engine),
-            RangeExecutionContext {
-                task_id,
-                runtime_gid: handle.gid,
-            },
+            RangeExecutionContext { task_id },
             cancel,
             Vec::new(),
         )
