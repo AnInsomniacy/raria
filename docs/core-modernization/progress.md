@@ -196,3 +196,17 @@ Verified: `cargo test -p raria-core scheduler -- --nocapture` passed with
 --nocapture` passed. `cargo check --workspace --locked` passed.
 Remaining: Continue CM-007 public `Gid` projection cleanup.
 Blocked: none.
+
+2026-05-25 CM-007 partial
+Changed: Removed `gid` from structured lifecycle log fields that are part of
+the native product surface. Core logging tests, daemon range log fields, and
+BT lifecycle smoke now require `task_id` and reject `gid`. Existing native API
+tests continue to assert `gid` is absent from public JSON responses.
+Verified: `cargo test -p raria-core logging -- --nocapture` passed with 3
+matching tests. `cargo test -p raria-cli --bin raria
+range_structured_fields_use_native_task_id -- --nocapture` passed. `cargo
+test -p raria-cli --test bt_tracker_smoke
+daemon_log_file_contains_structured_bt_lifecycle_events -- --nocapture`
+passed. `cargo check --workspace --locked` passed.
+Remaining: Continue CM-007 migration helper cleanup and identity stale scans.
+Blocked: none.

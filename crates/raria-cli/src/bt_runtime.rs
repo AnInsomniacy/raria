@@ -358,6 +358,7 @@ pub(crate) async fn run_bt_download(
         .registry
         .get(gid)
         .context("BT job not found in registry")?;
+    let task_id = job.task_id.clone();
 
     let uri_str = job.uris.first().context("BT job has no URIs")?;
     info!(%gid, "daemon: starting BT download");
@@ -365,7 +366,7 @@ pub(crate) async fn run_bt_download(
         "INFO",
         "raria::bt",
         "daemon: starting BT download",
-        [("gid", gid.to_string())],
+        [("task_id", task_id.to_string())],
     );
 
     let source = if uri_str.starts_with("magnet:") {
@@ -457,7 +458,7 @@ pub(crate) async fn run_bt_download(
         "raria::bt",
         "BT download started",
         [
-            ("gid", gid.to_string()),
+            ("task_id", task_id.to_string()),
             ("torrent_id", handle.torrent_id.to_string()),
         ],
     );
@@ -473,7 +474,7 @@ pub(crate) async fn run_bt_download(
                     "INFO",
                     "raria::bt",
                     "BT download cancelled",
-                    [("gid", gid.to_string())],
+                    [("task_id", task_id.to_string())],
                 );
                 let _ = bt_service.pause(&handle).await;
                 handle_bt_cancellation(engine.as_ref(), gid);
@@ -516,7 +517,7 @@ pub(crate) async fn run_bt_download(
                                     "INFO",
                                     "raria::bt",
                                     "BT payload complete; entering seeding",
-                                    [("gid", gid.to_string())],
+                                    [("task_id", task_id.to_string())],
                                 );
                                 engine
                                     .event_bus
@@ -584,7 +585,7 @@ pub(crate) async fn run_bt_download(
                             "WARN",
                             "raria::bt",
                             "BT status check failed",
-                            [("gid", gid.to_string()), ("error", error.to_string())],
+                            [("task_id", task_id.to_string()), ("error", error.to_string())],
                         );
                         let _ = engine.fail_job(gid, &error.to_string());
                         return Ok(());

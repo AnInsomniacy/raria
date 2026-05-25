@@ -518,7 +518,8 @@ async fn daemon_log_file_contains_structured_bt_lifecycle_events() {
         entries.iter().any(|entry| {
             entry["target"] == "raria::bt"
                 && entry["message"] == "BT download started"
-                && entry["fields"]["gid"].as_str().is_some()
+                && entry["fields"]["task_id"].as_str().is_some()
+                && entry["fields"].get("gid").is_none()
         }),
         "structured log should capture BT start events"
     );
@@ -526,7 +527,8 @@ async fn daemon_log_file_contains_structured_bt_lifecycle_events() {
         entries.iter().any(|entry| {
             entry["target"] == "raria::bt"
                 && entry["message"] == "BT download cancelled"
-                && entry["fields"]["gid"].as_str().is_some()
+                && entry["fields"]["task_id"].as_str().is_some()
+                && entry["fields"].get("gid").is_none()
         }),
         "structured log should capture BT shutdown cancellation events"
     );

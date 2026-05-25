@@ -89,14 +89,20 @@ mod tests {
         let payload = lifecycle_event(
             "INFO",
             "raria::engine",
-            "job added",
-            [("gid", "0000000000000001".to_string())],
+            "task added",
+            [(
+                "task_id",
+                "task_00000000000000000000000000000001".to_string(),
+            )],
         );
         let parsed: serde_json::Value = serde_json::from_str(&payload).unwrap();
         assert_eq!(parsed["level"], "INFO");
         assert_eq!(parsed["target"], "raria::engine");
-        assert_eq!(parsed["message"], "job added");
-        assert_eq!(parsed["fields"]["gid"], "0000000000000001");
+        assert_eq!(parsed["message"], "task added");
+        assert_eq!(
+            parsed["fields"]["task_id"],
+            "task_00000000000000000000000000000001"
+        );
     }
 
     #[test]
@@ -116,7 +122,10 @@ mod tests {
             "INFO",
             "raria::engine",
             "noop",
-            [("gid", "0000000000000001".to_string())],
+            [(
+                "task_id",
+                "task_00000000000000000000000000000001".to_string(),
+            )],
         );
     }
 }

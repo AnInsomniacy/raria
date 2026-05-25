@@ -420,11 +420,11 @@ fn emit_integrity_failure_log(
 }
 
 fn range_structured_fields(
-    gid: Gid,
+    _gid: Gid,
     task_id: &TaskId,
     fields: impl IntoIterator<Item = (&'static str, String)>,
 ) -> Vec<(&'static str, String)> {
-    let mut merged = vec![("gid", gid.to_string()), ("task_id", task_id.to_string())];
+    let mut merged = vec![("task_id", task_id.to_string())];
     merged.extend(fields);
     merged
 }
@@ -1102,7 +1102,7 @@ mod tests {
     }
 
     #[test]
-    fn range_structured_fields_include_native_task_id() {
+    fn range_structured_fields_use_native_task_id() {
         let gid = Gid::from_raw(42);
         let task_id = TaskId::parse("task_native_logging").expect("task id");
 
@@ -1112,9 +1112,9 @@ mod tests {
             [("uri", "https://example.test/file.bin".to_string())],
         );
 
-        assert!(fields.contains(&("gid", "000000000000002a".to_string())));
         assert!(fields.contains(&("task_id", "task_native_logging".to_string())));
         assert!(fields.contains(&("uri", "https://example.test/file.bin".to_string())));
+        assert!(!fields.iter().any(|(key, _)| *key == "gid"));
     }
 
     #[test]
