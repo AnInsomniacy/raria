@@ -373,12 +373,13 @@ mod native_projection_tests {
     #[test]
     fn native_piece_tracks_expected_hash() {
         let range = ByteRange::new(0, 16384).expect("valid range");
-        let piece = NativeTaskPiece::new("piece_1", "file_1", range, "sha-256", "abc123");
+        let piece = NativeTaskPiece::new("piece_1", "file_1", range, "sha-256", "ABC123");
 
         assert_eq!(piece.id, "piece_1");
         assert_eq!(piece.hash_algorithm, "sha-256");
         assert_eq!(piece.expected_hash, "abc123");
         assert!(!piece.verified);
+        assert!(piece.verified().verified);
     }
 
     #[test]

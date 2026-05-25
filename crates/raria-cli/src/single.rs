@@ -348,11 +348,6 @@ pub(crate) async fn run_download(options: SingleDownloadOptions) -> Result<()> {
         .collect();
 
     if all_done {
-        engine.complete_job(gid)?;
-        engine.registry.update(gid, |job| {
-            job.downloaded = downloaded_total;
-        });
-
         if let Some(ref spec) = options.checksum_spec {
             info!("verifying checksum...");
             match checksum::verify_checksum(&job.out_path, spec).await {
@@ -364,10 +359,24 @@ pub(crate) async fn run_download(options: SingleDownloadOptions) -> Result<()> {
                 }
                 Err(e) => {
                     error!(error = %e, "checksum verification failed");
+                    if let Err(remove_error) = std::fs::remove_file(&job.out_path) {
+                        if remove_error.kind() != std::io::ErrorKind::NotFound {
+                            error!(
+                                error = %remove_error,
+                                path = %job.out_path.display(),
+                                "failed to remove invalid output after checksum failure"
+                            );
+                        }
+                    }
                     anyhow::bail!("checksum verification failed: {e}");
                 }
             }
         }
+
+        engine.complete_job(gid)?;
+        engine.registry.update(gid, |job| {
+            job.downloaded = downloaded_total;
+        });
 
         info!(%gid, bytes = downloaded_total, path = %job.out_path.display(), "download complete");
         if !options.quiet {

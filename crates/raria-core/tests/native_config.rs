@@ -143,6 +143,7 @@ mod tests {
 
             [storage]
             file_allocation = "trunc"
+            conflict_policy = "overwrite"
 
             [hooks]
             task_started = "/hooks/start.sh"
@@ -167,6 +168,8 @@ mod tests {
         assert_eq!(global.metalink_preferred_locations, vec!["de"]);
         assert_eq!(global.metalink_preferred_protocol.as_deref(), Some("ftp"));
         assert!(global.metalink_unique_protocols);
+        assert!(!global.auto_file_renaming);
+        assert!(global.allow_overwrite);
         assert_eq!(
             global.on_task_start.as_deref(),
             Some(std::path::Path::new("/hooks/start.sh"))

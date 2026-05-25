@@ -476,3 +476,22 @@ native_runtime_helpers_manage_rate_limiter_and_segment_state -- --nocapture`
 passed.
 Remaining: Start CM-014 integrity and disk policy.
 Blocked: none.
+
+2026-05-25 CM-014 verified
+Changed: Closed integrity and disk policy. Single-download now verifies
+checksum before completion and removes invalid output on mismatch. Native
+piece projections normalize expected hashes and expose verified state while
+BitTorrent piece scheduling remains owned by librqbit and the WebSeed verifier.
+`raria.toml` conflict_policy now maps to runtime rename, overwrite,
+reuse-partial, and fail behavior, with fail rejecting existing output paths.
+Verified: `cargo test -p raria-cli --test single_download
+single_download_removes_invalid_output_after_checksum_failure -- --nocapture`
+passed after failing before the fix. `cargo test -p raria-core --test
+native_config native_config_converts_to_runtime_global_config -- --nocapture`
+passed after failing before the mapping fix. `cargo test -p raria-core
+add_native_task_rejects_existing_output_when_collision_policy_is_fail --
+--nocapture` passed after failing before the collision fix. Focused native
+piece, range allocation, daemon checksum, Metalink piece checksum, rename, and
+overwrite tests passed. `cargo check --workspace --locked` passed.
+Remaining: Start CM-015 native Metalink closure.
+Blocked: none.

@@ -761,9 +761,15 @@ impl NativeTaskPiece {
             file_id: file_id.into(),
             range,
             hash_algorithm: hash_algorithm.into(),
-            expected_hash: expected_hash.into(),
+            expected_hash: expected_hash.into().to_ascii_lowercase(),
             verified: false,
         }
+    }
+
+    /// Return a verified projection for externally verified piece state.
+    pub fn verified(mut self) -> Self {
+        self.verified = true;
+        self
     }
 }
 

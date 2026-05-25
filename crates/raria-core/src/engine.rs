@@ -920,6 +920,8 @@ impl Engine {
         let mut out_path = spec.dir.join(&filename);
         if self.config.auto_file_renaming && !self.config.allow_overwrite && out_path.exists() {
             out_path = crate::rename::auto_rename(&out_path);
+        } else if !self.config.allow_overwrite && out_path.exists() {
+            anyhow::bail!("output file already exists: {}", out_path.display());
         }
 
         // Detect whether this is a BT job or a range-based download.
@@ -2422,6 +2424,30 @@ mod tests {
         let job = engine.registry.get(runtime_gid).unwrap();
         assert_eq!(job.downloaded, 0);
         assert_eq!(job.connections, 0);
+    }
+
+    #[test]
+    fn add_native_task_rejects_existing_output_when_collision_policy_is_fail() {
+        let dir = tempfile::tempdir().unwrap();
+        let existing = dir.path().join("file.zip");
+        std::fs::write(&existing, b"existing").unwrap();
+        let config = GlobalConfig {
+            auto_file_renaming: false,
+            allow_overwrite: false,
+            ..default_config()
+        };
+        let engine = Engine::new(config);
+        let mut spec = default_spec();
+        spec.dir = dir.path().to_path_buf();
+
+        let error = engine
+            .add_native_task(&spec)
+            .expect_err("fail policy should reject output collisions");
+
+        assert!(
+            error.to_string().contains("output file already exists"),
+            "unexpected error: {error}"
+        );
     }
 
     #[tokio::test]

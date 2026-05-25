@@ -70,6 +70,8 @@ impl RariaConfig {
             metalink_preferred_protocol: self.metalink.preferred_protocol.clone(),
             metalink_unique_protocols: self.metalink.unique_protocols,
             file_allocation: self.storage.file_allocation.to_runtime(),
+            auto_file_renaming: self.storage.conflict_policy.auto_file_renaming(),
+            allow_overwrite: self.storage.conflict_policy.allow_overwrite(),
             on_task_start: self.hooks.task_started.clone(),
             on_task_complete: self.hooks.task_completed.clone(),
             on_task_fail: self.hooks.task_failed.clone(),
@@ -274,6 +276,18 @@ pub enum ConflictPolicy {
     ReusePartial,
     /// Fail when output already exists.
     Fail,
+}
+
+impl ConflictPolicy {
+    /// Whether this policy resolves an output collision by selecting a new name.
+    pub const fn auto_file_renaming(self) -> bool {
+        matches!(self, Self::Rename)
+    }
+
+    /// Whether this policy allows writing into an existing output path.
+    pub const fn allow_overwrite(self) -> bool {
+        matches!(self, Self::Overwrite | Self::ReusePartial)
+    }
 }
 
 /// Lifecycle hook settings.

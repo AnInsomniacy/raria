@@ -775,6 +775,49 @@ async fn single_download_keeps_explicit_out_over_suggested_filename() {
 }
 
 #[tokio::test]
+async fn single_download_removes_invalid_output_after_checksum_failure() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("HEAD"))
+        .and(path("/bad-checksum.bin"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-length", "7")
+                .insert_header("accept-ranges", "bytes"),
+        )
+        .mount(&server)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path("/bad-checksum.bin"))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(b"invalid"))
+        .mount(&server)
+        .await;
+
+    let tmp = tempdir().expect("tempdir");
+    let output = Command::new(cargo_bin("raria"))
+        .arg("download")
+        .arg(server.uri().to_string() + "/bad-checksum.bin")
+        .arg("--download-dir")
+        .arg(tmp.path())
+        .arg("--checksum")
+        .arg("sha-256=0000000000000000000000000000000000000000000000000000000000000000")
+        .output()
+        .expect("run raria");
+
+    assert!(
+        !output.status.success(),
+        "stdout:\n{}\n\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        !tmp.path().join("bad-checksum.bin").exists(),
+        "checksum failure should remove invalid output"
+    );
+}
+
+#[tokio::test]
 async fn single_download_sends_configured_user_agent() {
     let server = MockServer::start().await;
 
