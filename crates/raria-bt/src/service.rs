@@ -397,9 +397,18 @@ impl BtService {
                 (id, h)
             }
             AddTorrentResponse::AlreadyManaged(id, h) => {
-                warn!(%gid, torrent_id = id, "torrent already managed");
-                drop(h);
-                anyhow::bail!("duplicate torrent info hash is already managed: {id}");
+                if self
+                    .handles
+                    .read()
+                    .values()
+                    .any(|managed| managed.id() == id)
+                {
+                    warn!(%gid, torrent_id = id, "torrent already managed");
+                    drop(h);
+                    anyhow::bail!("duplicate torrent info hash is already managed: {id}");
+                }
+                info!(%gid, torrent_id = id, "torrent restored from session persistence");
+                (id, h)
             }
             AddTorrentResponse::ListOnly(_) => {
                 anyhow::bail!("torrent was list-only, not added for download");

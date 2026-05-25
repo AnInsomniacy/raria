@@ -543,3 +543,28 @@ Changed: Closed the first BitTorrent runtime policy slice. Native task creation 
 Verified: `cargo test -p raria-rpc --test native_api task_creation_accepts_native_bt_options -- --nocapture` failed before the create-task limit fix and passed after it. `cargo test -p raria-bt --lib bt_service_session_options_enable_fastresume_and_json_persistence -- --nocapture`, `cargo test -p raria-cli --bin raria bt_service_config_forwards_global_transfer_limits -- --nocapture`, and `cargo check --workspace --locked` passed.
 Remaining: Finish CM-017 grouped validation for WebSeed, file selection, peer/tracker projection, seeding lifecycle, and fastresume restore, then close the checkpoint.
 Blocked: none.
+
+2026-05-25 CM-017 verified
+Changed: Closed BitTorrent runtime behavior. WebSeed, selected-file updates,
+unselected-file cleanup, peer projection, tracker projection, UDP tracker
+projection, seeding lifecycle, seeding queue release, BT rate-limit forwarding,
+and fastresume restore now have native evidence. Restart restore now rebinds
+librqbit `AlreadyManaged` handles to the new native GID when raria's service
+handle map is empty after session reconstruction. Same-session duplicate
+info-hash rejection remains intact.
+Verified: `cargo test -p raria-bt --test bt_gap_ledger
+bt_webseed_bep17_bep19 -- --nocapture`, focused native daemon BT file
+selection, unselected-file cleanup, peer/tracker projection, UDP tracker
+projection, seeding lifecycle, and seeding queue-release smokes passed.
+`cargo test -p raria-cli --test bt_tracker_smoke
+daemon_binds_bt_fastresume_state_to_native_session_path -- --nocapture` passed.
+`cargo test -p raria-bt --test bt_smoke
+bt_service_persists_fastresume_state_and_restores_progress_after_restart --
+--nocapture` exposed the restart restore gap and passed after the fix. `cargo
+test -p raria-bt --test bt_smoke
+bt_service_rejects_duplicate_info_hash_in_same_session -- --nocapture` passed.
+The complete `cargo test -p raria-bt --test bt_smoke -- --nocapture` suite
+passed with 11 tests, and `cargo test -p raria-cli --test native_api_smoke --
+--nocapture` passed with 28 tests.
+Remaining: Start CM-018 transfer policy and network controls.
+Blocked: none.
