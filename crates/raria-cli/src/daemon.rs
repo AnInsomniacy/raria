@@ -514,7 +514,7 @@ fn build_download_context(
 }
 
 /// Resolve the output file path, applying server-suggested filename if the user
-/// did not explicitly set one via `--out`.
+/// did not explicitly set one via `--filename`.
 fn resolve_output_path(
     engine: &Engine,
     gid: Gid,

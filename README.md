@@ -118,15 +118,15 @@ The binary is emitted at `target/release/raria`.
 ### Single Download
 
 ```bash
-raria download https://example.com/file.iso -x 16
-raria download https://example.com/file.iso -d ~/Downloads -o file.iso
+raria download https://example.com/file.iso --segments 16
+raria download https://example.com/file.iso --download-dir ~/Downloads --filename file.iso
 raria download https://example.com/file.iso --checksum sha-256=<hex>
 ```
 
 ### Daemon
 
 ```bash
-raria daemon -d ~/Downloads --api-port 6800
+raria daemon --download-dir ~/Downloads --api-port 6800
 ```
 
 ### Native API Example

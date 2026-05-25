@@ -292,17 +292,17 @@ fn spawn_daemon(
 ) -> ChildGuard {
     let mut cmd = Command::new(cargo_bin("raria"));
     cmd.arg("daemon")
-        .arg("-d")
+        .arg("--download-dir")
         .arg(download_dir)
         .arg("--api-port")
         .arg(api_port.to_string())
-        .arg("--session-file")
+        .arg("--session-path")
         .arg(session_file)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
 
     if let Some(path) = input_file {
-        cmd.arg("-i").arg(path);
+        cmd.arg("--task-file").arg(path);
     }
 
     ChildGuard {
@@ -319,17 +319,17 @@ fn spawn_daemon_with_extra_args(
 ) -> ChildGuard {
     let mut cmd = Command::new(cargo_bin("raria"));
     cmd.arg("daemon")
-        .arg("-d")
+        .arg("--download-dir")
         .arg(download_dir)
         .arg("--api-port")
         .arg(api_port.to_string())
-        .arg("--session-file")
+        .arg("--session-path")
         .arg(session_file)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
 
     if let Some(path) = input_file {
-        cmd.arg("-i").arg(path);
+        cmd.arg("--task-file").arg(path);
     }
     for arg in extra_args {
         cmd.arg(arg);
@@ -503,7 +503,7 @@ async fn daemon_resume_after_restart_issues_range_request() {
         temp.path(),
         &session_file,
         None,
-        &["--max-download-limit", "16384"],
+        &["--download-limit", "16384"],
     )
     .await;
 
@@ -578,7 +578,7 @@ async fn daemon_resume_after_restart_sends_if_range_when_etag_is_known() {
         temp.path(),
         &session_file,
         None,
-        &["--max-download-limit", "16384"],
+        &["--download-limit", "16384"],
     )
     .await;
 
@@ -653,7 +653,7 @@ async fn daemon_resume_after_restart_surfaces_non_zero_completed_length_before_c
         temp.path(),
         &session_file,
         None,
-        &["--max-download-limit", "16384"],
+        &["--download-limit", "16384"],
     )
     .await;
 
@@ -1156,7 +1156,7 @@ async fn daemon_sigterm_shuts_down_promptly_while_throttled() {
         temp.path(),
         &session_file,
         None,
-        &["--max-download-limit", "16384"],
+        &["--download-limit", "16384"],
     )
     .await;
 
@@ -1346,7 +1346,7 @@ async fn daemon_cli_basic_auth_applies_to_input_file_downloads() {
         temp.path(),
         &session_file,
         Some(&input_file),
-        &["--http-user", "daemon-user", "--http-passwd", "daemon-pass"],
+        &["--http-username", "daemon-user", "--http-password", "daemon-pass"],
     )
     .await;
 
@@ -1568,9 +1568,9 @@ async fn daemon_runs_on_task_fail_hook() {
         &[
             "--on-task-fail",
             script.to_string_lossy().as_ref(),
-            "--max-file-not-found",
+            "--max-not-found",
             "1",
-            "--max-tries",
+            "--retry-attempts",
             "10",
         ],
     )

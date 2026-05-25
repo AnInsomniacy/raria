@@ -43,6 +43,23 @@ passed. Stale old-runbook reference scan passed.
 Remaining: Start CM-002 dependency policy verification.
 Blocked: none.
 
+2026-05-25 CM-006 partial
+Changed: Renamed visible download and daemon CLI flags to native names without
+aliases. Updated focused CLI tests, smoke test invocations, and README command
+examples. The help scan now checks retained flags and value placeholders and
+rejects deleted legacy names.
+Verified: `cargo test -p raria-cli --bin raria -- --nocapture` passed with
+68 tests. `cargo test -p raria-cli --test single_download -- --nocapture`
+passed with 23 tests. `cargo test -p raria-cli --test session_smoke
+daemon_loads_jobs_from_input_file_on_startup -- --nocapture` passed. `cargo
+test -p raria-cli --test native_api_smoke
+daemon_flag_detaches_process_and_keeps_native_api_alive -- --nocapture`
+passed. `cargo check --workspace --locked` passed. CSV parser validation
+passed for 25 files. `git diff --check` passed.
+Remaining: Continue reviewing remaining runtime config names and raria.toml
+coverage.
+Blocked: none.
+
 2026-05-25 CM-001 alignment update
 Changed: Aligned the tracker with aria2-next core-modernization and
 libtorrent migration evidence without inheriting aria2-next compatibility

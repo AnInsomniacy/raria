@@ -704,7 +704,7 @@ async fn single_download_uses_suggested_filename_when_out_is_not_provided() {
     let output = Command::new(cargo_bin("raria"))
         .arg("download")
         .arg(server.uri().to_string() + "/download")
-        .arg("-d")
+        .arg("--download-dir")
         .arg(tmp.path())
         .output()
         .expect("run raria");
@@ -756,9 +756,9 @@ async fn single_download_keeps_explicit_out_over_suggested_filename() {
     let output = Command::new(cargo_bin("raria"))
         .arg("download")
         .arg(server.uri().to_string() + "/download")
-        .arg("-d")
+        .arg("--download-dir")
         .arg(tmp.path())
-        .arg("-o")
+        .arg("--filename")
         .arg("explicit-name.bin")
         .output()
         .expect("run raria");
@@ -800,7 +800,7 @@ async fn single_download_sends_configured_user_agent() {
     let output = Command::new(cargo_bin("raria"))
         .arg("download")
         .arg(server.uri().to_string() + "/ua")
-        .arg("-d")
+        .arg("--download-dir")
         .arg(tmp.path())
         .arg("--user-agent")
         .arg("phase1-test-agent/1.0")
@@ -848,11 +848,11 @@ async fn single_download_sends_basic_auth_from_cli_flags() {
     let output = Command::new(cargo_bin("raria"))
         .arg("download")
         .arg(server.uri().to_string() + "/cli-auth.bin")
-        .arg("-d")
+        .arg("--download-dir")
         .arg(tmp.path())
-        .arg("--http-user")
+        .arg("--http-username")
         .arg("cli-user")
-        .arg("--http-passwd")
+        .arg("--http-password")
         .arg("cli-pass")
         .output()
         .expect("run raria");
@@ -879,7 +879,7 @@ async fn single_download_presents_client_identity_for_mtls() {
         Command::new(cargo_bin("raria"))
             .arg("download")
             .arg(&url)
-            .arg("-d")
+            .arg("--download-dir")
             .arg(&out_dir)
             .arg("--ca-certificate")
             .arg(&ca_path)
@@ -936,9 +936,9 @@ async fn single_download_writes_save_cookies_file() {
     let output = Command::new(cargo_bin("raria"))
         .arg("download")
         .arg(server.uri().to_string() + "/cookie.bin")
-        .arg("-d")
+        .arg("--download-dir")
         .arg(tmp.path())
-        .arg("--save-cookies")
+        .arg("--cookie-store-file")
         .arg(&cookies_path)
         .output()
         .expect("run raria");
@@ -982,7 +982,7 @@ async fn single_download_quiet_suppresses_user_facing_output() {
         .arg("--quiet")
         .arg("download")
         .arg(server.uri().to_string() + "/quiet.bin")
-        .arg("-d")
+        .arg("--download-dir")
         .arg(tmp.path())
         .output()
         .expect("run raria");
@@ -1024,7 +1024,7 @@ async fn single_download_auto_renames_when_target_file_exists() {
     let output = Command::new(cargo_bin("raria"))
         .arg("download")
         .arg(server.uri().to_string() + "/file.bin")
-        .arg("-d")
+        .arg("--download-dir")
         .arg(tmp.path())
         .output()
         .expect("run raria");
@@ -1088,9 +1088,9 @@ async fn single_download_uses_netrc_credentials_for_http_auth() {
     let output = Command::new(cargo_bin("raria"))
         .arg("download")
         .arg(server.uri().to_string() + "/auth.bin")
-        .arg("-d")
+        .arg("--download-dir")
         .arg(tmp.path())
-        .arg("--netrc-path")
+        .arg("--netrc-file")
         .arg(&netrc_path)
         .output()
         .expect("run raria");
@@ -1138,24 +1138,24 @@ async fn single_download_no_netrc_disables_netrc_credentials() {
     let output = Command::new(cargo_bin("raria"))
         .arg("download")
         .arg(server.uri().to_string() + "/auth-disabled.bin")
-        .arg("-d")
+        .arg("--download-dir")
         .arg(tmp.path())
-        .arg("--netrc-path")
+        .arg("--netrc-file")
         .arg(&netrc_path)
-        .arg("--no-netrc")
+        .arg("--disable-netrc")
         .output()
         .expect("run raria");
 
     assert!(
         !output.status.success(),
-        "download unexpectedly succeeded with --no-netrc\nstdout:\n{}\n\nstderr:\n{}",
+        "download unexpectedly succeeded with --disable-netrc\nstdout:\n{}\n\nstderr:\n{}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        !stderr.contains("unexpected argument '--no-netrc'"),
-        "no-netrc failure came from missing CLI wiring instead of auth suppression:\n{stderr}"
+        !stderr.contains("unexpected argument '--disable-netrc'"),
+        "disable-netrc failure came from missing CLI wiring instead of auth suppression:\n{stderr}"
     );
 }
 
@@ -1195,9 +1195,9 @@ async fn single_download_respects_max_redirect_zero() {
     let output = Command::new(cargo_bin("raria"))
         .arg("download")
         .arg(redirector.uri().to_string() + "/redir.bin")
-        .arg("-d")
+        .arg("--download-dir")
         .arg(tmp.path())
-        .arg("--max-redirect")
+        .arg("--redirect-limit")
         .arg("0")
         .output()
         .expect("run raria");
@@ -1210,7 +1210,7 @@ async fn single_download_respects_max_redirect_zero() {
     );
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        !stderr.contains("unexpected argument '--max-redirect'"),
+        !stderr.contains("unexpected argument '--redirect-limit'"),
         "redirect-limit failure came from missing CLI wiring instead of actual redirect enforcement:\n{stderr}"
     );
 }
@@ -1241,7 +1241,7 @@ async fn single_download_sends_custom_header_from_cli() {
     let output = Command::new(cargo_bin("raria"))
         .arg("download")
         .arg(server.uri().to_string() + "/header.bin")
-        .arg("-d")
+        .arg("--download-dir")
         .arg(tmp.path())
         .arg("--header")
         .arg("X-Phase2-Header: from-cli")
@@ -1275,7 +1275,7 @@ async fn single_download_honors_request_timeout() {
     let output = Command::new(cargo_bin("raria"))
         .arg("download")
         .arg(server.uri().to_string() + "/slow-timeout.bin")
-        .arg("-d")
+        .arg("--download-dir")
         .arg(tmp.path())
         .arg("--timeout")
         .arg("1")
@@ -1302,7 +1302,7 @@ async fn single_download_honors_connect_timeout_flag() {
     let output = Command::new(cargo_bin("raria"))
         .arg("download")
         .arg("http://10.255.255.1:81/connect-timeout.bin")
-        .arg("-d")
+        .arg("--download-dir")
         .arg(tmp.path())
         .arg("--connect-timeout")
         .arg("1")
@@ -1363,7 +1363,7 @@ async fn single_download_conditional_get_skips_download_when_server_reports_not_
     let output = Command::new(cargo_bin("raria"))
         .arg("download")
         .arg(server.uri().to_string() + "/cached.bin")
-        .arg("-d")
+        .arg("--download-dir")
         .arg(tmp.path())
         .arg("--conditional-get")
         .arg("--allow-overwrite")
@@ -1420,7 +1420,7 @@ async fn single_download_conditional_get_is_ignored_without_allow_overwrite() {
     let output = Command::new(cargo_bin("raria"))
         .arg("download")
         .arg(server.uri().to_string() + "/fresh.bin")
-        .arg("-d")
+        .arg("--download-dir")
         .arg(tmp.path())
         .arg("--conditional-get")
         .output()
@@ -1474,7 +1474,7 @@ async fn single_download_conditional_get_is_ignored_when_control_file_exists() {
     let output = Command::new(cargo_bin("raria"))
         .arg("download")
         .arg(server.uri().to_string() + "/resume.bin")
-        .arg("-d")
+        .arg("--download-dir")
         .arg(tmp.path())
         .arg("--conditional-get")
         .arg("--allow-overwrite")
@@ -1517,7 +1517,7 @@ async fn single_download_allow_overwrite_replaces_existing_file_without_tail_byt
     let output = Command::new(cargo_bin("raria"))
         .arg("download")
         .arg(server.uri().to_string() + "/overwrite.bin")
-        .arg("-d")
+        .arg("--download-dir")
         .arg(tmp.path())
         .arg("--allow-overwrite")
         .output()
@@ -1560,11 +1560,11 @@ async fn single_download_continue_resumes_from_existing_file_length() {
     let output = Command::new(cargo_bin("raria"))
         .arg("download")
         .arg(server.uri().to_string() + "/continue.bin")
-        .arg("-d")
+        .arg("--download-dir")
         .arg(tmp.path())
-        .arg("-x")
+        .arg("--segments")
         .arg("1")
-        .arg("--continue")
+        .arg("--resume")
         .output()
         .expect("run raria");
 
@@ -1592,7 +1592,7 @@ async fn single_download_supports_plain_ftp_urls() {
         Command::new(cargo_bin("raria"))
             .arg("download")
             .arg(url)
-            .arg("-d")
+            .arg("--download-dir")
             .arg(&download_dir)
             .output()
             .expect("run raria")
@@ -1634,9 +1634,9 @@ async fn single_download_supports_plain_ftp_urls_through_socks5_proxy() {
         Command::new(cargo_bin("raria"))
             .arg("download")
             .arg(url)
-            .arg("-d")
+            .arg("--download-dir")
             .arg(&download_dir)
-            .arg("--all-proxy")
+            .arg("--proxy")
             .arg(&proxy)
             .output()
             .expect("run raria")
@@ -1681,7 +1681,7 @@ async fn single_download_supports_explicit_ftps_with_custom_ca() {
         Command::new(cargo_bin("raria"))
             .arg("download")
             .arg(url)
-            .arg("-d")
+            .arg("--download-dir")
             .arg(&download_dir)
             .arg("--ca-certificate")
             .arg(&ca_path)
@@ -1733,9 +1733,9 @@ async fn single_download_sigterm_shuts_down_gracefully_while_throttled() {
     let mut child = Command::new(cargo_bin("raria"))
         .arg("download")
         .arg(server.uri().to_string() + "/sigterm-single.bin")
-        .arg("-d")
+        .arg("--download-dir")
         .arg(tmp.path())
-        .arg("--max-download-limit")
+        .arg("--download-limit")
         .arg("16384")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

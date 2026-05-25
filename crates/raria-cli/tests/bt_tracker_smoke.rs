@@ -109,11 +109,11 @@ async fn spawn_ready_daemon_with_args(
         let api_port = allocate_port();
         let mut cmd = Command::new(cargo_bin("raria"));
         cmd.arg("daemon")
-            .arg("-d")
+            .arg("--download-dir")
             .arg(download_dir)
             .arg("--api-port")
             .arg(api_port.to_string())
-            .arg("--session-file")
+            .arg("--session-path")
             .arg(session_file)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());

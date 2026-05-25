@@ -101,11 +101,11 @@ fn spawn_native_daemon_with_args(
     let mut command = Command::new(cargo_bin("raria"));
     command
         .arg("daemon")
-        .arg("-d")
+        .arg("--download-dir")
         .arg(download_dir)
         .arg("--api-port")
         .arg(port.to_string())
-        .arg("--session-file")
+        .arg("--session-path")
         .arg(session_file);
     for arg in extra_args {
         command.arg(arg);
@@ -1013,9 +1013,9 @@ async fn daemon_native_task_stops_after_file_not_found_budget() {
     let session_file = temp.path().join("native-missing.session.redb");
     let port = allocate_port();
     let extra_args = vec![
-        std::ffi::OsString::from("--max-file-not-found"),
+        std::ffi::OsString::from("--max-not-found"),
         std::ffi::OsString::from("1"),
-        std::ffi::OsString::from("--max-tries"),
+        std::ffi::OsString::from("--retry-attempts"),
         std::ffi::OsString::from("10"),
     ];
     let mut child = spawn_native_daemon_with_args(temp.path(), &session_file, port, &extra_args);
@@ -1145,13 +1145,13 @@ async fn daemon_flag_detaches_process_and_keeps_native_api_alive() {
 
     let mut child = Command::new(cargo_bin("raria"))
         .arg("daemon")
-        .arg("-d")
+        .arg("--download-dir")
         .arg(temp.path())
         .arg("--api-port")
         .arg(port.to_string())
-        .arg("--session-file")
+        .arg("--session-path")
         .arg(&session_file)
-        .arg("--daemon")
+        .arg("--detach")
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
@@ -2553,7 +2553,7 @@ auth_token_file = "{}"
     let session_file = temp.path().join("native-auth.session.redb");
     let port = allocate_port();
     let extra_args = vec![
-        std::ffi::OsString::from("--conf-path"),
+        std::ffi::OsString::from("--config"),
         config_file.as_os_str().to_os_string(),
     ];
     let mut child = spawn_native_daemon_with_args(temp.path(), &session_file, port, &extra_args);
@@ -2789,7 +2789,7 @@ async fn daemon_resume_uses_native_segment_rows_after_restart() {
     let session_file = temp.path().join("native-segment-resume.session.redb");
     let first_port = allocate_port();
     let extra_args = vec![
-        std::ffi::OsString::from("--max-download-limit"),
+        std::ffi::OsString::from("--download-limit"),
         std::ffi::OsString::from("262144"),
     ];
     let mut first =

@@ -20,7 +20,7 @@ fn spawn_background_daemon(raw_args: &[OsString]) -> Result<()> {
     let filtered_args: Vec<OsString> = raw_args
         .iter()
         .skip(1)
-        .filter(|arg| *arg != "--daemon" && *arg != "-D")
+        .filter(|arg| *arg != "--detach")
         .cloned()
         .collect();
 
@@ -37,7 +37,7 @@ fn spawn_background_daemon(raw_args: &[OsString]) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{Cli, Commands};
-    use clap::Parser;
+    use clap::{CommandFactory, Parser};
 
     #[test]
     fn daemon_accepts_native_api_port_name() {
@@ -143,6 +143,102 @@ mod tests {
 
         assert!(err.to_string().contains("unexpected argument"));
     }
+
+    #[test]
+    fn help_exposes_native_cli_names_only() {
+        let mut command = Cli::command();
+        let mut help = command.render_long_help().to_string();
+        for subcommand in ["download", "daemon"] {
+            help.push_str(
+                &command
+                    .find_subcommand_mut(subcommand)
+                    .expect("subcommand")
+                    .render_long_help()
+                    .to_string(),
+            );
+        }
+        let tokens = help
+            .split_whitespace()
+            .map(|token| token.trim_end_matches(','))
+            .collect::<Vec<_>>();
+
+        for native in [
+            "--config",
+            "--download-dir",
+            "--filename",
+            "--segments",
+            "--resume",
+            "--proxy",
+            "--http-username",
+            "--http-password",
+            "--task-file",
+            "--detach",
+        ] {
+            assert!(tokens.contains(&native), "missing native flag {native}");
+        }
+        for native_value in [
+            "<CONFIG>",
+            "<DOWNLOAD_DIR>",
+            "<FILENAME>",
+            "<SEGMENTS>",
+            "<DOWNLOAD_LIMIT>",
+            "<RETRY_ATTEMPTS>",
+            "<RETRY_DELAY>",
+            "<MIN_SEGMENT_SIZE>",
+            "<MIN_SPEED>",
+            "<MAX_NOT_FOUND>",
+            "<PROXY>",
+            "<HTTP_USERNAME>",
+            "<HTTP_PASSWORD>",
+            "<TASK_FILE>",
+        ] {
+            assert!(
+                tokens.contains(&native_value),
+                "missing native value name {native_value}"
+            );
+        }
+
+        for legacy in [
+            "--conf-path",
+            "--dir",
+            "--out",
+            "--connections",
+            "--continue",
+            "--all-proxy",
+            "--http-user",
+            "--http-passwd",
+            "--input-file",
+            "-d",
+            "-o",
+            "-x",
+            "-c",
+            "-i",
+            "-D",
+        ] {
+            assert!(!tokens.contains(&legacy), "legacy flag {legacy} leaked");
+        }
+        for legacy_value in [
+            "<CONF_PATH>",
+            "<DIR>",
+            "<OUT>",
+            "<CONNECTIONS>",
+            "<MAX_DOWNLOAD_LIMIT>",
+            "<MAX_TRIES>",
+            "<RETRY_WAIT>",
+            "<MIN_SPLIT_SIZE>",
+            "<LOWEST_SPEED_LIMIT>",
+            "<MAX_FILE_NOT_FOUND>",
+            "<ALL_PROXY>",
+            "<HTTP_USER>",
+            "<HTTP_PASSWD>",
+            "<INPUT_FILE>",
+        ] {
+            assert!(
+                !tokens.contains(&legacy_value),
+                "legacy value name {legacy_value} leaked"
+            );
+        }
+    }
 }
 
 #[derive(Parser)]
@@ -168,7 +264,7 @@ struct Cli {
     quiet: bool,
 
     /// Path to native raria.toml configuration file.
-    #[arg(long, global = true)]
+    #[arg(long = "config", value_name = "CONFIG", global = true)]
     conf_path: Option<PathBuf>,
 }
 
@@ -181,47 +277,47 @@ enum Commands {
         url: String,
 
         /// Output directory
-        #[arg(short = 'd', long, default_value = ".")]
+        #[arg(long = "download-dir", value_name = "DOWNLOAD_DIR", default_value = ".")]
         dir: PathBuf,
 
         /// Output filename (default: derived from URL)
-        #[arg(short = 'o', long)]
+        #[arg(long = "filename", value_name = "FILENAME")]
         out: Option<String>,
 
-        /// Number of connections
-        #[arg(short = 'x', long, default_value_t = 16)]
+        /// Number of range segments.
+        #[arg(long = "segments", value_name = "SEGMENTS", default_value_t = 16)]
         connections: u32,
 
         /// Continue downloading a partially downloaded file.
-        #[arg(short = 'c', long = "continue", default_value_t = false)]
+        #[arg(long = "resume", default_value_t = false)]
         continue_download: bool,
 
         /// Maximum download speed (bytes/sec, 0 = unlimited)
-        #[arg(long, default_value_t = 0)]
+        #[arg(long = "download-limit", value_name = "DOWNLOAD_LIMIT", default_value_t = 0)]
         max_download_limit: u64,
 
         /// Maximum retry attempts per segment; 0 means unlimited retries.
-        #[arg(long)]
+        #[arg(long = "retry-attempts", value_name = "RETRY_ATTEMPTS")]
         max_tries: Option<u32>,
 
         /// Seconds to wait between retry attempts.
-        #[arg(long)]
+        #[arg(long = "retry-delay", value_name = "RETRY_DELAY")]
         retry_wait: Option<u32>,
 
         /// Minimum size in bytes for a split segment.
-        #[arg(long = "min-split-size")]
+        #[arg(long = "min-segment-size", value_name = "MIN_SEGMENT_SIZE")]
         min_split_size: Option<u64>,
 
         /// Abort connections when download speed is below this limit (bytes/sec).
-        #[arg(long = "lowest-speed-limit")]
+        #[arg(long = "min-speed", value_name = "MIN_SPEED")]
         lowest_speed_limit: Option<u64>,
 
         /// Maximum number of file-not-found errors before giving up.
-        #[arg(long = "max-file-not-found")]
+        #[arg(long = "max-not-found", value_name = "MAX_NOT_FOUND")]
         max_file_not_found: Option<u32>,
 
         /// Path to Netscape cookie file for persistence.
-        #[arg(long)]
+        #[arg(long = "cookie-store-file", value_name = "COOKIE_STORE_FILE")]
         save_cookies: Option<PathBuf>,
 
         /// Checksum for verification (format: algo=hex, e.g. sha-256=abc...)
@@ -229,7 +325,7 @@ enum Commands {
         checksum: Option<String>,
 
         /// Proxy URL for all protocols
-        #[arg(long)]
+        #[arg(long = "proxy", value_name = "PROXY")]
         all_proxy: Option<String>,
 
         /// Disable TLS certificate verification
@@ -253,23 +349,23 @@ enum Commands {
         private_key: Option<PathBuf>,
 
         /// HTTP Basic auth username
-        #[arg(long)]
+        #[arg(long = "http-username", value_name = "HTTP_USERNAME")]
         http_user: Option<String>,
 
         /// HTTP Basic auth password
-        #[arg(long)]
+        #[arg(long = "http-password", value_name = "HTTP_PASSWORD")]
         http_passwd: Option<String>,
 
         /// Maximum number of redirects to follow (0 disables redirects)
-        #[arg(long)]
+        #[arg(long = "redirect-limit", value_name = "REDIRECT_LIMIT")]
         max_redirect: Option<usize>,
 
         /// Path to a netrc file for host credential lookup
-        #[arg(long)]
+        #[arg(long = "netrc-file", value_name = "NETRC_FILE")]
         netrc_path: Option<PathBuf>,
 
         /// Disable all netrc credential loading
-        #[arg(long, default_value_t = false)]
+        #[arg(long = "disable-netrc", default_value_t = false)]
         no_netrc: bool,
 
         /// Custom request header. May be specified multiple times.
@@ -312,15 +408,15 @@ enum Commands {
     /// Run as a persistent daemon with native API server.
     Daemon {
         /// Output directory for downloads
-        #[arg(short = 'd', long, default_value = ".")]
+        #[arg(long = "download-dir", value_name = "DOWNLOAD_DIR", default_value = ".")]
         dir: PathBuf,
 
         /// Session file for persistence
-        #[arg(long, default_value = "raria.session.redb")]
+        #[arg(long = "session-path", value_name = "SESSION_PATH", default_value = "raria.session.redb")]
         session_file: PathBuf,
 
         /// Detach and keep the daemon running in the background.
-        #[arg(short = 'D', long = "daemon", default_value_t = false)]
+        #[arg(long = "detach", default_value_t = false)]
         daemonize: bool,
 
         /// Save the current session periodically while running.
@@ -332,31 +428,31 @@ enum Commands {
         api_port: u16,
 
         /// Maximum download speed (bytes/sec, 0 = unlimited)
-        #[arg(long, default_value_t = 0)]
+        #[arg(long = "download-limit", value_name = "DOWNLOAD_LIMIT", default_value_t = 0)]
         max_download_limit: u64,
 
         /// Maximum retry attempts per segment; 0 means unlimited retries.
-        #[arg(long)]
+        #[arg(long = "retry-attempts", value_name = "RETRY_ATTEMPTS")]
         max_tries: Option<u32>,
 
         /// Seconds to wait between retry attempts.
-        #[arg(long)]
+        #[arg(long = "retry-delay", value_name = "RETRY_DELAY")]
         retry_wait: Option<u32>,
 
         /// Minimum size in bytes for a split segment.
-        #[arg(long = "min-split-size")]
+        #[arg(long = "min-segment-size", value_name = "MIN_SEGMENT_SIZE")]
         min_split_size: Option<u64>,
 
         /// Abort connections when download speed is below this limit (bytes/sec).
-        #[arg(long = "lowest-speed-limit")]
+        #[arg(long = "min-speed", value_name = "MIN_SPEED")]
         lowest_speed_limit: Option<u64>,
 
         /// Maximum number of file-not-found errors before giving up.
-        #[arg(long = "max-file-not-found")]
+        #[arg(long = "max-not-found", value_name = "MAX_NOT_FOUND")]
         max_file_not_found: Option<u32>,
 
         /// Proxy URL for all protocols
-        #[arg(long)]
+        #[arg(long = "proxy", value_name = "PROXY")]
         all_proxy: Option<String>,
 
         /// Proxy URL for HTTP only
@@ -400,15 +496,15 @@ enum Commands {
         user_agent: Option<String>,
 
         /// HTTP Basic auth username
-        #[arg(long)]
+        #[arg(long = "http-username", value_name = "HTTP_USERNAME")]
         http_user: Option<String>,
 
         /// HTTP Basic auth password
-        #[arg(long)]
+        #[arg(long = "http-password", value_name = "HTTP_PASSWORD")]
         http_passwd: Option<String>,
 
         /// Input file containing URIs to download (one per line)
-        #[arg(short = 'i', long)]
+        #[arg(long = "task-file", value_name = "TASK_FILE")]
         input_file: Option<PathBuf>,
 
         /// Hook script fired when a task starts running.
@@ -424,11 +520,11 @@ enum Commands {
         on_task_fail: Option<PathBuf>,
 
         /// Path to Netscape cookie file
-        #[arg(long)]
+        #[arg(long = "cookie-file", value_name = "COOKIE_FILE")]
         load_cookies: Option<PathBuf>,
 
         /// Path to Netscape cookie file for persistence
-        #[arg(long)]
+        #[arg(long = "cookie-store-file", value_name = "COOKIE_STORE_FILE")]
         save_cookies: Option<PathBuf>,
 
         /// File allocation strategy: none, prealloc, trunc, falloc
@@ -436,15 +532,15 @@ enum Commands {
         file_allocation: String,
 
         /// Maximum number of redirects to follow (0 disables redirects)
-        #[arg(long)]
+        #[arg(long = "redirect-limit", value_name = "REDIRECT_LIMIT")]
         max_redirect: Option<usize>,
 
         /// Path to a netrc file for host credential lookup
-        #[arg(long)]
+        #[arg(long = "netrc-file", value_name = "NETRC_FILE")]
         netrc_path: Option<PathBuf>,
 
         /// Disable all netrc credential loading
-        #[arg(long, default_value_t = false)]
+        #[arg(long = "disable-netrc", default_value_t = false)]
         no_netrc: bool,
 
         /// Custom request header. May be specified multiple times.
