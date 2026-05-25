@@ -85,12 +85,8 @@ pub struct GlobalConfig {
     pub load_cookie_file: Option<PathBuf>,
     /// Path to Netscape cookie file updated after HTTP requests.
     pub cookie_store_file: Option<PathBuf>,
-    /// Temporary JSON-RPC secret retained until the legacy server is deleted.
-    pub rpc_secret: Option<String>,
     /// Native HTTP API bearer token.
     pub api_auth_token: Option<String>,
-    /// Temporary JSON-RPC browser origin override retained until legacy deletion.
-    pub rpc_allow_origin_all: bool,
     /// File allocation strategy.
     pub file_allocation: FileAllocation,
     /// Maximum connections per server.
@@ -188,9 +184,7 @@ impl Default for GlobalConfig {
             http_password: None,
             load_cookie_file: None,
             cookie_store_file: None,
-            rpc_secret: None,
             api_auth_token: None,
-            rpc_allow_origin_all: false,
             file_allocation: FileAllocation::None,
             server_connection_limit: 16,
             default_segments: 5,
@@ -344,7 +338,6 @@ mod tests {
         assert_eq!(cfg.max_concurrent_downloads, 5);
         assert_eq!(cfg.global_download_limit, 0);
         assert_eq!(cfg.api_listen_port, 6800);
-        assert!(!cfg.rpc_allow_origin_all);
         assert_eq!(cfg.bt_piece_strategy, BtPieceStrategy::RarestFirst);
         assert!(cfg.bt_enable_pex);
     }

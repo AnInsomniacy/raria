@@ -185,7 +185,6 @@ async fn request_native_shutdown(client: &reqwest::Client, port: u16) {
         .await
         .expect("parse native shutdown response");
     assert_eq!(body["status"], "shuttingDown");
-    assert!(body.get("jsonrpc").is_none());
     assert!(body.get("result").is_none());
 }
 

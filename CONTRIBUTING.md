@@ -14,64 +14,30 @@ cargo clippy --workspace --all-targets -- -D warnings
 
 ## Working Rules
 
-raria follows the progress-adjusted practical maturity contract described in [`docs/practical-maturity.md`](docs/practical-maturity.md). The verification standard for completion claims lives in [`docs/verification-contract.md`](docs/verification-contract.md), and the public BitTorrent parity limits live in [`docs/bt-stop-lines.md`](docs/bt-stop-lines.md).
+raria is a Rust-native download manager. The active modernization tracker lives in [`docs/core-modernization/overview.md`](docs/core-modernization/overview.md). It is the source for scope, deletion policy, dependency ownership, and verification.
 
 Contributions should preserve these rules:
 
-1. Capability-first delivery: land real behavior, stronger verification, or an honest documentation correction.
-2. TDD is required when behavior changes.
-3. No fake green: do not weaken tests, hide regressions, or advertise unsupported capability.
-4. Write-scope discipline: keep the diff inside the intended lane unless correctness forces a wider change.
-5. Facade honesty: aria2-style responses may default or omit unstable fields, but they must not distort internal truth.
-6. Do not relabel already-landed baseline work as future roadmap just because the docs are stale.
+1. Land real native behavior, stronger verification, or an honest documentation correction.
+2. Add only focused tests that protect public contracts, persistence, protocol boundaries, security, or confirmed regressions.
+3. Do not weaken tests, hide regressions, or advertise unsupported capability.
+4. Keep changes inside the intended area unless correctness forces a wider change.
+5. Use mature libraries for protocol ownership and keep raria policy small.
+6. Delete obsolete compatibility surfaces after useful native coverage exists.
 
-## Hard Governance Gates
+## Dependency Policy
 
-Every meaningful change should respect the three active hard gates.
-
-### 1. Stop-line grading
-
-If dependency limits or architecture boundaries block parity, record the gap honestly instead of papering it over.
-
-Use these grades:
-
-- `core-blocking`
-- `advanced-but-acceptable`
-- `migration-only`
-
-The current BitTorrent stop-line ledger lives in `crates/raria-bt/tests/bt_gap_ledger.rs`.
-
-### 2. Dependency viability audit
-
-Before leaning on dependency behavior, confirm the dependency can actually support the intended capability. The current high-value dependency set is:
+Before relying on dependency behavior, confirm that the selected library can support the intended capability. The current high-value dependency set is:
 
 - `librqbit`
 - `reqwest`
 - `suppaftp`
 - `russh` / `russh-sftp`
 - `redb`
-- `jsonrpsee`
+- `axum`
+- `tracing`
 
-### 3. Write-scope and crate-boundary discipline
-
-Each plan step should declare:
-
-- a primary write area
-- optional supporting write areas
-- explicit forbidden areas
-
-If you need to cross those boundaries, document why the wider change is unavoidable.
-
-## Current Closeout Areas
-
-The active repo-facing closeout work is:
-
-1. baseline and docs alignment
-2. BitTorrent stop-line and docs or RPC sync
-3. Metalink daemon-path runtime evidence
-4. verification-contract and closure-evidence maintenance
-
-Old Step 1 through Step 4 implementation work is baseline now. Do not reopen it as if it were still the roadmap.
+Record dependency limits or replacement decisions in `docs/core-modernization/dependency-ledger.csv`.
 
 ## Workspace Overview
 
@@ -84,25 +50,23 @@ Old Step 1 through Step 4 implementation work is baseline now. Do not reopen it 
 | `raria-sftp` | SFTP backend |
 | `raria-metalink` | Metalink parser and normalizer |
 | `raria-bt` | BitTorrent service integration |
-| `raria-rpc` | aria2-style JSON-RPC server and facade |
+| `raria-rpc` | native HTTP JSON API and WebSocket event stream |
 | `raria-cli` | CLI and daemon integration |
 
 ## Pull Request Expectations
 
-1. Say which closeout lane, stop-line, or documentation correction the change addresses.
+1. Say which native capability, checkpoint, or documentation correction the change addresses.
 2. Add or tighten tests first when behavior changes.
 3. Keep the diff inside the declared write scope whenever possible.
 4. Run the verification commands that match the scope and report the actual result.
-5. Update docs whenever capability claims, stop-lines, or operational guidance change.
+5. Update docs whenever capability claims, dependency limits, or operational guidance change.
 
 ## Verification Expectations
 
-Use [`docs/verification-contract.md`](docs/verification-contract.md) as the durable repository standard.
-
 - Do not claim tests pass without fresh command output.
 - Do not claim late-stage closure from documentation alone.
-- If a path is only covered at unit or RPC level, say so.
-- If a gap is blocked upstream or by design, keep it explicit in the stop-line ledger.
+- If a path is only covered at unit or API level, say so.
+- If a gap is blocked upstream or by design, keep it explicit in the modernization tracker.
 
 ## License
 

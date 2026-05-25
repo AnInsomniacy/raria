@@ -600,3 +600,21 @@ Verified: Focused daemon lifecycle, hook, auth, redaction, native config,
 CLI parse, fmt, check, CSV, and diff validations passed.
 Remaining: Start CM-020 legacy deletion and stale scans.
 Blocked: none.
+
+2026-05-25 CM-020 partial
+Changed: Removed the legacy JSON-RPC implementation from `raria-rpc`,
+including server, methods, facade, notification projection,
+token-in-params auth, direct `jsonrpsee` dependency, and compatibility or
+parity tests. Kept focused native API and native event tests. Removed stale
+JSON-RPC and aria2 method wording from root docs and public comments.
+Verified: `cargo test -p raria-rpc --test native_api -- --nocapture`
+passed with 35 tests. `cargo test -p raria-cli --test native_api_smoke
+daemon_native_api_shutdown_stops_daemon -- --nocapture` passed. `cargo test
+-p raria-core --test native_config -- --nocapture` passed with 8 tests.
+`cargo fmt --all --check` and `cargo check --workspace --locked` passed.
+Strict stale scan for JSON-RPC and aria2 method names outside tracker docs
+is clean.
+Remaining: Finish CM-020 broad stale scan. Classify or remove private
+runtime `Gid` bridge hits, remaining compatibility wording, and excluded
+feature residue.
+Blocked: none.

@@ -613,7 +613,6 @@ async fn daemon_exposes_native_api_endpoints() {
 
     assert_eq!(body["status"], "ok");
     assert_eq!(body["apiVersion"], 1);
-    assert!(body.get("jsonrpc").is_none());
 
     let tasks: serde_json::Value = reqwest::get(format!("http://127.0.0.1:{port}/api/v1/tasks"))
         .await
@@ -623,7 +622,6 @@ async fn daemon_exposes_native_api_endpoints() {
         .expect("tasks json");
 
     assert!(tasks["tasks"].as_array().expect("tasks array").is_empty());
-    assert!(tasks.get("jsonrpc").is_none());
 
     let client = reqwest::Client::new();
     let created: serde_json::Value = client
@@ -679,7 +677,6 @@ async fn daemon_exposes_native_api_endpoints() {
     .await
     .expect("timed out waiting for native pause event");
     assert_eq!(paused_event["taskId"], task_id);
-    assert!(paused_event.get("jsonrpc").is_none());
     assert!(paused_event.get("method").is_none());
 
     let resumed: serde_json::Value = client
@@ -721,7 +718,7 @@ async fn daemon_exposes_native_api_endpoints() {
 }
 
 #[tokio::test]
-async fn daemon_native_api_shutdown_stops_daemon_without_json_rpc() {
+async fn daemon_native_api_shutdown_stops_daemon() {
     let temp = tempdir().expect("tempdir");
     let session_file = temp.path().join("native-shutdown.session.redb");
     let port = allocate_port();
@@ -745,7 +742,6 @@ async fn daemon_native_api_shutdown_stops_daemon_without_json_rpc() {
     let response: serde_json::Value = response.json().await.expect("native shutdown json");
 
     assert_eq!(response["status"], "shuttingDown");
-    assert!(response.get("jsonrpc").is_none());
     assert!(response.get("result").is_none());
 
     wait_for_child_exit_after_native_shutdown(&mut child).await;
@@ -783,41 +779,6 @@ async fn daemon_stop_when_parent_exits_uses_native_pid_policy() {
         .await
         .expect("native API ready");
 
-    wait_for_child_exit_after_native_shutdown(&mut child).await;
-}
-
-#[tokio::test]
-async fn daemon_does_not_expose_legacy_jsonrpc_endpoint() {
-    let temp = tempdir().expect("tempdir");
-    let session_file = temp.path().join("native-only.session.redb");
-    let port = allocate_port();
-    let mut child = spawn_native_daemon(temp.path(), &session_file, port);
-
-    wait_for_native_api_ready(port, &mut child)
-        .await
-        .expect("native API ready");
-
-    let client = reqwest::Client::new();
-    let response = client
-        .post(format!("http://127.0.0.1:{port}/jsonrpc"))
-        .json(&serde_json::json!({
-            "jsonrpc": "2.0",
-            "id": "legacy",
-            "method": "aria2.getVersion",
-            "params": [],
-        }))
-        .send()
-        .await
-        .expect("legacy JSON-RPC probe");
-
-    assert_eq!(response.status(), reqwest::StatusCode::NOT_FOUND);
-
-    let shutdown = client
-        .post(format!("http://127.0.0.1:{port}/api/v1/daemon/shutdown"))
-        .send()
-        .await
-        .expect("native shutdown request");
-    assert!(shutdown.status().is_success());
     wait_for_child_exit_after_native_shutdown(&mut child).await;
 }
 
@@ -1271,7 +1232,6 @@ async fn daemon_native_transfer_policy_mutates_runtime_state() {
     assert_eq!(patched["uploadBytesPerSecondLimit"], 65536);
     assert_eq!(patched["maxActiveTasks"], 3);
     assert!(patched.get("max-overall-download-limit").is_none());
-    assert!(patched.get("jsonrpc").is_none());
 
     let readback: serde_json::Value = client
         .get(format!("http://127.0.0.1:{port}/api/v1/transfer"))
@@ -1936,7 +1896,6 @@ async fn daemon_native_api_exposes_live_bt_metadata_peers_and_trackers() {
     assert_eq!(metadata_event["data"]["kind"], "btMetadata");
     assert_eq!(metadata_event["data"]["name"], "seed.bin");
     assert_eq!(metadata_event["data"]["totalBytes"], 8 * 1024 * 1024);
-    assert!(metadata_event.get("jsonrpc").is_none());
     assert!(metadata_event.get("method").is_none());
 
     let deadline = Instant::now() + Duration::from_secs(120);
@@ -2341,7 +2300,6 @@ async fn daemon_native_api_emits_bt_seeding_lifecycle() {
     assert_eq!(seeding_event["data"]["kind"], "btSeeding");
     assert!(seeding_event["data"]["uploadedBytes"].as_u64().is_some());
     assert!(seeding_event["data"]["peerCount"].as_u64().is_some());
-    assert!(seeding_event.get("jsonrpc").is_none());
     assert!(seeding_event.get("method").is_none());
 
     let task = wait_for_task_lifecycle(port, &task_id, "seeding").await;
@@ -2695,7 +2653,6 @@ async fn daemon_native_events_include_source_failover() {
             .expect("source failure message")
             .contains("permanent error")
     );
-    assert!(event.get("jsonrpc").is_none());
     assert!(event.get("method").is_none());
 }
 

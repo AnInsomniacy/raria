@@ -51,12 +51,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Checksum spec parser (`algo=hex` format)
 - Post-download verification
 
-**RPC (aria2-compatible)**
-- JSON-RPC server via jsonrpsee (HTTP + WebSocket)
-- 10 methods: `addUri`, `tellStatus`, `pause`, `unpause`, `remove`, `getGlobalStat`, `tellActive`, `tellWaiting`, `tellStopped`, `getVersion`
-- aria2-compatible response format (camelCase, string-typed numbers)
-- Event notification mapping (DownloadEvent → aria2 notifications)
-- RPC facade for internal-to-aria2 format translation
+**Native API**
+- HTTP JSON API and WebSocket event stream via axum
+- Native task, stats, session, daemon shutdown, transfer, file, source, tracker, peer, and seeding resources
+- Native event envelope for lifecycle, progress, source failure, BitTorrent metadata, seeding, peer, and tracker updates
 
 **CLI**
 - `raria download <URL>` — single-shot download with progress output

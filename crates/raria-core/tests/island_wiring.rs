@@ -1,7 +1,7 @@
 // Integration tests for island code wiring.
 //
 // These tests verify that focused runtime modules are wired into native raria
-// structures without relying on legacy compatibility parsers.
+// structures without relying on compatibility parsers.
 
 #[cfg(test)]
 mod tests {

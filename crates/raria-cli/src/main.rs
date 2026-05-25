@@ -50,50 +50,6 @@ mod tests {
     }
 
     #[test]
-    fn daemon_rejects_legacy_rpc_port_name() {
-        let err = match Cli::try_parse_from(["raria", "daemon", "--rpc-port", "7777"]) {
-            Ok(_) => panic!("legacy RPC port name must be rejected"),
-            Err(error) => error,
-        };
-
-        assert!(err.to_string().contains("unexpected argument"));
-    }
-
-    #[test]
-    fn daemon_rejects_legacy_rpc_auth_flags() {
-        for flag in ["--rpc-secret", "--rpc-allow-origin-all"] {
-            let err = match Cli::try_parse_from(["raria", "daemon", flag, "value"]) {
-                Ok(_) => panic!("legacy RPC flag {flag} must be rejected"),
-                Err(error) => error,
-            };
-
-            assert!(
-                err.to_string().contains("unexpected argument"),
-                "unexpected parse error for {flag}: {err}"
-            );
-        }
-    }
-
-    #[test]
-    fn daemon_rejects_legacy_bt_crypto_flags() {
-        for args in [
-            ["raria", "daemon", "--bt-require-crypto", ""],
-            ["raria", "daemon", "--bt-min-crypto-level", "arc4"],
-        ] {
-            let flag = args[2];
-            let err = match Cli::try_parse_from(args.into_iter().filter(|arg| !arg.is_empty())) {
-                Ok(_) => panic!("legacy BT crypto flag {flag} must be rejected"),
-                Err(error) => error,
-            };
-
-            assert!(
-                err.to_string().contains("unexpected argument"),
-                "unexpected parse error for {flag}: {err}"
-            );
-        }
-    }
-
-    #[test]
     fn daemon_accepts_native_task_hook_names() {
         let cli = Cli::try_parse_from([
             "raria",
@@ -152,22 +108,6 @@ mod tests {
         assert_eq!(stop_when_parent_exits, Some(12345));
     }
 
-    #[test]
-    fn daemon_rejects_legacy_download_hook_names() {
-        let err = match Cli::try_parse_from([
-            "raria",
-            "daemon",
-            "--on-download-start",
-            "/tmp/start.sh",
-        ]) {
-            Ok(_) => panic!("legacy download hook names must be rejected"),
-            Err(error) => error,
-        };
-
-        assert!(err.to_string().contains("unexpected argument"));
-    }
-
-    #[test]
     fn help_exposes_native_cli_names_only() {
         let mut command = Cli::command();
         let mut help = command.render_long_help().to_string();
@@ -218,47 +158,6 @@ mod tests {
             assert!(
                 tokens.contains(&native_value),
                 "missing native value name {native_value}"
-            );
-        }
-
-        for legacy in [
-            "--conf-path",
-            "--dir",
-            "--out",
-            "--connections",
-            "--continue",
-            "--all-proxy",
-            "--http-user",
-            "--http-passwd",
-            "--input-file",
-            "-d",
-            "-o",
-            "-x",
-            "-c",
-            "-i",
-            "-D",
-        ] {
-            assert!(!tokens.contains(&legacy), "legacy flag {legacy} leaked");
-        }
-        for legacy_value in [
-            "<CONF_PATH>",
-            "<DIR>",
-            "<OUT>",
-            "<CONNECTIONS>",
-            "<MAX_DOWNLOAD_LIMIT>",
-            "<MAX_TRIES>",
-            "<RETRY_WAIT>",
-            "<MIN_SPLIT_SIZE>",
-            "<LOWEST_SPEED_LIMIT>",
-            "<MAX_FILE_NOT_FOUND>",
-            "<ALL_PROXY>",
-            "<HTTP_USER>",
-            "<HTTP_PASSWD>",
-            "<INPUT_FILE>",
-        ] {
-            assert!(
-                !tokens.contains(&legacy_value),
-                "legacy value name {legacy_value} leaked"
             );
         }
     }

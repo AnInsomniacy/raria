@@ -34,7 +34,7 @@ pub struct InputFileOptions {
     pub extra: BTreeMap<String, String>,
 }
 
-/// One URI entry from an aria2-style input file.
+/// One URI entry from a native task file.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct InputFileEntry {
     /// One or more source URIs for this entry.

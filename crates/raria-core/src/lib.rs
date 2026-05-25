@@ -74,7 +74,7 @@ mod native_model_tests {
     };
 
     #[test]
-    fn task_id_is_opaque_and_not_aria2_hex() {
+    fn task_id_is_opaque_and_not_runtime_hex() {
         let id = TaskId::new();
         let rendered = id.as_str();
 

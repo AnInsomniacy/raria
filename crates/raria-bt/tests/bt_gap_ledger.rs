@@ -1,7 +1,6 @@
 // BitTorrent gap tests.
 //
-// These tests document modern BitTorrent stop-lines against the aria2 reference.
-// Legacy compatibility targets are deleted instead of tracked as open parity work.
+// These tests document modern BitTorrent stop-lines for the native raria target.
 
 #[cfg(test)]
 mod tests {

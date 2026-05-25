@@ -89,28 +89,27 @@ mod tests {
     }
 
     #[test]
-    fn raria_toml_rejects_legacy_aria2_names() {
+    fn raria_toml_rejects_removed_daemon_keys() {
         let err = RariaConfig::from_toml_str(
             r#"
             [daemon]
-            dir = "/downloads"
-            rpc_secret = "secret"
+            removed_key = "value"
             "#,
         )
-        .expect_err("legacy names must fail");
+        .expect_err("removed keys must fail");
 
         assert!(err.to_string().contains("unknown field"));
     }
 
     #[test]
-    fn raria_toml_rejects_legacy_hook_names() {
+    fn raria_toml_rejects_removed_hook_keys() {
         let err = RariaConfig::from_toml_str(
             r#"
             [hooks]
-            on-download-start = "/tmp/start.sh"
+            removed-hook = "/tmp/start.sh"
             "#,
         )
-        .expect_err("legacy hook names must fail");
+        .expect_err("removed hook keys must fail");
 
         assert!(err.to_string().contains("unknown field"));
     }

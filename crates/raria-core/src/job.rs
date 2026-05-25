@@ -15,10 +15,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 /// Global ID counter for generating unique GIDs.
 static NEXT_GID: AtomicU64 = AtomicU64::new(1);
 
-/// A globally unique identifier for a download job.
+/// A private runtime identifier for a download job.
 ///
-/// GIDs are 64-bit integers rendered as zero-padded 16-character hex strings
-/// to maintain compatibility with aria2's GID format.
+/// Public control surfaces use [`TaskId`] instead.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Gid(u64);
 

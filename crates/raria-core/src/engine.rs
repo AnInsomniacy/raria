@@ -1900,13 +1900,12 @@ impl Engine {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
-// Batch operations (aria2 RPC parity)
+// Batch operations
 // ═══════════════════════════════════════════════════════════════════════
 
 impl Engine {
     /// Pause all active and waiting jobs.
     ///
-    /// aria2 equivalent: `aria2.pauseAll`
     /// Returns the number of jobs paused.
     pub fn pause_all(&self) -> usize {
         let active = self.registry.by_status(Status::Active);
@@ -1925,7 +1924,6 @@ impl Engine {
 
     /// Unpause all paused jobs.
     ///
-    /// aria2 equivalent: `aria2.unpauseAll`
     /// Returns the number of jobs unpaused.
     pub fn unpause_all(&self) -> usize {
         let paused = self.registry.by_status(Status::Paused);
@@ -1943,7 +1941,6 @@ impl Engine {
     /// Force-remove a job. Unlike `remove()`, this also works on Active jobs
     /// that haven't responded to a graceful cancel yet.
     ///
-    /// aria2 equivalent: `aria2.forceRemove`
     pub fn force_remove(&self, gid: Gid) -> Result<()> {
         // Cancel first — even if the task is still running.
         if let Some(task_id) = self.task_id_for_gid(gid) {
@@ -1972,7 +1969,6 @@ impl Engine {
 
     /// Remove a single download result (completed/error/removed job).
     ///
-    /// aria2 equivalent: `aria2.removeDownloadResult`
     pub fn remove_download_result(&self, gid: Gid) -> Result<()> {
         let job = self.registry.get(gid).context("GID not found")?;
         match job.status {
@@ -1988,7 +1984,6 @@ impl Engine {
 
     /// Purge all completed/error/removed download results.
     ///
-    /// aria2 equivalent: `aria2.purgeDownloadResult`
     /// Returns the number of results purged.
     pub fn purge_download_results(&self) -> usize {
         let mut purged = 0;
@@ -2008,8 +2003,6 @@ impl Engine {
     }
 
     /// Change the position of a download in the waiting queue.
-    ///
-    /// aria2 equivalent: `aria2.changePosition`
     ///
     /// `how` semantics:
     /// - `POS_SET`: Set position to `pos` from the beginning.
@@ -2048,7 +2041,6 @@ impl Engine {
 
     /// Save the current session to the store.
     ///
-    /// aria2 equivalent: `aria2.saveSession`
     pub fn save_session(&self) -> Result<()> {
         let store = self
             .store
@@ -3501,10 +3493,6 @@ mod tests {
         let token2 = engine.activate_job(handle.gid).unwrap();
         assert!(!token2.is_cancelled());
     }
-
-    // ═══════════════════════════════════════════════════════════════════
-    // Batch operation tests (aria2 RPC parity)
-    // ═══════════════════════════════════════════════════════════════════
 
     #[test]
     fn pause_all_pauses_active_and_waiting() {

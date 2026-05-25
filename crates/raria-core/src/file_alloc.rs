@@ -1,4 +1,4 @@
-// raria-core: File allocation strategies (aria2: --file-allocation).
+// raria-core: File allocation strategies.
 //
 // Supports three modes:
 // - none:    No pre-allocation (default). File grows as data arrives.

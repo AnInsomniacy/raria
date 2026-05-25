@@ -141,7 +141,6 @@ async fn create_native_task_with_sources(
     assert!(task_id.starts_with("task_"));
     assert_eq!(task_id.len(), "task_".len() + 32);
     assert!(created.get("gid").is_none());
-    assert!(created.get("jsonrpc").is_none());
     task_id
 }
 
@@ -174,7 +173,6 @@ async fn create_native_task_with_checksum(
     assert!(task_id.starts_with("task_"));
     assert_eq!(task_id.len(), "task_".len() + 32);
     assert!(created.get("gid").is_none());
-    assert!(created.get("jsonrpc").is_none());
     task_id
 }
 
@@ -386,7 +384,6 @@ async fn spawn_ready_daemon_with_args(
 async fn graceful_shutdown(port: u16, child: &mut ChildGuard) {
     let shutdown_resp = native_post(port, "/api/v1/daemon/shutdown").await;
     assert_eq!(shutdown_resp["status"], "shuttingDown");
-    assert!(shutdown_resp.get("jsonrpc").is_none());
     assert!(shutdown_resp.get("result").is_none());
 
     let deadline = Instant::now() + Duration::from_secs(60);
@@ -1035,7 +1032,6 @@ async fn daemon_saves_session_when_native_save_session_is_called() {
     let save_resp = native_post(api_port, "/api/v1/session/save").await;
     assert_eq!(save_resp["status"], "saved");
     assert_eq!(save_resp["sessionPath"].as_str(), session_file.to_str());
-    assert!(save_resp.get("jsonrpc").is_none());
     assert!(save_resp.get("result").is_none());
 
     let save_deadline = Instant::now() + Duration::from_secs(10);

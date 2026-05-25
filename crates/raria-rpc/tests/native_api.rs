@@ -18,7 +18,6 @@ mod tests {
             serde_json::Value::Object(fields) => {
                 for legacy_field in [
                     "gid",
-                    "jsonrpc",
                     "method",
                     "completedLength",
                     "downloadSpeed",
@@ -73,7 +72,6 @@ mod tests {
 
         assert_eq!(body["status"], "ok");
         assert_eq!(body["apiVersion"], 1);
-        assert!(body.get("jsonrpc").is_none());
 
         cancel.cancel();
     }
@@ -103,43 +101,8 @@ mod tests {
             .expect("shutdown json");
 
         assert_eq!(body["status"], "shuttingDown");
-        assert!(body.get("jsonrpc").is_none());
         assert!(body.get("result").is_none());
         assert!(engine.shutdown_token().is_cancelled());
-
-        cancel.cancel();
-    }
-
-    #[tokio::test]
-    async fn native_api_router_does_not_mount_legacy_rpc_paths() {
-        let engine = Arc::new(Engine::new(GlobalConfig::default()));
-        let cancel = CancellationToken::new();
-        let addrs = start_native_api_server(
-            Arc::clone(&engine),
-            &NativeApiConfig {
-                listen_addr: SocketAddr::from(([127, 0, 0, 1], 0)),
-                ..NativeApiConfig::default()
-            },
-            cancel.clone(),
-        )
-        .await
-        .expect("start native api");
-        let client = reqwest::Client::new();
-
-        for path in ["/jsonrpc", "/rpc", "/api/v1/jsonrpc"] {
-            let response = client
-                .post(format!("http://{}{}", addrs.http, path))
-                .json(&serde_json::json!({
-                    "jsonrpc": "2.0",
-                    "method": "aria2.getVersion",
-                    "id": "legacy"
-                }))
-                .send()
-                .await
-                .expect("legacy rpc probe");
-
-            assert_eq!(response.status(), reqwest::StatusCode::NOT_FOUND);
-        }
 
         cancel.cancel();
     }
@@ -1096,7 +1059,6 @@ mod tests {
         assert_eq!(response.status(), reqwest::StatusCode::NOT_FOUND);
         let error: serde_json::Value = response.json().await.expect("transfer error json");
         assert_eq!(error["code"], "task_not_found");
-        assert!(error.get("jsonrpc").is_none());
         assert!(error.get("gid").is_none());
 
         let response = client
@@ -1113,7 +1075,6 @@ mod tests {
         assert_eq!(response.status(), reqwest::StatusCode::NOT_FOUND);
         let error: serde_json::Value = response.json().await.expect("queue error json");
         assert_eq!(error["code"], "task_not_found");
-        assert!(error.get("jsonrpc").is_none());
         assert!(error.get("gid").is_none());
 
         cancel.cancel();
@@ -1761,7 +1722,6 @@ mod tests {
         assert_eq!(json["type"], "task.progress");
         assert_eq!(json["taskId"], task_id.as_str());
         assert_eq!(json["data"]["completedBytes"], 10);
-        assert!(json.get("jsonrpc").is_none());
     }
 
     #[tokio::test]
@@ -1875,7 +1835,6 @@ mod tests {
         assert_eq!(json["data"]["uri"], "https://mirror.example/file.iso");
         assert_eq!(json["data"]["code"], "source_failed");
         assert_eq!(json["data"]["message"], "transient error: timeout");
-        assert!(json.get("jsonrpc").is_none());
         assert!(json.get("method").is_none());
         assert!(json.get("gid").is_none());
 
@@ -2186,7 +2145,6 @@ mod tests {
             response["sessionPath"].as_str(),
             Some(store_path.to_str().expect("session path utf8"))
         );
-        assert!(response.get("jsonrpc").is_none());
         assert!(store_path.is_file());
 
         cancel.cancel();

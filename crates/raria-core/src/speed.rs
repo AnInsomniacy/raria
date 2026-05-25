@@ -9,7 +9,6 @@
 // - Uses O(1) memory and O(1) per-update computation
 // - Smooths out jitter from bursty network traffic
 // - Converges quickly to the actual speed
-// - Is used by aria2's speed calculation as well
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;

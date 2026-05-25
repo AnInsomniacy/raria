@@ -1483,7 +1483,7 @@ async fn single_download_conditional_get_is_ignored_without_allow_overwrite() {
 }
 
 #[tokio::test]
-async fn single_download_conditional_get_ignores_legacy_control_file() {
+async fn single_download_conditional_get_ignores_sidecar_control_file() {
     let server = MockServer::start().await;
 
     Mock::given(method("HEAD"))
@@ -1512,8 +1512,8 @@ async fn single_download_conditional_get_ignores_legacy_control_file() {
     let tmp = tempdir().expect("tempdir");
     let out = tmp.path().join("resume.bin");
     fs::write(&out, b"old!").expect("write old file");
-    fs::write(tmp.path().join("resume.bin.aria2"), b"legacy control")
-        .expect("write legacy control file");
+    fs::write(tmp.path().join("resume.bin.control"), b"sidecar control")
+        .expect("write sidecar control file");
 
     let output = Command::new(cargo_bin("raria"))
         .arg("download")
