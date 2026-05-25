@@ -99,3 +99,19 @@ with 36 tests. `cargo test -p raria-cli --test native_api_smoke daemon_ --
 Remaining: CM-006 native CLI and configuration closure, then CM-020 deletes
 remaining JSON-RPC modules and compatibility tests.
 Blocked: none.
+
+2026-05-25 CM-006 partial
+Changed: Removed `rpc_listen_port` and `enable_rpc` from `GlobalConfig`,
+daemon startup, native `raria.toml` conversion, and focused assertions. README
+now documents `[api].listen_addr` and describes the daemon listener as native
+API only. Removed stale aria2 option comments from the touched runtime config
+fields.
+Verified: `cargo test -p raria-core --test native_config -- --nocapture`
+passed with 8 tests. `cargo test -p raria-rpc --test native_api
+config_endpoint_returns_native_runtime_projection -- --nocapture` passed.
+`cargo check --workspace --locked` passed. CSV parser validation passed for
+25 files. `git diff --check` passed.
+Remaining: Continue CM-006 stale CLI/config review. Remaining legacy-shaped
+fields such as `rpc_secret`, `rpc_allow_origin_all`, `dir`, `out`, `split`,
+and selected option names need native replacement or deletion conditions.
+Blocked: none.

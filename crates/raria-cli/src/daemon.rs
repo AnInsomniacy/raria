@@ -32,7 +32,7 @@ pub(crate) async fn run_daemon_with_config(
     header_args: Vec<String>,
 ) -> Result<()> {
     let default_headers = parse_header_args(&header_args)?;
-    let api_port = config.rpc_listen_port;
+    let api_port = config.api_listen_port;
 
     std::fs::create_dir_all(&config.dir).context("failed to create download directory")?;
 

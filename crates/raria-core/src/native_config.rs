@@ -65,7 +65,6 @@ impl RariaConfig {
             } else {
                 Some(self.network.no_proxy.join(","))
             },
-            enable_rpc: true,
             bt_enable_pex: self.bittorrent.enable_pex,
             metalink_preferred_locations: self.metalink.preferred_locations.clone(),
             metalink_preferred_protocol: self.metalink.preferred_protocol.clone(),
@@ -78,7 +77,7 @@ impl RariaConfig {
         };
 
         let listen_addr: std::net::SocketAddr = self.api.listen_addr.parse()?;
-        config.rpc_listen_port = listen_addr.port();
+        config.api_listen_port = listen_addr.port();
         config.api_auth_token = self.api_auth_token()?;
         Ok(config)
     }

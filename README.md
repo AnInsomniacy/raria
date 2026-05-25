@@ -17,7 +17,7 @@ The current tree is a real backend, not a skeleton:
 - checksum enforcement, conditional GET, mirror failover, and daemon-path Metalink execution
 - structured JSON file logging for the highest-value runtime surfaces
 
-The migration is still in progress. Several internal paths and tests continue to use the old JSON-RPC layer as a temporary regression harness while native equivalents are being built.
+The migration is still in progress. Some internal modules still carry deletion debt, but the daemon product listener is native API only.
 
 ## Implemented Capabilities
 
@@ -151,8 +151,7 @@ session_path = "raria.session.redb"
 max_active_tasks = 5
 
 [api]
-host = "127.0.0.1"
-port = 6800
+listen_addr = "127.0.0.1:6800"
 auth_token_file = "raria.token"
 
 [downloads]
@@ -172,7 +171,7 @@ crates/
   raria-sftp      SFTP backend
   raria-bt        BitTorrent service layer
   raria-metalink  Metalink parser and normalizer
-  raria-rpc       native HTTP JSON API, event stream, migration control harness
+  raria-rpc       native HTTP JSON API and event stream
   raria-cli       CLI and daemon runtime wiring
 docs/
   core-modernization/

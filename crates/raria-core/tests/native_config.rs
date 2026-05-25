@@ -157,7 +157,7 @@ mod tests {
         assert_eq!(global.dir.to_string_lossy(), "/downloads");
         assert_eq!(global.session_file.to_string_lossy(), "/state/raria.redb");
         assert_eq!(global.max_concurrent_downloads, 9);
-        assert_eq!(global.rpc_listen_port, 7900);
+        assert_eq!(global.api_listen_port, 7900);
         assert_eq!(global.split, 7);
         assert_eq!(global.min_split_size, 2097152);
         assert_eq!(global.max_tries, 4);

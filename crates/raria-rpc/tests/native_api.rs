@@ -2122,6 +2122,8 @@ mod tests {
         assert_eq!(body["metalink"]["uniqueProtocols"], true);
         assert!(body.get("rpcSecret").is_none());
         assert!(body.get("rpc_listen_port").is_none());
+        assert!(body.get("enable_rpc").is_none());
+        assert!(body.get("api_listen_port").is_none());
 
         cancel.cancel();
     }

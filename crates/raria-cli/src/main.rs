@@ -693,8 +693,7 @@ async fn main() -> Result<()> {
             config.max_concurrent_downloads = cli.max_concurrent;
             config.max_overall_download_limit = max_download_limit;
             config.quiet = cli.quiet;
-            config.rpc_listen_port = api_port;
-            config.enable_rpc = true;
+            config.api_listen_port = api_port;
             config.session_file = session_file.clone();
             if let Some(max_tries) = max_tries {
                 config.max_tries = max_tries;

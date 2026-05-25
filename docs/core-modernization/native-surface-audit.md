@@ -72,8 +72,8 @@ Retained CLI names are native names such as `daemon --api-port`,
 `--on-task-start`, `--on-task-complete`, and `--on-task-fail`.
 
 Runtime `GlobalConfig` still exposes transitional fields that must be renamed
-or removed in CM-006 and dependent checkpoints: `rpc_listen_port`,
-`enable_rpc`, `rpc_secret`, `rpc_allow_origin_all`, `dir`, `out`, `split`,
+or removed in CM-006 and dependent checkpoints: `rpc_secret`,
+`rpc_allow_origin_all`, `dir`, `out`, `split`,
 `max_overall_download_limit`, `max_overall_upload_limit`,
 `max_connection_per_server`, `continue_download`, `min_split_size`,
 `lowest_speed_limit`, `max_file_not_found`, `max_tries`, `retry_wait`,
@@ -110,7 +110,7 @@ Use these searches as the CM-020 stale-surface baseline:
 ```bash
 rg -n "jsonrpsee|JSON-RPC|json-rpc|aria2\\.|AriaNg|Motrix|system\\.multicall|addUri|tellStatus|tellActive|tellWaiting|tellStopped" crates README.md docs/core-modernization
 rg -n "\\bGid\\b|\\bgid\\b" crates README.md docs/core-modernization
-rg -n "compat|parity|legacy|rpc_secret|rpc_allow_origin_all|rpc_listen_port|enable_rpc|rpc-port|rpc-secret" crates README.md docs/core-modernization
+rg -n "compat|parity|legacy|rpc_secret|rpc_allow_origin_all|rpc-port|rpc-secret" crates README.md docs/core-modernization
 ```
 
 Expected CM-003 baseline findings are active JSON-RPC implementation in

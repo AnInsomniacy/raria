@@ -20,7 +20,7 @@ pub enum BtPieceStrategy {
 }
 
 impl BtPieceStrategy {
-    /// Parse the aria2-style string form used by config files and CLI flags.
+    /// Parse the stable string form used by config files and CLI flags.
     pub fn parse(value: &str) -> Option<Self> {
         match value {
             "current" => Some(Self::Current),
@@ -49,10 +49,8 @@ pub struct GlobalConfig {
     pub max_overall_download_limit: u64,
     /// Maximum global upload speed in bytes/sec (0 = unlimited).
     pub max_overall_upload_limit: u64,
-    /// RPC listen port.
-    pub rpc_listen_port: u16,
-    /// Whether to enable RPC.
-    pub enable_rpc: bool,
+    /// Native API listen port.
+    pub api_listen_port: u16,
     /// Path to the session file for persistence.
     pub session_file: PathBuf,
     /// Save the current session periodically while the daemon is running.
@@ -61,7 +59,7 @@ pub struct GlobalConfig {
     pub log_level: String,
     /// Suppress normal user-facing output.
     pub quiet: bool,
-    /// Proxy URL for all protocols (aria2: --all-proxy).
+    /// Proxy URL for all protocols.
     pub all_proxy: Option<String>,
     /// Proxy URL for HTTP requests only (overrides all_proxy for HTTP).
     pub http_proxy: Option<String>,
@@ -83,40 +81,39 @@ pub struct GlobalConfig {
     pub http_user: Option<String>,
     /// Global HTTP Basic auth password.
     pub http_passwd: Option<String>,
-    /// Path to Netscape cookie file (aria2: --load-cookies).
+    /// Path to Netscape cookie file loaded before HTTP requests.
     pub cookie_file: Option<PathBuf>,
-    /// Path to Netscape cookie file for persistence (aria2: --save-cookies).
+    /// Path to Netscape cookie file updated after HTTP requests.
     pub save_cookie_file: Option<PathBuf>,
-    /// RPC secret token (aria2: --rpc-secret). When set, all RPC
-    /// requests must include `token:<secret>` as the first parameter.
+    /// Temporary JSON-RPC secret retained until the legacy server is deleted.
     pub rpc_secret: Option<String>,
     /// Native HTTP API bearer token.
     pub api_auth_token: Option<String>,
-    /// Allow browsers from any origin to call the HTTP JSON-RPC endpoint.
+    /// Temporary JSON-RPC browser origin override retained until legacy deletion.
     pub rpc_allow_origin_all: bool,
-    /// File allocation strategy (aria2: --file-allocation).
+    /// File allocation strategy.
     pub file_allocation: FileAllocation,
-    /// Max connections per server (aria2: --max-connection-per-server / -x).
+    /// Maximum connections per server.
     pub max_connection_per_server: u32,
-    /// Number of segments for splitting (aria2: --split / -s).
+    /// Default segment count for range-capable downloads.
     pub split: u32,
-    /// Continue downloading a partially downloaded file (aria2: --continue / -c).
+    /// Continue downloading a partially downloaded file.
     pub continue_download: bool,
-    /// Minimum size in bytes for a split segment (aria2: --min-split-size).
+    /// Minimum size in bytes for a split segment.
     ///
     /// When set to a non-zero value, the effective number of connections for a
     /// range-capable download will be reduced so that each segment is at least
     /// this many bytes.
     pub min_split_size: u64,
     /// Abort connections when download speed is below this limit (bytes/sec).
-    /// 0 disables the check (aria2: --lowest-speed-limit).
+    /// 0 disables the check.
     pub lowest_speed_limit: u64,
-    /// Maximum number of file-not-found errors before giving up (aria2: --max-file-not-found).
+    /// Maximum number of file-not-found errors before giving up.
     /// 0 disables the check.
     pub max_file_not_found: u32,
-    /// Maximum retries per download (aria2: --max-tries, 0 = infinite).
+    /// Maximum retries per download; 0 means unlimited retries.
     pub max_tries: u32,
-    /// Seconds to wait between retries (aria2: --retry-wait).
+    /// Seconds to wait between retries.
     pub retry_wait: u32,
     /// Maximum number of HTTP redirects to follow.
     pub max_redirects: Option<usize>,
@@ -169,8 +166,7 @@ impl Default for GlobalConfig {
             max_concurrent_downloads: 5,
             max_overall_download_limit: 0,
             max_overall_upload_limit: 0,
-            rpc_listen_port: 6800,
-            enable_rpc: false,
+            api_listen_port: 6800,
             session_file: PathBuf::from("raria.session"),
             save_session_interval: None,
             log_level: "info".into(),
@@ -338,8 +334,7 @@ mod tests {
         let cfg = GlobalConfig::default();
         assert_eq!(cfg.max_concurrent_downloads, 5);
         assert_eq!(cfg.max_overall_download_limit, 0);
-        assert_eq!(cfg.rpc_listen_port, 6800);
-        assert!(!cfg.enable_rpc);
+        assert_eq!(cfg.api_listen_port, 6800);
         assert!(!cfg.rpc_allow_origin_all);
         assert_eq!(cfg.bt_piece_strategy, BtPieceStrategy::RarestFirst);
         assert!(cfg.bt_enable_pex);
@@ -357,7 +352,7 @@ mod tests {
             recovered.max_concurrent_downloads,
             cfg.max_concurrent_downloads
         );
-        assert_eq!(recovered.rpc_listen_port, cfg.rpc_listen_port);
+        assert_eq!(recovered.api_listen_port, cfg.api_listen_port);
         assert_eq!(recovered.bt_piece_strategy, BtPieceStrategy::RarestFirst);
         assert!(recovered.bt_enable_pex);
     }
