@@ -1346,7 +1346,12 @@ async fn daemon_cli_basic_auth_applies_to_input_file_downloads() {
         temp.path(),
         &session_file,
         Some(&input_file),
-        &["--http-username", "daemon-user", "--http-password", "daemon-pass"],
+        &[
+            "--http-username",
+            "daemon-user",
+            "--http-password",
+            "daemon-pass",
+        ],
     )
     .await;
 

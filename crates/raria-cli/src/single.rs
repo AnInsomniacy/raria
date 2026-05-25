@@ -20,21 +20,21 @@ pub(crate) struct SingleDownloadOptions {
     pub dir: PathBuf,
     pub filename: Option<String>,
     pub connections: u32,
-    pub continue_download: bool,
+    pub resume: bool,
     pub max_concurrent: u32,
     pub max_download_limit: u64,
-    pub max_tries: Option<u32>,
-    pub retry_wait: Option<u32>,
-    pub min_split_size: Option<u64>,
-    pub lowest_speed_limit: Option<u64>,
-    pub max_file_not_found: Option<u32>,
+    pub retry_attempts: Option<u32>,
+    pub retry_delay_seconds: Option<u32>,
+    pub min_segment_size: Option<u64>,
+    pub min_speed: Option<u64>,
+    pub max_not_found: Option<u32>,
     pub checksum_spec: Option<String>,
-    pub all_proxy: Option<String>,
+    pub proxy: Option<String>,
     pub check_certificate: bool,
     pub ca_certificate: Option<PathBuf>,
     pub user_agent: Option<String>,
     pub http_user: Option<String>,
-    pub http_passwd: Option<String>,
+    pub http_password: Option<String>,
     pub save_cookies: Option<PathBuf>,
     pub certificate: Option<PathBuf>,
     pub private_key: Option<PathBuf>,
@@ -57,7 +57,7 @@ pub(crate) async fn run_download(options: SingleDownloadOptions) -> Result<()> {
     let headers = parse_header_args(&options.header_args)?;
     let config = GlobalConfig {
         max_concurrent_downloads: options.max_concurrent,
-        all_proxy: options.all_proxy.clone(),
+        proxy: options.proxy.clone(),
         check_certificate: options.check_certificate,
         ca_certificate: options.ca_certificate.clone(),
         user_agent: options.user_agent.clone(),
@@ -67,18 +67,18 @@ pub(crate) async fn run_download(options: SingleDownloadOptions) -> Result<()> {
         timeout: options.timeout_secs,
         connect_timeout: options.connect_timeout_secs,
         conditional_get: options.conditional_get,
-        continue_download: options.continue_download,
-        max_tries: options.max_tries.unwrap_or(5),
-        retry_wait: options.retry_wait.unwrap_or(0),
-        min_split_size: options.min_split_size.unwrap_or(0),
-        lowest_speed_limit: options.lowest_speed_limit.unwrap_or(0),
-        max_file_not_found: options.max_file_not_found.unwrap_or(0),
-        allow_overwrite: options.allow_overwrite || options.continue_download,
+        resume: options.resume,
+        retry_attempts: options.retry_attempts.unwrap_or(5),
+        retry_delay_seconds: options.retry_delay_seconds.unwrap_or(0),
+        min_segment_size: options.min_segment_size.unwrap_or(0),
+        min_speed: options.min_speed.unwrap_or(0),
+        max_not_found: options.max_not_found.unwrap_or(0),
+        allow_overwrite: options.allow_overwrite || options.resume,
         sftp_strict_host_key_check: options.sftp_strict_host_key_check,
         sftp_known_hosts: options.sftp_known_hosts.clone(),
         sftp_private_key: options.sftp_private_key.clone(),
         sftp_private_key_passphrase: options.sftp_private_key_passphrase.clone(),
-        save_cookie_file: options.save_cookies.clone(),
+        cookie_store_file: options.save_cookies.clone(),
         certificate: options.certificate.clone(),
         private_key: options.private_key.clone(),
         ..Default::default()
@@ -90,7 +90,7 @@ pub(crate) async fn run_download(options: SingleDownloadOptions) -> Result<()> {
     )])?;
 
     let http_cfg = raria_http::backend::HttpBackendConfig {
-        all_proxy: config.all_proxy.clone(),
+        proxy: config.proxy.clone(),
         http_proxy: config.http_proxy.clone(),
         https_proxy: config.https_proxy.clone(),
         no_proxy: config.no_proxy.clone(),
@@ -99,15 +99,15 @@ pub(crate) async fn run_download(options: SingleDownloadOptions) -> Result<()> {
         client_certificate: config.certificate.clone(),
         client_private_key: config.private_key.clone(),
         user_agent: config.user_agent.clone(),
-        cookie_file: config.cookie_file.clone(),
-        save_cookie_file: config.save_cookie_file.clone(),
+        load_cookie_file: config.load_cookie_file.clone(),
+        cookie_store_file: config.cookie_store_file.clone(),
         max_redirects: config.max_redirects,
         connect_timeout: config.connect_timeout,
         netrc_path: config.netrc_path.clone(),
         no_netrc: config.no_netrc,
     };
     let ftp_cfg = raria_ftp::backend::FtpBackendConfig {
-        all_proxy: config.all_proxy.clone(),
+        proxy: config.proxy.clone(),
         no_proxy: config.no_proxy.clone(),
         check_certificate: config.check_certificate,
         ca_certificate: config.ca_certificate.clone(),
@@ -117,7 +117,7 @@ pub(crate) async fn run_download(options: SingleDownloadOptions) -> Result<()> {
         known_hosts_path: config.sftp_known_hosts.clone(),
         private_key_path: config.sftp_private_key.clone(),
         private_key_passphrase: config.sftp_private_key_passphrase.clone(),
-        all_proxy: config.all_proxy.clone(),
+        proxy: config.proxy.clone(),
         no_proxy: config.no_proxy.clone(),
     };
     let backend = create_backend_with_config(
@@ -130,7 +130,7 @@ pub(crate) async fn run_download(options: SingleDownloadOptions) -> Result<()> {
     let parsed_url: url::Url = options.url.parse().context("invalid URL")?;
     let auth = options.http_user.clone().map(|username| Credentials {
         username,
-        password: options.http_passwd.clone().unwrap_or_default(),
+        password: options.http_password.clone().unwrap_or_default(),
     });
     let fallback_filename = options.filename.clone().or_else(|| {
         parsed_url
@@ -212,8 +212,8 @@ pub(crate) async fn run_download(options: SingleDownloadOptions) -> Result<()> {
     } else {
         1
     };
-    if probe.supports_range && file_size > 0 && config.min_split_size > 0 {
-        let max_by_min = (file_size / config.min_split_size).max(1) as u32;
+    if probe.supports_range && file_size > 0 && config.min_segment_size > 0 {
+        let max_by_min = (file_size / config.min_segment_size).max(1) as u32;
         effective_connections = effective_connections.min(max_by_min);
     }
 
@@ -228,7 +228,7 @@ pub(crate) async fn run_download(options: SingleDownloadOptions) -> Result<()> {
         job.total_size = Some(file_size);
     });
 
-    let existing_len = if options.continue_download
+    let existing_len = if options.resume
         && probe.supports_range
         && !control_file_path.exists()
         && job.out_path.is_file()

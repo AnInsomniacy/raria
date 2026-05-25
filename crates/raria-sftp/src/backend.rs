@@ -44,7 +44,7 @@ pub struct SftpBackendConfig {
     /// Optional passphrase for the private key.
     pub private_key_passphrase: Option<String>,
     /// Proxy URL for all protocols; currently only socks5:// is supported on SFTP.
-    pub all_proxy: Option<String>,
+    pub proxy: Option<String>,
     /// Comma-separated no-proxy host list.
     pub no_proxy: Option<String>,
 }
@@ -150,7 +150,7 @@ async fn connect_tcp_stream(
     config: &SftpBackendConfig,
 ) -> Result<TcpStream> {
     let addr = format!("{host}:{port}");
-    if let Some(proxy) = config.all_proxy.as_deref() {
+    if let Some(proxy) = config.proxy.as_deref() {
         if proxy.starts_with("socks5://") && !should_bypass_proxy(host, config.no_proxy.as_deref())
         {
             let proxy_addr = proxy.trim_start_matches("socks5://");
@@ -319,7 +319,7 @@ mod tests {
             known_hosts_path: Some(PathBuf::from("/tmp/known_hosts")),
             private_key_path: Some(PathBuf::from("/tmp/id_ed25519")),
             private_key_passphrase: Some("secret".into()),
-            all_proxy: Some("socks5://127.0.0.1:1080".into()),
+            proxy: Some("socks5://127.0.0.1:1080".into()),
             no_proxy: Some("localhost".into()),
         });
         assert!(backend.config.strict_host_key_check);
@@ -336,7 +336,7 @@ mod tests {
             Some("secret")
         );
         assert_eq!(
-            backend.config.all_proxy.as_deref(),
+            backend.config.proxy.as_deref(),
             Some("socks5://127.0.0.1:1080")
         );
         assert_eq!(backend.config.no_proxy.as_deref(), Some("localhost"));
@@ -424,7 +424,7 @@ mod tests {
                 known_hosts_path: None,
                 private_key_path: None,
                 private_key_passphrase: None,
-                all_proxy: None,
+                proxy: None,
                 no_proxy: None,
             },
         )
@@ -454,7 +454,7 @@ mod tests {
                 known_hosts_path: Some(path),
                 private_key_path: None,
                 private_key_passphrase: None,
-                all_proxy: None,
+                proxy: None,
                 no_proxy: None,
             },
         )
@@ -484,7 +484,7 @@ mod tests {
                 known_hosts_path: Some(path),
                 private_key_path: None,
                 private_key_passphrase: None,
-                all_proxy: None,
+                proxy: None,
                 no_proxy: None,
             },
         )

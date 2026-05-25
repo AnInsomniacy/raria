@@ -53,13 +53,13 @@ impl RariaConfig {
     /// Convert native configuration into the current runtime configuration.
     pub fn to_global_config(&self) -> anyhow::Result<GlobalConfig> {
         let mut config = GlobalConfig {
-            dir: self.daemon.download_dir.clone(),
+            download_dir: self.daemon.download_dir.clone(),
             session_file: self.daemon.session_path.clone(),
             max_concurrent_downloads: self.daemon.max_active_tasks,
-            split: self.downloads.default_segments,
-            min_split_size: self.downloads.min_segment_size,
-            max_tries: self.downloads.retry_max_attempts,
-            all_proxy: self.network.proxy.clone(),
+            default_segments: self.downloads.default_segments,
+            min_segment_size: self.downloads.min_segment_size,
+            retry_attempts: self.downloads.retry_max_attempts,
+            proxy: self.network.proxy.clone(),
             no_proxy: if self.network.no_proxy.is_empty() {
                 None
             } else {

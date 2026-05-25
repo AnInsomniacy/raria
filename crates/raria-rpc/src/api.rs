@@ -195,14 +195,14 @@ async fn handle_config(
 
     Ok(Json(RuntimeConfigResponse {
         daemon: RuntimeDaemonConfig {
-            download_dir: config.dir.clone(),
+            download_dir: config.download_dir.clone(),
             session_path: config.session_file.clone(),
             max_active_tasks: config.max_concurrent_downloads,
         },
         downloads: RuntimeDownloadsConfig {
-            default_segments: config.split,
-            min_segment_size: config.min_split_size,
-            retry_max_attempts: config.max_tries,
+            default_segments: config.default_segments,
+            min_segment_size: config.min_segment_size,
+            retry_max_attempts: config.retry_attempts,
         },
         metalink: RuntimeMetalinkConfig {
             preferred_locations: config.metalink_preferred_locations.clone(),

@@ -53,7 +53,7 @@ fn bt_service_config(engine: &Engine) -> BtServiceConfig {
     BtServiceConfig {
         socks_proxy_url: engine
             .config
-            .all_proxy
+            .proxy
             .clone()
             .filter(|proxy| proxy.starts_with("socks5://")),
         dht_config_filename: engine.config.bt_dht_config_file.clone(),
@@ -686,9 +686,9 @@ mod tests {
     }
 
     #[test]
-    fn bt_service_config_forwards_only_socks5_all_proxy() {
+    fn bt_service_config_forwards_only_socks5_proxy() {
         let config = GlobalConfig {
-            all_proxy: Some("socks5://127.0.0.1:1080".into()),
+            proxy: Some("socks5://127.0.0.1:1080".into()),
             ..Default::default()
         };
         let engine = Engine::new(config);
@@ -699,7 +699,7 @@ mod tests {
         );
 
         let config = GlobalConfig {
-            all_proxy: Some("http://127.0.0.1:8080".into()),
+            proxy: Some("http://127.0.0.1:8080".into()),
             ..Default::default()
         };
         let engine = Engine::new(config);

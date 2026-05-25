@@ -139,7 +139,7 @@ mod tests {
         let gid = raria_core::job::Gid::from_raw(u64::from_str_radix(gid_str, 16).unwrap());
         let job = engine.registry.get(gid).unwrap();
         assert_eq!(job.options.http_user.as_deref(), Some("rpc-user"));
-        assert_eq!(job.options.http_passwd.as_deref(), Some("rpc-pass"));
+        assert_eq!(job.options.http_password.as_deref(), Some("rpc-pass"));
         cancel.cancel();
     }
 
@@ -223,7 +223,7 @@ mod tests {
         let change_resp = rpc_call(
             &url,
             "aria2.changeOption",
-            serde_json::json!([gid_str, {"split": "4"}]),
+            serde_json::json!([gid_str, {"default_segments": "4"}]),
         )
         .await;
         assert_eq!(change_resp["result"], "OK");
@@ -324,7 +324,7 @@ mod tests {
         let job = engine.registry.get(gid).unwrap();
         assert_eq!(job.options.checksum.as_deref(), Some("sha-256=abc123"));
         assert_eq!(job.options.http_user.as_deref(), Some("rpc-user"));
-        assert_eq!(job.options.http_passwd.as_deref(), Some("rpc-pass"));
+        assert_eq!(job.options.http_password.as_deref(), Some("rpc-pass"));
 
         let option = rpc_call(&url, "aria2.getOption", serde_json::json!([gid_str])).await;
         assert_eq!(option["result"]["checksum"], "sha-256=abc123");

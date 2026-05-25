@@ -34,11 +34,11 @@ pub(crate) async fn run_daemon_with_config(
     let default_headers = parse_header_args(&header_args)?;
     let api_port = config.api_listen_port;
 
-    std::fs::create_dir_all(&config.dir).context("failed to create download directory")?;
+    std::fs::create_dir_all(&config.download_dir).context("failed to create download directory")?;
 
     let store = Arc::new(Store::open(session_file)?);
     let engine = Arc::new(Engine::with_store(config.clone(), Arc::clone(&store)));
-    let bt_service = create_bt_service(engine.as_ref(), config.dir.clone())?;
+    let bt_service = create_bt_service(engine.as_ref(), config.download_dir.clone())?;
     raria_core::logging::replace_structured_log_context([(
         "session_id",
         engine.session_id.clone(),
@@ -55,16 +55,16 @@ pub(crate) async fn run_daemon_with_config(
     for entry in &input_entries {
         let spec = AddUriSpec {
             uris: entry.uris.clone(),
-            filename: entry.options.out.clone(),
+            filename: entry.options.filename.clone(),
             dir: entry
                 .options
-                .dir
+                .download_dir
                 .clone()
                 .unwrap_or_else(|| download_dir.clone()),
             connections: entry
                 .options
                 .extra
-                .get("split")
+                .get("segments")
                 .and_then(|value| value.parse::<u32>().ok())
                 .unwrap_or(1),
             headers: Vec::new(),
@@ -79,11 +79,11 @@ pub(crate) async fn run_daemon_with_config(
                     if let Some(checksum) = entry.options.checksum.clone() {
                         job.options.checksum = Some(checksum);
                     }
-                    if let Some(user) = entry.options.http_user.clone() {
+                    if let Some(user) = entry.options.http_username.clone() {
                         job.options.http_user = Some(user);
                     }
-                    if let Some(passwd) = entry.options.http_passwd.clone() {
-                        job.options.http_passwd = Some(passwd);
+                    if let Some(passwd) = entry.options.http_password.clone() {
+                        job.options.http_password = Some(passwd);
                     }
                     if let Ok(headers) = &parse_headers {
                         job.options.headers.extend(headers.clone());
@@ -91,18 +91,18 @@ pub(crate) async fn run_daemon_with_config(
                     if let Some(limit) = entry
                         .options
                         .extra
-                        .get("max-download-limit")
+                        .get("download-limit")
                         .and_then(|value| value.parse::<u64>().ok())
                     {
                         job.options.max_download_limit = limit;
                     }
-                    if let Some(split) = entry
+                    if let Some(default_segments) = entry
                         .options
                         .extra
-                        .get("split")
+                        .get("segments")
                         .and_then(|value| value.parse::<u32>().ok())
                     {
-                        job.options.max_connections = split;
+                        job.options.max_connections = default_segments;
                     }
                 });
                 if let Err(error) = parse_headers {
@@ -462,12 +462,12 @@ fn build_download_context(
                 .as_ref()
                 .map(|username| Credentials {
                     username: username.clone(),
-                    password: engine.config.http_passwd.clone().unwrap_or_default(),
+                    password: engine.config.http_password.clone().unwrap_or_default(),
                 })
         });
 
     let http_cfg = raria_http::backend::HttpBackendConfig {
-        all_proxy: engine.config.all_proxy.clone(),
+        proxy: engine.config.proxy.clone(),
         http_proxy: engine.config.http_proxy.clone(),
         https_proxy: engine.config.https_proxy.clone(),
         no_proxy: engine.config.no_proxy.clone(),
@@ -476,15 +476,15 @@ fn build_download_context(
         client_certificate: engine.config.certificate.clone(),
         client_private_key: engine.config.private_key.clone(),
         user_agent: engine.config.user_agent.clone(),
-        cookie_file: engine.config.cookie_file.clone(),
-        save_cookie_file: engine.config.save_cookie_file.clone(),
+        load_cookie_file: engine.config.load_cookie_file.clone(),
+        cookie_store_file: engine.config.cookie_store_file.clone(),
         max_redirects: engine.config.max_redirects,
         connect_timeout: engine.config.connect_timeout,
         netrc_path: engine.config.netrc_path.clone(),
         no_netrc: engine.config.no_netrc,
     };
     let ftp_cfg = raria_ftp::backend::FtpBackendConfig {
-        all_proxy: engine.config.all_proxy.clone(),
+        proxy: engine.config.proxy.clone(),
         no_proxy: engine.config.no_proxy.clone(),
         check_certificate: engine.config.check_certificate,
         ca_certificate: engine.config.ca_certificate.clone(),
@@ -494,7 +494,7 @@ fn build_download_context(
         known_hosts_path: engine.config.sftp_known_hosts.clone(),
         private_key_path: engine.config.sftp_private_key.clone(),
         private_key_passphrase: engine.config.sftp_private_key_passphrase.clone(),
-        all_proxy: engine.config.all_proxy.clone(),
+        proxy: engine.config.proxy.clone(),
         no_proxy: engine.config.no_proxy.clone(),
     };
     let probe_ctx = ProbeContext {
@@ -560,7 +560,7 @@ fn plan_download_segments(
             total_size: probe.size,
             supports_range: probe.supports_range,
             requested_connections: task.max_connections,
-            min_split_size: engine.config.min_split_size,
+            min_segment_size: engine.config.min_segment_size,
             source_uri: Some(source_uri),
         },
     ) {

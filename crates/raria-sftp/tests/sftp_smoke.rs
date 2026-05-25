@@ -479,7 +479,7 @@ async fn sftp_backend_downloads_file_through_socks5_proxy() {
     let proxy = spawn_socks5_proxy().await;
 
     let backend = SftpBackend::with_config(SftpBackendConfig {
-        all_proxy: Some(proxy),
+        proxy: Some(proxy),
         ..Default::default()
     });
     let url = format!(

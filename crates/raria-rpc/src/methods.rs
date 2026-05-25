@@ -41,7 +41,7 @@ pub struct RpcOptions {
     #[serde(default, rename = "out")]
     pub filename: Option<String>,
     /// Number of parallel connections (string, e.g. `"4"`).
-    #[serde(default, rename = "split")]
+    #[serde(default, rename = "default_segments")]
     pub connections: Option<String>,
     /// Per-download speed limit in bytes/sec (string).
     #[serde(default, rename = "max-download-limit")]
@@ -57,7 +57,7 @@ pub struct RpcOptions {
     pub http_user: Option<String>,
     /// HTTP basic auth password.
     #[serde(default, rename = "http-passwd")]
-    pub http_passwd: Option<String>,
+    pub http_password: Option<String>,
     /// Comma-separated file indices to download (BT only).
     #[serde(default, rename = "select-file")]
     pub select_file: Option<String>,
@@ -247,7 +247,7 @@ impl Aria2RpcServer for RpcHandler {
             .dir
             .clone()
             .map(PathBuf::from)
-            .unwrap_or_else(|| self.engine.config.dir.clone());
+            .unwrap_or_else(|| self.engine.config.download_dir.clone());
         let connections = opts
             .connections
             .as_ref()
@@ -270,7 +270,7 @@ impl Aria2RpcServer for RpcHandler {
                 })
                 .collect(),
             http_user: opts.http_user.clone(),
-            http_password: opts.http_passwd.clone(),
+            http_password: opts.http_password.clone(),
             checksum: opts.checksum.clone(),
         };
 
@@ -565,10 +565,10 @@ impl Aria2RpcServer for RpcHandler {
                     debug!(%gid, n, "changed max-connection-per-server");
                 }
             }
-            if let Some(conns) = options.get("split").and_then(|v| v.as_str()) {
+            if let Some(conns) = options.get("default_segments").and_then(|v| v.as_str()) {
                 if let Ok(n) = conns.parse::<u32>() {
                     job.options.max_connections = n;
-                    debug!(%gid, n, "changed split");
+                    debug!(%gid, n, "changed default_segments");
                 }
             }
             if let Some(trackers) = options.get("bt-tracker").and_then(|v| v.as_str()) {
@@ -590,7 +590,7 @@ impl Aria2RpcServer for RpcHandler {
                 debug!(%gid, "changed http-user");
             }
             if let Some(passwd) = options.get("http-passwd").and_then(|v| v.as_str()) {
-                job.options.http_passwd = Some(passwd.to_string());
+                job.options.http_password = Some(passwd.to_string());
                 debug!(%gid, "changed http-passwd");
             }
             if let Some(files) = select_file.clone() {
@@ -631,15 +631,15 @@ impl Aria2RpcServer for RpcHandler {
             "out": job.out_path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
             "max-download-limit": job.options.max_download_limit.to_string(),
             "max-upload-limit": job.options.max_upload_limit.to_string(),
-            "split": job.options.max_connections.to_string(),
-            "min-split-size": "1048576",
+            "default_segments": job.options.max_connections.to_string(),
+            "min-default_segments-size": "1048576",
             "max-connection-per-server": job.options.max_connections.to_string(),
             "header": job.options.headers.iter()
                 .map(|(k, v)| format!("{k}: {v}"))
                 .collect::<Vec<_>>(),
             "checksum": job.options.checksum.as_deref().unwrap_or(""),
             "http-user": job.options.http_user.as_deref().unwrap_or(""),
-            "http-passwd": job.options.http_passwd.as_deref().unwrap_or(""),
+            "http-passwd": job.options.http_password.as_deref().unwrap_or(""),
             "select-file": job.options.bt_selected_files.as_ref()
                 .map(|files| files.iter().map(|idx| (idx + 1).to_string()).collect::<Vec<_>>().join(","))
                 .unwrap_or_default(),
@@ -687,12 +687,12 @@ impl Aria2RpcServer for RpcHandler {
 
     async fn get_global_option(&self) -> RpcResult<serde_json::Value> {
         Ok(serde_json::json!({
-            "dir": self.engine.config.dir.to_string_lossy(),
+            "dir": self.engine.config.download_dir.to_string_lossy(),
             "max-concurrent-downloads": self.engine.scheduler.max_concurrent().to_string(),
             "max-overall-download-limit": self.engine.global_rate_limiter.limit_bps().to_string(),
-            "max-overall-upload-limit": self.engine.config.max_overall_upload_limit.to_string(),
+            "max-overall-upload-limit": self.engine.config.global_upload_limit.to_string(),
             "log-level": self.engine.config.log_level,
-            "all-proxy": self.engine.config.all_proxy.as_deref().unwrap_or(""),
+            "all-proxy": self.engine.config.proxy.as_deref().unwrap_or(""),
             "http-proxy": self.engine.config.http_proxy.as_deref().unwrap_or(""),
             "https-proxy": self.engine.config.https_proxy.as_deref().unwrap_or(""),
             "no-proxy": self.engine.config.no_proxy.as_deref().unwrap_or(""),
@@ -849,8 +849,8 @@ fn apply_common_rpc_job_options(job: &mut raria_core::job::Job, opts: &RpcOption
     if let Some(ref user) = opts.http_user {
         job.options.http_user = Some(user.clone());
     }
-    if let Some(ref passwd) = opts.http_passwd {
-        job.options.http_passwd = Some(passwd.clone());
+    if let Some(ref passwd) = opts.http_password {
+        job.options.http_password = Some(passwd.clone());
     }
     if let Some(ref select_file) = opts.select_file {
         if let Ok(files) = parse_select_file_spec(select_file) {

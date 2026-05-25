@@ -154,18 +154,15 @@ mod tests {
 
         let global = config.to_global_config().expect("convert to global config");
 
-        assert_eq!(global.dir.to_string_lossy(), "/downloads");
+        assert_eq!(global.download_dir.to_string_lossy(), "/downloads");
         assert_eq!(global.session_file.to_string_lossy(), "/state/raria.redb");
         assert_eq!(global.max_concurrent_downloads, 9);
         assert_eq!(global.api_listen_port, 7900);
-        assert_eq!(global.split, 7);
-        assert_eq!(global.min_split_size, 2097152);
-        assert_eq!(global.max_tries, 4);
+        assert_eq!(global.default_segments, 7);
+        assert_eq!(global.min_segment_size, 2097152);
+        assert_eq!(global.retry_attempts, 4);
         assert!(global.bt_enable_pex);
-        assert_eq!(
-            global.all_proxy.as_deref(),
-            Some("http://proxy.example:8080")
-        );
+        assert_eq!(global.proxy.as_deref(), Some("http://proxy.example:8080"));
         assert_eq!(global.no_proxy.as_deref(), Some("localhost"));
         assert_eq!(global.metalink_preferred_locations, vec!["de"]);
         assert_eq!(global.metalink_preferred_protocol.as_deref(), Some("ftp"));

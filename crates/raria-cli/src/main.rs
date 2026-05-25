@@ -277,7 +277,11 @@ enum Commands {
         url: String,
 
         /// Output directory
-        #[arg(long = "download-dir", value_name = "DOWNLOAD_DIR", default_value = ".")]
+        #[arg(
+            long = "download-dir",
+            value_name = "DOWNLOAD_DIR",
+            default_value = "."
+        )]
         dir: PathBuf,
 
         /// Output filename (default: derived from URL)
@@ -290,31 +294,35 @@ enum Commands {
 
         /// Continue downloading a partially downloaded file.
         #[arg(long = "resume", default_value_t = false)]
-        continue_download: bool,
+        resume: bool,
 
         /// Maximum download speed (bytes/sec, 0 = unlimited)
-        #[arg(long = "download-limit", value_name = "DOWNLOAD_LIMIT", default_value_t = 0)]
+        #[arg(
+            long = "download-limit",
+            value_name = "DOWNLOAD_LIMIT",
+            default_value_t = 0
+        )]
         max_download_limit: u64,
 
         /// Maximum retry attempts per segment; 0 means unlimited retries.
         #[arg(long = "retry-attempts", value_name = "RETRY_ATTEMPTS")]
-        max_tries: Option<u32>,
+        retry_attempts: Option<u32>,
 
         /// Seconds to wait between retry attempts.
         #[arg(long = "retry-delay", value_name = "RETRY_DELAY")]
-        retry_wait: Option<u32>,
+        retry_delay_seconds: Option<u32>,
 
-        /// Minimum size in bytes for a split segment.
+        /// Minimum size in bytes for a segment.
         #[arg(long = "min-segment-size", value_name = "MIN_SEGMENT_SIZE")]
-        min_split_size: Option<u64>,
+        min_segment_size: Option<u64>,
 
         /// Abort connections when download speed is below this limit (bytes/sec).
         #[arg(long = "min-speed", value_name = "MIN_SPEED")]
-        lowest_speed_limit: Option<u64>,
+        min_speed: Option<u64>,
 
         /// Maximum number of file-not-found errors before giving up.
         #[arg(long = "max-not-found", value_name = "MAX_NOT_FOUND")]
-        max_file_not_found: Option<u32>,
+        max_not_found: Option<u32>,
 
         /// Path to Netscape cookie file for persistence.
         #[arg(long = "cookie-store-file", value_name = "COOKIE_STORE_FILE")]
@@ -326,7 +334,7 @@ enum Commands {
 
         /// Proxy URL for all protocols
         #[arg(long = "proxy", value_name = "PROXY")]
-        all_proxy: Option<String>,
+        proxy: Option<String>,
 
         /// Disable TLS certificate verification
         #[arg(long)]
@@ -354,7 +362,7 @@ enum Commands {
 
         /// HTTP Basic auth password
         #[arg(long = "http-password", value_name = "HTTP_PASSWORD")]
-        http_passwd: Option<String>,
+        http_password: Option<String>,
 
         /// Maximum number of redirects to follow (0 disables redirects)
         #[arg(long = "redirect-limit", value_name = "REDIRECT_LIMIT")]
@@ -408,11 +416,19 @@ enum Commands {
     /// Run as a persistent daemon with native API server.
     Daemon {
         /// Output directory for downloads
-        #[arg(long = "download-dir", value_name = "DOWNLOAD_DIR", default_value = ".")]
+        #[arg(
+            long = "download-dir",
+            value_name = "DOWNLOAD_DIR",
+            default_value = "."
+        )]
         dir: PathBuf,
 
         /// Session file for persistence
-        #[arg(long = "session-path", value_name = "SESSION_PATH", default_value = "raria.session.redb")]
+        #[arg(
+            long = "session-path",
+            value_name = "SESSION_PATH",
+            default_value = "raria.session.redb"
+        )]
         session_file: PathBuf,
 
         /// Detach and keep the daemon running in the background.
@@ -428,32 +444,36 @@ enum Commands {
         api_port: u16,
 
         /// Maximum download speed (bytes/sec, 0 = unlimited)
-        #[arg(long = "download-limit", value_name = "DOWNLOAD_LIMIT", default_value_t = 0)]
+        #[arg(
+            long = "download-limit",
+            value_name = "DOWNLOAD_LIMIT",
+            default_value_t = 0
+        )]
         max_download_limit: u64,
 
         /// Maximum retry attempts per segment; 0 means unlimited retries.
         #[arg(long = "retry-attempts", value_name = "RETRY_ATTEMPTS")]
-        max_tries: Option<u32>,
+        retry_attempts: Option<u32>,
 
         /// Seconds to wait between retry attempts.
         #[arg(long = "retry-delay", value_name = "RETRY_DELAY")]
-        retry_wait: Option<u32>,
+        retry_delay_seconds: Option<u32>,
 
-        /// Minimum size in bytes for a split segment.
+        /// Minimum size in bytes for a segment.
         #[arg(long = "min-segment-size", value_name = "MIN_SEGMENT_SIZE")]
-        min_split_size: Option<u64>,
+        min_segment_size: Option<u64>,
 
         /// Abort connections when download speed is below this limit (bytes/sec).
         #[arg(long = "min-speed", value_name = "MIN_SPEED")]
-        lowest_speed_limit: Option<u64>,
+        min_speed: Option<u64>,
 
         /// Maximum number of file-not-found errors before giving up.
         #[arg(long = "max-not-found", value_name = "MAX_NOT_FOUND")]
-        max_file_not_found: Option<u32>,
+        max_not_found: Option<u32>,
 
         /// Proxy URL for all protocols
         #[arg(long = "proxy", value_name = "PROXY")]
-        all_proxy: Option<String>,
+        proxy: Option<String>,
 
         /// Proxy URL for HTTP only
         #[arg(long)]
@@ -501,7 +521,7 @@ enum Commands {
 
         /// HTTP Basic auth password
         #[arg(long = "http-password", value_name = "HTTP_PASSWORD")]
-        http_passwd: Option<String>,
+        http_password: Option<String>,
 
         /// Input file containing URIs to download (one per line)
         #[arg(long = "task-file", value_name = "TASK_FILE")]
@@ -670,23 +690,23 @@ async fn main() -> Result<()> {
             dir,
             out,
             connections,
-            continue_download,
+            resume,
             max_download_limit,
-            max_tries,
-            retry_wait,
-            min_split_size,
-            lowest_speed_limit,
-            max_file_not_found,
+            retry_attempts,
+            retry_delay_seconds,
+            min_segment_size,
+            min_speed,
+            max_not_found,
             save_cookies,
             checksum,
-            all_proxy,
+            proxy,
             check_certificate,
             ca_certificate,
             certificate,
             private_key,
             user_agent,
             http_user,
-            http_passwd,
+            http_password,
             max_redirect,
             netrc_path,
             no_netrc,
@@ -705,24 +725,24 @@ async fn main() -> Result<()> {
                 dir,
                 filename: out,
                 connections,
-                continue_download,
+                resume,
                 max_concurrent: cli.max_concurrent,
                 max_download_limit,
-                max_tries,
-                retry_wait,
-                min_split_size,
-                lowest_speed_limit,
-                max_file_not_found,
+                retry_attempts,
+                retry_delay_seconds,
+                min_segment_size,
+                min_speed,
+                max_not_found,
                 save_cookies,
                 checksum_spec: checksum,
-                all_proxy,
+                proxy,
                 check_certificate: check_certificate.unwrap_or(true),
                 ca_certificate,
                 certificate,
                 private_key,
                 user_agent,
                 http_user,
-                http_passwd,
+                http_password,
                 max_redirect,
                 netrc_path,
                 no_netrc,
@@ -746,12 +766,12 @@ async fn main() -> Result<()> {
             save_session_interval,
             api_port,
             max_download_limit,
-            max_tries,
-            retry_wait,
-            min_split_size,
-            lowest_speed_limit,
-            max_file_not_found,
-            all_proxy,
+            retry_attempts,
+            retry_delay_seconds,
+            min_segment_size,
+            min_speed,
+            max_not_found,
+            proxy,
             http_proxy,
             https_proxy,
             no_proxy,
@@ -763,7 +783,7 @@ async fn main() -> Result<()> {
             private_key,
             user_agent,
             http_user,
-            http_passwd,
+            http_password,
             input_file,
             on_task_start,
             on_task_complete,
@@ -785,32 +805,32 @@ async fn main() -> Result<()> {
             sftp_private_key_passphrase,
         } => {
             let mut config = base_config.clone();
-            config.dir = dir.clone();
+            config.download_dir = dir.clone();
             config.max_concurrent_downloads = cli.max_concurrent;
-            config.max_overall_download_limit = max_download_limit;
+            config.global_download_limit = max_download_limit;
             config.quiet = cli.quiet;
             config.api_listen_port = api_port;
             config.session_file = session_file.clone();
-            if let Some(max_tries) = max_tries {
-                config.max_tries = max_tries;
+            if let Some(retry_attempts) = retry_attempts {
+                config.retry_attempts = retry_attempts;
             }
-            if let Some(retry_wait) = retry_wait {
-                config.retry_wait = retry_wait;
+            if let Some(retry_delay_seconds) = retry_delay_seconds {
+                config.retry_delay_seconds = retry_delay_seconds;
             }
-            if let Some(min_split_size) = min_split_size {
-                config.min_split_size = min_split_size;
+            if let Some(min_segment_size) = min_segment_size {
+                config.min_segment_size = min_segment_size;
             }
-            if let Some(lowest_speed_limit) = lowest_speed_limit {
-                config.lowest_speed_limit = lowest_speed_limit;
+            if let Some(min_speed) = min_speed {
+                config.min_speed = min_speed;
             }
-            if let Some(max_file_not_found) = max_file_not_found {
-                config.max_file_not_found = max_file_not_found;
+            if let Some(max_not_found) = max_not_found {
+                config.max_not_found = max_not_found;
             }
             if save_session_interval.is_some() {
                 config.save_session_interval = save_session_interval;
             }
-            if all_proxy.is_some() {
-                config.all_proxy = all_proxy;
+            if proxy.is_some() {
+                config.proxy = proxy;
             }
             if http_proxy.is_some() {
                 config.http_proxy = http_proxy;
@@ -851,8 +871,8 @@ async fn main() -> Result<()> {
             if http_user.is_some() {
                 config.http_user = http_user;
             }
-            if http_passwd.is_some() {
-                config.http_passwd = http_passwd;
+            if http_password.is_some() {
+                config.http_password = http_password;
             }
             if on_task_start.is_some() {
                 config.on_task_start = on_task_start;
@@ -864,10 +884,10 @@ async fn main() -> Result<()> {
                 config.on_task_fail = on_task_fail;
             }
             if load_cookies.is_some() {
-                config.cookie_file = load_cookies;
+                config.load_cookie_file = load_cookies;
             }
             if save_cookies.is_some() {
-                config.save_cookie_file = save_cookies;
+                config.cookie_store_file = save_cookies;
             }
             if max_redirect.is_some() {
                 config.max_redirects = max_redirect;

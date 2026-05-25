@@ -360,7 +360,7 @@ async fn ftp_backend_uses_socks5_proxy_when_configured() {
     let proxy = spawn_socks5_proxy(Arc::clone(&connect_count)).await;
 
     let backend = FtpBackend::with_config(FtpBackendConfig {
-        all_proxy: Some(proxy),
+        proxy: Some(proxy),
         no_proxy: None,
         ..Default::default()
     });

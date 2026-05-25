@@ -33,10 +33,10 @@ type NetrcAuthMap = Arc<HashMap<String, (String, String)>>;
 #[derive(Debug, Clone, Default)]
 pub struct HttpBackendConfig {
     /// Proxy URL for all protocols.
-    pub all_proxy: Option<String>,
-    /// Proxy URL for HTTP specifically (overrides all_proxy).
+    pub proxy: Option<String>,
+    /// Proxy URL for HTTP specifically (overrides proxy).
     pub http_proxy: Option<String>,
-    /// Proxy URL for HTTPS specifically (overrides all_proxy).
+    /// Proxy URL for HTTPS specifically (overrides proxy).
     pub https_proxy: Option<String>,
     /// Comma-separated no-proxy domains.
     pub no_proxy: Option<String>,
@@ -51,9 +51,9 @@ pub struct HttpBackendConfig {
     /// Custom user-agent string.
     pub user_agent: Option<String>,
     /// Path to Netscape-format cookie file (aria2: --load-cookies).
-    pub cookie_file: Option<std::path::PathBuf>,
+    pub load_cookie_file: Option<std::path::PathBuf>,
     /// Path to Netscape-format cookie file for persistence (aria2: --save-cookies).
-    pub save_cookie_file: Option<std::path::PathBuf>,
+    pub cookie_store_file: Option<std::path::PathBuf>,
     /// Maximum number of redirects to follow. `Some(0)` disables redirects.
     pub max_redirects: Option<usize>,
     /// Connection establishment timeout in seconds.
@@ -70,7 +70,7 @@ pub struct HttpBackend {
     client: Client,
     netrc_auth: Option<NetrcAuthMap>,
     cookie_store: Option<Arc<reqwest_cookie_store::CookieStoreMutex>>,
-    save_cookie_file: Option<std::path::PathBuf>,
+    cookie_store_file: Option<std::path::PathBuf>,
 }
 
 impl HttpBackend {
@@ -110,7 +110,7 @@ impl HttpBackend {
             .and_then(|s| reqwest::NoProxy::from_string(s));
 
         // Configure proxy.
-        if let Some(ref proxy_url) = config.all_proxy {
+        if let Some(ref proxy_url) = config.proxy {
             let mut proxy = reqwest::Proxy::all(proxy_url).context("invalid all-proxy URL")?;
             if let Some(ref np) = no_proxy_list {
                 proxy = proxy.no_proxy(Some(np.clone()));
@@ -163,8 +163,10 @@ impl HttpBackend {
         }
 
         // Load cookies from Netscape cookie file; keep store for persistence.
-        let cookie_store = if config.cookie_file.is_some() || config.save_cookie_file.is_some() {
-            let store = if let Some(ref cookie_path) = config.cookie_file {
+        let cookie_store = if config.load_cookie_file.is_some()
+            || config.cookie_store_file.is_some()
+        {
+            let store = if let Some(ref cookie_path) = config.load_cookie_file {
                 crate::cookies::load_cookie_store(cookie_path)
                     .with_context(|| format!("failed to load cookies: {}", cookie_path.display()))?
             } else {
@@ -190,7 +192,7 @@ impl HttpBackend {
             client,
             netrc_auth,
             cookie_store,
-            save_cookie_file: config.save_cookie_file.clone(),
+            cookie_store_file: config.cookie_store_file.clone(),
         })
     }
 
@@ -200,7 +202,7 @@ impl HttpBackend {
             client,
             netrc_auth: None,
             cookie_store: None,
-            save_cookie_file: None,
+            cookie_store_file: None,
         }
     }
 
@@ -447,7 +449,7 @@ impl ByteSourceBackend for HttpBackend {
 
 impl Drop for HttpBackend {
     fn drop(&mut self) {
-        let Some(ref path) = self.save_cookie_file else {
+        let Some(ref path) = self.cookie_store_file else {
             return;
         };
         let Some(ref store) = self.cookie_store else {
@@ -527,7 +529,7 @@ mod tests {
     fn backend_with_proxy_config() {
         // Proxy URLs are validated during construction.
         let config = HttpBackendConfig {
-            all_proxy: Some("http://proxy.example.com:8080".into()),
+            proxy: Some("http://proxy.example.com:8080".into()),
             check_certificate: true,
             ..Default::default()
         };
@@ -538,7 +540,7 @@ mod tests {
     #[test]
     fn backend_with_invalid_proxy_errors() {
         let config = HttpBackendConfig {
-            all_proxy: Some("not a valid url".into()),
+            proxy: Some("not a valid url".into()),
             ..Default::default()
         };
         assert!(HttpBackend::with_config(&config).is_err());
@@ -569,7 +571,7 @@ mod tests {
     #[test]
     fn backend_with_no_proxy_list() {
         let config = HttpBackendConfig {
-            all_proxy: Some("http://proxy.example.com:8080".into()),
+            proxy: Some("http://proxy.example.com:8080".into()),
             no_proxy: Some("localhost,127.0.0.1,*.internal.corp".into()),
             check_certificate: true,
             ..Default::default()
@@ -593,7 +595,7 @@ mod tests {
     #[test]
     fn backend_config_default() {
         let config = HttpBackendConfig::default();
-        assert!(config.all_proxy.is_none());
+        assert!(config.proxy.is_none());
         assert!(config.http_proxy.is_none());
         assert!(config.https_proxy.is_none());
         assert!(config.no_proxy.is_none());

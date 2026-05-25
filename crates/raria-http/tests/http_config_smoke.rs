@@ -31,7 +31,7 @@ async fn http_backend_loads_cookie_file_into_requests() {
     .expect("write cookie file");
 
     let backend = HttpBackend::with_config(&HttpBackendConfig {
-        cookie_file: Some(cookie_file.path().to_path_buf()),
+        load_cookie_file: Some(cookie_file.path().to_path_buf()),
         check_certificate: true,
         ..Default::default()
     })
@@ -65,7 +65,7 @@ async fn http_backend_bypasses_invalid_proxy_for_no_proxy_host() {
         .await;
 
     let backend = HttpBackend::with_config(&HttpBackendConfig {
-        all_proxy: Some("http://127.0.0.1:9".into()),
+        proxy: Some("http://127.0.0.1:9".into()),
         no_proxy: Some("127.0.0.1,localhost".into()),
         check_certificate: true,
         ..Default::default()
@@ -450,7 +450,7 @@ async fn http_backend_routes_requests_through_socks5_proxy() {
     let proxy = spawn_socks5_proxy(Arc::clone(&counter)).await;
 
     let backend = HttpBackend::with_config(&HttpBackendConfig {
-        all_proxy: Some(proxy),
+        proxy: Some(proxy),
         check_certificate: true,
         ..Default::default()
     })

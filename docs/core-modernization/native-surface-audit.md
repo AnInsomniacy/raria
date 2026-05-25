@@ -71,18 +71,15 @@ Retained configuration is strict `raria.toml` from `native_config.rs`.
 Retained CLI names are native names such as `daemon --api-port`,
 `--on-task-start`, `--on-task-complete`, and `--on-task-fail`.
 
-Runtime `GlobalConfig` still exposes transitional fields that must be renamed
-or removed in CM-006 and dependent checkpoints: `rpc_secret`,
-`rpc_allow_origin_all`, `dir`, `out`, `split`,
-`max_overall_download_limit`, `max_overall_upload_limit`,
-`max_connection_per_server`, `continue_download`, `min_split_size`,
-`lowest_speed_limit`, `max_file_not_found`, `max_tries`, `retry_wait`,
-`all_proxy`, `http_passwd`, `cookie_file`, `save_cookie_file`,
+Runtime `GlobalConfig` now uses native names for retained transfer,
+directory, proxy, cookie, retry, resume, and segment policy. Transitional
+fields that remain in CM-006 and dependent checkpoints are `rpc_secret`,
+`rpc_allow_origin_all`, task-level `dir`, task-level `out`,
 `bt_selected_files`, `bt_trackers`, `seed_ratio`, and `seed_time`.
 
 Some of these names describe useful behavior. Keep the behavior through
-native names. Delete aria2-shaped names and comments once callers move to the
-native schema.
+native task or BitTorrent policy names. Delete aria2-shaped names and comments
+once callers move to the native schema.
 
 ## Tests And Documentation
 

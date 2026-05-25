@@ -129,6 +129,28 @@ config_endpoint_returns_native_runtime_projection -- --nocapture` passed.
 `cargo check --workspace --locked` passed. CSV parser validation passed for
 25 files. `git diff --check` passed.
 Remaining: Continue CM-006 stale CLI/config review. Remaining legacy-shaped
-fields such as `rpc_secret`, `rpc_allow_origin_all`, `dir`, `out`, `split`,
-and selected option names need native replacement or deletion conditions.
+fields such as `rpc_secret`, `rpc_allow_origin_all`, task-level `dir`,
+task-level `out`, and selected BitTorrent option names need native
+replacement or deletion conditions.
+Blocked: none.
+
+2026-05-25 CM-006 partial
+Changed: Renamed retained runtime config fields from aria2-shaped names to
+native raria terms across CLI wiring, daemon wiring, protocol backend config,
+native API config projection, task-file parsing, and focused tests. Added a
+serialization guard that rejects deleted `GlobalConfig` field names.
+Verified: `cargo test -p raria-core
+global_config_serialization_uses_native_field_names -- --nocapture` passed.
+`cargo test -p raria-core --test input_file -- --nocapture` passed with 8
+tests. `cargo test -p raria-cli --bin raria executor_config -- --nocapture`
+passed with 6 tests. `cargo test -p raria-core --test native_config --
+--nocapture` passed with 8 tests. `cargo test -p raria-rpc --test native_api
+config_endpoint_returns_native_runtime_projection -- --nocapture` passed.
+`cargo test -p raria-http --test http_config_smoke -- --nocapture` passed
+with 9 tests. `cargo test -p raria-ftp --test ftp_smoke -- --nocapture`
+passed with 3 tests. `cargo test -p raria-sftp --test sftp_smoke --
+--nocapture` passed with 5 tests. `cargo test -p raria-core --test
+island_wiring -- --nocapture` passed with 4 tests.
+Remaining: CM-006 still needs final stale config/help scans, tracker updates,
+and a fresh `cargo check --workspace --locked` before the next checkpoint.
 Blocked: none.

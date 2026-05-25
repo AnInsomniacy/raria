@@ -8,26 +8,29 @@ mod tests {
     use raria_core::config::GlobalConfig;
     use std::path::PathBuf;
 
-    /// GlobalConfig should carry cookie_file path.
+    /// GlobalConfig should carry load_cookie_file path.
     #[test]
-    fn global_config_cookie_file_field() {
+    fn global_config_load_cookie_file_field() {
         let mut config = GlobalConfig::default();
-        assert!(config.cookie_file.is_none());
-        config.cookie_file = Some(PathBuf::from("/tmp/cookies.txt"));
-        assert_eq!(config.cookie_file, Some(PathBuf::from("/tmp/cookies.txt")));
+        assert!(config.load_cookie_file.is_none());
+        config.load_cookie_file = Some(PathBuf::from("/tmp/cookies.txt"));
+        assert_eq!(
+            config.load_cookie_file,
+            Some(PathBuf::from("/tmp/cookies.txt"))
+        );
     }
 
-    /// cookie_file serializes/deserializes correctly.
+    /// load_cookie_file serializes/deserializes correctly.
     #[test]
-    fn cookie_file_serde_roundtrip() {
+    fn load_cookie_file_serde_roundtrip() {
         let config = GlobalConfig {
-            cookie_file: Some(PathBuf::from("/tmp/cookies.txt")),
+            load_cookie_file: Some(PathBuf::from("/tmp/cookies.txt")),
             ..GlobalConfig::default()
         };
         let json = serde_json::to_string(&config).unwrap();
         let recovered: GlobalConfig = serde_json::from_str(&json).unwrap();
         assert_eq!(
-            recovered.cookie_file,
+            recovered.load_cookie_file,
             Some(PathBuf::from("/tmp/cookies.txt"))
         );
     }

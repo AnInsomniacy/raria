@@ -2083,9 +2083,9 @@ mod tests {
     async fn config_endpoint_returns_native_runtime_projection() {
         let engine = Arc::new(Engine::new(GlobalConfig {
             max_concurrent_downloads: 12,
-            split: 6,
-            min_split_size: 1024,
-            max_tries: 3,
+            default_segments: 6,
+            min_segment_size: 1024,
+            retry_attempts: 3,
             metalink_preferred_locations: vec!["us".into(), "jp".into()],
             metalink_preferred_protocol: Some("https".into()),
             metalink_unique_protocols: true,

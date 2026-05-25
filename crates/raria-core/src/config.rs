@@ -42,13 +42,13 @@ impl BtPieceStrategy {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GlobalConfig {
     /// Default download directory.
-    pub dir: PathBuf,
+    pub download_dir: PathBuf,
     /// Maximum number of concurrent downloads.
     pub max_concurrent_downloads: u32,
     /// Maximum global download speed in bytes/sec (0 = unlimited).
-    pub max_overall_download_limit: u64,
+    pub global_download_limit: u64,
     /// Maximum global upload speed in bytes/sec (0 = unlimited).
-    pub max_overall_upload_limit: u64,
+    pub global_upload_limit: u64,
     /// Native API listen port.
     pub api_listen_port: u16,
     /// Path to the session file for persistence.
@@ -60,10 +60,10 @@ pub struct GlobalConfig {
     /// Suppress normal user-facing output.
     pub quiet: bool,
     /// Proxy URL for all protocols.
-    pub all_proxy: Option<String>,
-    /// Proxy URL for HTTP requests only (overrides all_proxy for HTTP).
+    pub proxy: Option<String>,
+    /// Proxy URL for HTTP requests only (overrides proxy for HTTP).
     pub http_proxy: Option<String>,
-    /// Proxy URL for HTTPS requests only (overrides all_proxy for HTTPS).
+    /// Proxy URL for HTTPS requests only (overrides proxy for HTTPS).
     pub https_proxy: Option<String>,
     /// Comma-separated list of domains that bypass the proxy.
     pub no_proxy: Option<String>,
@@ -80,11 +80,11 @@ pub struct GlobalConfig {
     /// Global HTTP Basic auth username.
     pub http_user: Option<String>,
     /// Global HTTP Basic auth password.
-    pub http_passwd: Option<String>,
+    pub http_password: Option<String>,
     /// Path to Netscape cookie file loaded before HTTP requests.
-    pub cookie_file: Option<PathBuf>,
+    pub load_cookie_file: Option<PathBuf>,
     /// Path to Netscape cookie file updated after HTTP requests.
-    pub save_cookie_file: Option<PathBuf>,
+    pub cookie_store_file: Option<PathBuf>,
     /// Temporary JSON-RPC secret retained until the legacy server is deleted.
     pub rpc_secret: Option<String>,
     /// Native HTTP API bearer token.
@@ -94,27 +94,27 @@ pub struct GlobalConfig {
     /// File allocation strategy.
     pub file_allocation: FileAllocation,
     /// Maximum connections per server.
-    pub max_connection_per_server: u32,
+    pub server_connection_limit: u32,
     /// Default segment count for range-capable downloads.
-    pub split: u32,
+    pub default_segments: u32,
     /// Continue downloading a partially downloaded file.
-    pub continue_download: bool,
-    /// Minimum size in bytes for a split segment.
+    pub resume: bool,
+    /// Minimum size in bytes for a segment.
     ///
     /// When set to a non-zero value, the effective number of connections for a
     /// range-capable download will be reduced so that each segment is at least
     /// this many bytes.
-    pub min_split_size: u64,
+    pub min_segment_size: u64,
     /// Abort connections when download speed is below this limit (bytes/sec).
     /// 0 disables the check.
-    pub lowest_speed_limit: u64,
+    pub min_speed: u64,
     /// Maximum number of file-not-found errors before giving up.
     /// 0 disables the check.
-    pub max_file_not_found: u32,
+    pub max_not_found: u32,
     /// Maximum retries per download; 0 means unlimited retries.
-    pub max_tries: u32,
+    pub retry_attempts: u32,
     /// Seconds to wait between retries.
-    pub retry_wait: u32,
+    pub retry_delay_seconds: u32,
     /// Maximum number of HTTP redirects to follow.
     pub max_redirects: Option<usize>,
     /// Auto-rename output files on collision instead of overwriting them.
@@ -162,16 +162,16 @@ pub struct GlobalConfig {
 impl Default for GlobalConfig {
     fn default() -> Self {
         Self {
-            dir: PathBuf::from("."),
+            download_dir: PathBuf::from("."),
             max_concurrent_downloads: 5,
-            max_overall_download_limit: 0,
-            max_overall_upload_limit: 0,
+            global_download_limit: 0,
+            global_upload_limit: 0,
             api_listen_port: 6800,
             session_file: PathBuf::from("raria.session"),
             save_session_interval: None,
             log_level: "info".into(),
             quiet: false,
-            all_proxy: None,
+            proxy: None,
             http_proxy: None,
             https_proxy: None,
             no_proxy: None,
@@ -181,21 +181,21 @@ impl Default for GlobalConfig {
             private_key: None,
             user_agent: None,
             http_user: None,
-            http_passwd: None,
-            cookie_file: None,
-            save_cookie_file: None,
+            http_password: None,
+            load_cookie_file: None,
+            cookie_store_file: None,
             rpc_secret: None,
             api_auth_token: None,
             rpc_allow_origin_all: false,
             file_allocation: FileAllocation::None,
-            max_connection_per_server: 16,
-            split: 5,
-            continue_download: false,
-            min_split_size: 0,
-            lowest_speed_limit: 0,
-            max_file_not_found: 0,
-            max_tries: 5,
-            retry_wait: 0,
+            server_connection_limit: 16,
+            default_segments: 5,
+            resume: false,
+            min_segment_size: 0,
+            min_speed: 0,
+            max_not_found: 0,
+            retry_attempts: 5,
+            retry_delay_seconds: 0,
             max_redirects: None,
             auto_file_renaming: true,
             netrc_path: None,
@@ -240,7 +240,7 @@ pub struct JobOptions {
     /// HTTP user for Basic auth.
     pub http_user: Option<String>,
     /// HTTP password for Basic auth.
-    pub http_passwd: Option<String>,
+    pub http_password: Option<String>,
     /// Checksum for file verification (e.g., "sha-256=abc123").
     pub checksum: Option<String>,
     /// Zero-based BT file indices selected for download.
@@ -281,7 +281,7 @@ impl Default for JobOptions {
             out: None,
             headers: Vec::new(),
             http_user: None,
-            http_passwd: None,
+            http_password: None,
             checksum: None,
             bt_selected_files: None,
             bt_trackers: None,
@@ -333,7 +333,7 @@ mod tests {
     fn global_config_default_values() {
         let cfg = GlobalConfig::default();
         assert_eq!(cfg.max_concurrent_downloads, 5);
-        assert_eq!(cfg.max_overall_download_limit, 0);
+        assert_eq!(cfg.global_download_limit, 0);
         assert_eq!(cfg.api_listen_port, 6800);
         assert!(!cfg.rpc_allow_origin_all);
         assert_eq!(cfg.bt_piece_strategy, BtPieceStrategy::RarestFirst);
@@ -355,6 +355,50 @@ mod tests {
         assert_eq!(recovered.api_listen_port, cfg.api_listen_port);
         assert_eq!(recovered.bt_piece_strategy, BtPieceStrategy::RarestFirst);
         assert!(recovered.bt_enable_pex);
+    }
+
+    #[test]
+    fn global_config_serialization_uses_native_field_names() {
+        let json = serde_json::to_value(GlobalConfig::default()).unwrap();
+        let fields = json.as_object().unwrap();
+
+        for native in [
+            "download_dir",
+            "global_download_limit",
+            "global_upload_limit",
+            "proxy",
+            "http_password",
+            "load_cookie_file",
+            "cookie_store_file",
+            "default_segments",
+            "resume",
+            "min_segment_size",
+            "min_speed",
+            "max_not_found",
+            "retry_attempts",
+            "retry_delay_seconds",
+        ] {
+            assert!(fields.contains_key(native), "missing native field {native}");
+        }
+
+        for legacy in [
+            "dir",
+            "max_overall_download_limit",
+            "max_overall_upload_limit",
+            "all_proxy",
+            "http_passwd",
+            "cookie_file",
+            "save_cookie_file",
+            "split",
+            "continue_download",
+            "min_split_size",
+            "lowest_speed_limit",
+            "max_file_not_found",
+            "max_tries",
+            "retry_wait",
+        ] {
+            assert!(!fields.contains_key(legacy), "legacy field {legacy} leaked");
+        }
     }
 
     #[test]

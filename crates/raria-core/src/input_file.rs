@@ -1,4 +1,4 @@
-// raria-core: Input file parser (aria2: --input-file / -i).
+// raria-core: Native task-file parser.
 //
 // Parses a text file containing one logical URI entry per block. Supports:
 // - Comments (lines starting with #)
@@ -8,28 +8,28 @@
 //
 // Format example:
 //   https://mirror1.com/file.zip\thttps://mirror2.com/file.zip
-//     dir=/tmp/downloads
-//     out=custom_name.zip
+//     download-dir=/tmp/downloads
+//     filename=custom_name.zip
 //   https://example.com/other.zip
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-/// Parsed per-entry options from an aria2-style input file.
+/// Parsed per-entry options from a native task file.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct InputFileOptions {
     /// Optional output directory override.
-    pub dir: Option<PathBuf>,
+    pub download_dir: Option<PathBuf>,
     /// Optional output filename override.
-    pub out: Option<String>,
+    pub filename: Option<String>,
     /// Optional expected checksum in `algo=hex` form.
     pub checksum: Option<String>,
     /// Additional request headers in `Name: Value` form.
     pub headers: Vec<String>,
     /// Optional HTTP basic-auth username.
-    pub http_user: Option<String>,
+    pub http_username: Option<String>,
     /// Optional HTTP basic-auth password.
-    pub http_passwd: Option<String>,
+    pub http_password: Option<String>,
     /// Supported-but-not-yet-modeled options captured verbatim.
     pub extra: BTreeMap<String, String>,
 }
@@ -53,14 +53,14 @@ fn apply_option(options: &mut InputFileOptions, key: &str, value: &str) {
     let value = value.trim();
 
     match key {
-        "dir" => {
+        "download-dir" => {
             if !value.is_empty() {
-                options.dir = Some(PathBuf::from(value));
+                options.download_dir = Some(PathBuf::from(value));
             }
         }
-        "out" => {
+        "filename" => {
             if !value.is_empty() {
-                options.out = Some(value.to_string());
+                options.filename = Some(value.to_string());
             }
         }
         "checksum" => {
@@ -73,14 +73,14 @@ fn apply_option(options: &mut InputFileOptions, key: &str, value: &str) {
                 options.headers.push(value.to_string());
             }
         }
-        "http-user" => {
+        "http-username" => {
             if !value.is_empty() {
-                options.http_user = Some(value.to_string());
+                options.http_username = Some(value.to_string());
             }
         }
-        "http-passwd" => {
+        "http-password" => {
             if !value.is_empty() {
-                options.http_passwd = Some(value.to_string());
+                options.http_password = Some(value.to_string());
             }
         }
         _ => {
@@ -144,8 +144,7 @@ pub fn parse_input_file_entries(content: &str) -> anyhow::Result<Vec<InputFileEn
 
 /// Parse the content of an input file and return a flat list of URI lines.
 ///
-/// This legacy API intentionally preserves the old behavior of returning one
-/// string per logical entry, ignoring per-entry options.
+/// Return one URI string per logical entry, ignoring per-entry options.
 pub fn parse_input_file(content: &str) -> Vec<String> {
     parse_input_file_entries(content)
         .unwrap_or_default()

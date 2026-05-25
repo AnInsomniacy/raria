@@ -47,8 +47,8 @@ pub struct NativeSegmentPlanningInput<'a> {
     pub supports_range: bool,
     /// User-requested maximum connection count.
     pub requested_connections: u32,
-    /// Minimum split size from runtime configuration.
-    pub min_split_size: u64,
+    /// Minimum segment size from runtime configuration.
+    pub min_segment_size: u64,
     /// Source URI selected for this execution attempt.
     pub source_uri: Option<&'a str>,
 }
@@ -166,9 +166,8 @@ impl Engine {
     /// Create a new Engine with the given configuration (no persistence).
     pub fn new(config: GlobalConfig) -> Self {
         let max_concurrent = config.max_concurrent_downloads;
-        let global_upload_limit = config.max_overall_upload_limit;
-        let global_rate_limiter =
-            Arc::new(SharedRateLimiter::new(config.max_overall_download_limit));
+        let global_upload_limit = config.global_upload_limit;
+        let global_rate_limiter = Arc::new(SharedRateLimiter::new(config.global_download_limit));
         Self {
             registry: Arc::new(JobRegistry::new()),
             scheduler: Scheduler::new(max_concurrent),
@@ -191,9 +190,8 @@ impl Engine {
     /// Create a new Engine with persistence enabled.
     pub fn with_store(config: GlobalConfig, store: Arc<Store>) -> Self {
         let max_concurrent = config.max_concurrent_downloads;
-        let global_upload_limit = config.max_overall_upload_limit;
-        let global_rate_limiter =
-            Arc::new(SharedRateLimiter::new(config.max_overall_download_limit));
+        let global_upload_limit = config.global_upload_limit;
+        let global_rate_limiter = Arc::new(SharedRateLimiter::new(config.global_download_limit));
         Self {
             registry: Arc::new(JobRegistry::new()),
             scheduler: Scheduler::new(max_concurrent),
@@ -886,7 +884,7 @@ impl Engine {
             max_connections: spec.connections.max(1),
             headers: spec.headers.clone(),
             http_user: spec.http_user.clone(),
-            http_passwd: spec.http_password.clone(),
+            http_password: spec.http_password.clone(),
             checksum: spec.checksum.clone(),
             ..JobOptions::default()
         };
@@ -1668,8 +1666,8 @@ impl Engine {
         } else {
             1
         };
-        if input.supports_range && file_size > 0 && input.min_split_size > 0 {
-            let max_by_min = (file_size / input.min_split_size).max(1) as u32;
+        if input.supports_range && file_size > 0 && input.min_segment_size > 0 {
+            let max_by_min = (file_size / input.min_segment_size).max(1) as u32;
             connections = connections.min(max_by_min);
         }
         if let Some(source_uri) = input.source_uri {
@@ -1792,7 +1790,7 @@ impl Engine {
             max_download_limit: job.options.max_download_limit,
             request_headers: job.options.headers,
             http_user: job.options.http_user,
-            http_password: job.options.http_passwd,
+            http_password: job.options.http_password,
             checksum: job.options.checksum,
             piece_checksum: job.piece_checksum,
         })
@@ -2260,7 +2258,7 @@ mod tests {
                     total_size: Some(4096),
                     supports_range: true,
                     requested_connections: 2,
-                    min_split_size: 1024,
+                    min_segment_size: 1024,
                     source_uri: None,
                 },
             )
@@ -2310,7 +2308,7 @@ mod tests {
                     total_size: Some(8192),
                     supports_range: true,
                     requested_connections: 4,
-                    min_split_size: 1024,
+                    min_segment_size: 1024,
                     source_uri: Some("https://slow.example/file.zip"),
                 },
             )
@@ -2332,7 +2330,7 @@ mod tests {
             job.options.headers =
                 vec![("accept".to_string(), "application/octet-stream".to_string())];
             job.options.http_user = Some("task-user".to_string());
-            job.options.http_passwd = Some("task-pass".to_string());
+            job.options.http_password = Some("task-pass".to_string());
             job.options.checksum = Some("sha-256=abc123".to_string());
             job.options.out = Some("custom.bin".to_string());
             job.piece_checksum = Some(crate::job::PieceChecksum {

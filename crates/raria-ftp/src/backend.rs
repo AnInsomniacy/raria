@@ -76,7 +76,7 @@ unsafe impl<S: AsyncRead + Unpin + Send> Send for FtpOwnedStream<S> {}
 #[derive(Debug, Clone)]
 pub struct FtpBackendConfig {
     /// SOCKS5 or HTTP proxy for all connections (aria2: `--all-proxy`).
-    pub all_proxy: Option<String>,
+    pub proxy: Option<String>,
     /// Comma-separated hosts/CIDRs that bypass the proxy.
     pub no_proxy: Option<String>,
     /// Whether to verify the server's TLS certificate for FTPS.
@@ -88,7 +88,7 @@ pub struct FtpBackendConfig {
 impl Default for FtpBackendConfig {
     fn default() -> Self {
         Self {
-            all_proxy: None,
+            proxy: None,
             no_proxy: None,
             check_certificate: true,
             ca_certificate: None,
@@ -166,7 +166,7 @@ fn should_bypass_proxy(host: &str, no_proxy: Option<&str>) -> bool {
 }
 
 async fn connect_tcp(addr: &str, host: &str, config: &FtpBackendConfig) -> Result<TcpStream> {
-    if let Some(proxy) = config.all_proxy.as_deref() {
+    if let Some(proxy) = config.proxy.as_deref() {
         if proxy.starts_with("socks5://") && !should_bypass_proxy(host, config.no_proxy.as_deref())
         {
             let proxy_addr = proxy.trim_start_matches("socks5://");

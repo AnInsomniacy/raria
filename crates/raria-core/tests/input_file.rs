@@ -1,7 +1,7 @@
-// Tests for --input-file support.
+// Tests for native task-file support.
 //
 // Verifies that raria can read URIs from a file and create
-// download jobs for each one (aria2: --input-file / -i).
+// download jobs for each one.
 
 #[cfg(test)]
 mod tests {
@@ -39,7 +39,7 @@ https://example.com/file2.zip
     #[test]
     fn trims_trailing_whitespace() {
         // Only trailing whitespace should be trimmed; leading whitespace
-        // marks option lines in aria2 format.
+        // marks native per-task option lines.
         let content = "https://example.com/file.zip   \n";
         let uris = parse_input_file(content);
         assert_eq!(uris.len(), 1);
@@ -54,11 +54,11 @@ https://example.com/file2.zip
 
     #[test]
     fn handles_per_uri_options() {
-        // aria2 format: URI lines followed by option lines (prefixed with space)
+        // Native task-file format: URI lines followed by indented option lines.
         let content = "\
 https://example.com/file1.zip
-  dir=/tmp/downloads
-  out=custom_name.zip
+  download-dir=/tmp/downloads
+  filename=custom_name.zip
 https://example.com/file2.zip
 ";
         let uris = parse_input_file(content);
@@ -77,21 +77,21 @@ https://example.com/file2.zip
     }
 
     #[test]
-    fn richer_entries_capture_supported_per_uri_options_while_legacy_api_stays_flat() {
+    fn richer_entries_capture_supported_per_uri_options_while_flat_api_stays_flat() {
         let content = "\
 https://mirror1.com/f.zip\thttps://mirror2.com/f.zip
-  dir=/tmp/downloads
-  out=custom.bin
+  download-dir=/tmp/downloads
+  filename=custom.bin
   checksum=sha-256=abc123
   header=X-Test: from-input
-  http-user=alice
-  http-passwd=secret
-  max-download-limit=1024
+  http-username=alice
+  http-password=secret
+  download-limit=1024
 ";
 
-        let legacy = parse_input_file(content);
+        let flat = parse_input_file(content);
         assert_eq!(
-            legacy,
+            flat,
             vec!["https://mirror1.com/f.zip\thttps://mirror2.com/f.zip"]
         );
 
@@ -108,19 +108,19 @@ https://mirror1.com/f.zip\thttps://mirror2.com/f.zip
             ]
         );
         assert_eq!(
-            entry.options.dir.as_deref(),
+            entry.options.download_dir.as_deref(),
             Some(std::path::Path::new("/tmp/downloads"))
         );
-        assert_eq!(entry.options.out.as_deref(), Some("custom.bin"));
+        assert_eq!(entry.options.filename.as_deref(), Some("custom.bin"));
         assert_eq!(entry.options.checksum.as_deref(), Some("sha-256=abc123"));
         assert_eq!(entry.options.headers, vec!["X-Test: from-input"]);
-        assert_eq!(entry.options.http_user.as_deref(), Some("alice"));
-        assert_eq!(entry.options.http_passwd.as_deref(), Some("secret"));
+        assert_eq!(entry.options.http_username.as_deref(), Some("alice"));
+        assert_eq!(entry.options.http_password.as_deref(), Some("secret"));
         assert_eq!(
             entry
                 .options
                 .extra
-                .get("max-download-limit")
+                .get("download-limit")
                 .map(String::as_str),
             Some("1024")
         );
