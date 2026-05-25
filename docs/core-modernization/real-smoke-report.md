@@ -4,67 +4,70 @@ Date: 2026-05-25
 Binary: `var/releases/macos/raria`
 Version: `raria 0.1.0`
 Platform: macOS arm64
-SHA-256: `8cc5dae3c5ad9077d86fe0341ab4ba78514f3e033845cc5646b94c6baef9a2fd`
-Evidence root: `var/smoke-runs/20260525-100155-clean-e2e`
+SHA-256: `e2208808cdc86668ea8cb863c75b0d822213029f459143d403acf790cb09ed92`
+Evidence root: `var/smoke-runs/20260525T104946Z-e2e`
 
 ## Scope
 
-This run cleared `var/`, rebuilt the release binary, created a fresh smoke directory, started native daemons on ephemeral ports, exercised CLI, native HTTP JSON API, WebSocket events, local controlled HTTP fixtures, and the three maintainer-selected public inputs. Large public downloads were bounded.
+This run cleared `var/`, rebuilt the release binary, created a fresh smoke directory, and exercised the release binary through CLI, daemon mode, native `/api/v1` HTTP JSON resources, `/api/v1/events`, local controlled fixtures, and the three maintainer-selected public inputs.
 
-Old JSON-RPC was not tested because it has been deleted. RPC coverage means `/api/v1` HTTP JSON resources and `/api/v1/events`.
+Old JSON-RPC was not tested because it has been deleted. RPC coverage means the native HTTP JSON API and WebSocket event stream.
 
 ## Commands
 
 ```bash
 find var -mindepth 1 ! -name README.md -exec rm -rf {} +
+mkdir -p var/releases/macos var/smoke-runs var/tmp
 cargo build --release -p raria-cli
 cp target/release/raria var/releases/macos/raria
 shasum -a 256 var/releases/macos/raria > var/releases/macos/raria.sha256
 node var/tmp/e2e-smoke.cjs
-node var/tmp/api-control-smoke.cjs
 cargo test -p raria-cli --test single_download
 cargo test -p raria-cli --test session_smoke
+cargo test -p raria-cli --test native_api_smoke
 cargo test -p raria-cli --test sftp_smoke
 cargo test -p raria-ftp --test ftp_smoke
 cargo test -p raria-ftp --test ftps_smoke
+cargo test -p raria-bt --test bt_smoke
+cargo test -p raria-bt --test bt_gap_ledger
+cargo test -p raria-bt --test dht_persistence
+cargo test -p raria-cli --test bt_tracker_smoke
 ```
 
 ## API Surface
 
-`/api/v1/health`, `/api/v1/config`, `/api/v1/stats`, `/api/v1/tasks`, `/api/v1/transfer`, `/api/v1/session/save`, and `/api/v1/daemon/shutdown` returned successful native JSON responses. `/api/v1/events` streamed `task.created`, `task.started`, `task.progress`, and `task.completed` for a controlled HTTP task.
+`/api/v1/health`, `/api/v1/config`, `/api/v1/stats`, `/api/v1/transfer`, `/api/v1/tasks`, `/api/v1/tasks/{taskId}`, `/api/v1/tasks/{taskId}/pause`, `/api/v1/tasks/{taskId}/resume`, `/api/v1/tasks/{taskId}/restart`, `/api/v1/tasks/{taskId}/queue`, `/api/v1/tasks/{taskId}/sources`, `/api/v1/tasks/{taskId}/transfer`, `/api/v1/session/save`, and `/api/v1/daemon/shutdown` returned successful native responses during release-binary smoke.
 
-Task control coverage passed for create, poll, queue read, queue patch, per-task transfer patch, source replacement, pause, resume, restart, remove, session save, restore, and shutdown. Evidence: `reports/api-control-summary.json`.
-
-No daemon process remained after shutdown checks.
+`/api/v1/events` streamed native task lifecycle and progress events, including `task.created`, `task.started`, `task.progress`, `task.paused`, `task.resumed`, `task.removed`, and `task.completed`. Session save and restore worked with 4 restored tasks. No daemon process remained after shutdown checks.
 
 ## Public Input Results
 
-Apple HTTPS passed. The IPSW task advanced to `37220986` sampled bytes in `3.52` seconds, reached `47140474` bytes after resume, exposed first nonzero speed at `0.50` seconds, peaked at `2832695652` B/s, showed 8 active connections during transfer, and accepted pause and resume. Evidence: `reports/https-apple-summary.json`.
+Apple HTTPS passed. The IPSW task reached `25,468,906` bytes in the first bounded window and `34,444,074` bytes after resume. It reported `238,319,275` total bytes, peaked at `1,890,388,831` B/s, showed 8 active connections, and accepted pause, resume, session save, and shutdown. Evidence: `reports/public-https-apple-summary.json`.
 
-Magnet metadata passed with one API semantics bug. The KNOPPIX CD magnet resolved metadata in `3.52` seconds, exposed 9 files, reported total size `700612589`, and appeared as `paused` in the final task list. A later pause call returned `404 task_not_found` even though the task existed and was already paused. Evidence: `reports/magnet-metadata-summary.json` and `reports/api-final-summary.json`.
+Magnet metadata passed. The KNOPPIX CD magnet resolved metadata in about 5 seconds, exposed 9 files and `700,612,589` total bytes, transitioned to `paused` under metadata-only policy, and repeated pause returned `200` with `paused`. This confirms `SMOKE-006` is fixed in release-binary E2E. Evidence: `reports/public-magnet-metadata-summary.json`.
 
-Torrent-file bounded download passed. The KNOPPIX DVD torrent exposed trackers and a peer, applied selected-file policy, downloaded `798567` bytes, peaked at `19013` B/s, transitioned through seeding, and accepted pause and resume. Evidence: `reports/torrent-file-summary.json`.
+Torrent-file bounded download passed. The KNOPPIX DVD torrent exposed 9 files, 2 trackers, and 15 peers. File selection kept only `file_0` selected. The task downloaded `2,097,152` bytes in the bounded window, peaked at `123,592` B/s, showed 15 active connections, and accepted pause, resume, session save, and shutdown. Evidence: `reports/public-torrent-file-summary.json`.
 
 ## Controlled Fixture Results
 
-Local HTTP passed. A nested `downloadDir` task completed `4194304` bytes, matched SHA-256, emitted 4 bounded range headers, preserved the custom request header, and peaked at `14884993` B/s. Evidence: `reports/local-http-control-summary.json`.
+CLI basics passed. Help, download help, bash completion, strict `raria.toml` loading, custom header, checksum verification, and local range download all succeeded. The downloaded SHA-256 matched `bea2b4efdafb6f195db10d6480b2c1a79b7044f7125c3a7ed371a93421e454c7`. Evidence: `reports/cli-basics-summary.json`.
 
-CLI auth and redirect passed. Local basic auth and redirect downloads produced the expected SHA-256. Evidence: `reports/local-cli-auth-redirect-summary.json`.
+Native API control passed. Local HTTP range completed `4,194,304` bytes with matching SHA-256, 12 fixture range requests, custom header propagation, `13,348,895` B/s sampled speed, slow-task pause/resume/restart/remove, idempotent repeated pause, queue patch, source replacement, per-task transfer patch, global transfer patch, event stream, session save, restore, and shutdown. Evidence: `reports/api-control-summary.json`.
 
-Session restore passed. A second daemon restored 7 saved tasks from the same native redb session. Evidence: `reports/api-control-summary.json`.
-
-Protocol smoke passed. `single_download` passed 24 tests, `session_smoke` passed 19 tests, `sftp_smoke` passed 3 tests, `ftp_smoke` passed 3 tests, and `ftps_smoke` passed 1 test.
+Protocol smoke passed. `single_download` passed 24 tests, `session_smoke` passed 19 tests, `native_api_smoke` passed 30 tests, CLI `sftp_smoke` passed 3 tests, FTP smoke passed 3 tests, FTPS smoke passed 1 test, BT smoke passed 11 tests, BT gap ledger passed 3 tests, DHT persistence passed 3 tests, and BT tracker smoke passed 4 tests.
 
 ## Bug Ledger
 
-`SMOKE-006` fixed. Pausing an already-paused metadata-only magnet task returned `404 task_not_found` even though the task existed in `/api/v1/tasks` as `paused`. Root cause was non-idempotent native pause semantics: `pause_native_task` treated `Paused -> Paused` as an invalid transition and the API translated that error as not found. Regression coverage: `cargo test -p raria-rpc --test native_api task_detail_pause_and_resume_use_native_task_id`.
+No open bug was found in this run.
 
-No regression was observed for bounded HTTP ranges, nested output directories, native transfer speed, WebSocket event delivery, Apple HTTPS progress, torrent tracker/peer projection, session save/restore, or daemon shutdown.
+`SMOKE-006` remains fixed. The release-binary magnet metadata smoke repeated `/api/v1/tasks/{taskId}/pause` on an already paused metadata-only task and received `200` with `paused`.
+
+No regression was observed for bounded HTTP ranges, nested output directories, native transfer speed, WebSocket event delivery, Apple HTTPS progress, torrent tracker/peer projection, file selection, session save/restore, protocol smoke, or daemon shutdown.
 
 ## Artifact Hygiene
 
-Generated binaries, smoke scripts, session databases, logs, raw API payloads, and partial downloads are under `var/`, which is ignored except `var/README.md`. No matching temporary runtime artifacts were found outside `var/`.
+Generated binaries, smoke scripts, session databases, logs, raw API payloads, and partial downloads are under `var/`, which is ignored except `var/README.md`. No matching temporary runtime artifacts were found outside `var/`. Process inspection found no release daemon remaining after the run.
 
 ## Next Engineering Target
 
-Re-run the public magnet metadata smoke in the next full E2E pass and confirm the repeated `/api/v1/tasks/{taskId}/pause` call returns the current paused task summary.
+Continue with the core modernization tracker. No E2E-blocking bug is currently documented from the latest smoke run.
