@@ -517,3 +517,22 @@ Daemon Metalink completion, transfer failover, checksum failover, and
 `legacy_add_metalink_is_not_registered` passed.
 Remaining: Start CM-016 BitTorrent ingress and metadata.
 Blocked: none.
+
+2026-05-25 CM-016 verified
+Changed: Closed BitTorrent ingress and metadata. Torrent bytes, torrent-file
+sources, remote torrent metadata sources, magnet metadata projection,
+metadata-only inspection, DHT persistence, UDP tracker ingress, and native
+daemon BT metadata events now use raria-native task policy over librqbit.
+Duplicate info-hashes in the same BT service session are rejected instead of
+creating a second raria task over one librqbit handle. `/api/v1/tasks` accepts
+`bt.metadataOnly` for metadata inspection without starting payload transfer.
+Verified: `cargo test -p raria-bt --test bt_smoke
+bt_service_rejects_duplicate_info_hash_in_same_session -- --nocapture` failed
+before the fix and passed after it. `cargo test -p raria-bt --test bt_smoke
+bt_service_metadata_only_lists_torrent_without_starting_payload --
+--nocapture`, focused BT ingress and UDP tracker tests, DHT persistence tests,
+native daemon BT metadata, torrent-file, remote metadata, and DHT shutdown
+tests passed. `cargo fmt --all --check`, `cargo check --workspace --locked`,
+CSV validation, and `git diff --check` passed.
+Remaining: Start CM-017 BitTorrent runtime behavior.
+Blocked: none.

@@ -459,6 +459,7 @@ struct CreateMetalinkTasksResponse {
 struct CreateBtTaskOptions {
     selected_file_ids: Option<Vec<String>>,
     tracker_uris: Option<Vec<String>>,
+    metadata_only: Option<bool>,
     web_seed_uris: Option<Vec<String>>,
     delete_unselected_files_on_completion: Option<bool>,
     seeding: Option<PatchBtSeedingPolicyRequest>,
@@ -540,6 +541,12 @@ async fn handle_create_task(
         state
             .engine
             .update_native_task_trackers(&summary.task_id, trackers)
+            .map_err(|_| NativeApiError::InvalidRequest)?;
+    }
+    if let Some(metadata_only) = bt_options.and_then(|bt| bt.metadata_only) {
+        state
+            .engine
+            .update_native_bt_metadata_only_policy(&summary.task_id, metadata_only)
             .map_err(|_| NativeApiError::InvalidRequest)?;
     }
     if let Some(web_seed_uris) = bt_options.and_then(|bt| bt.web_seed_uris.as_ref()) {

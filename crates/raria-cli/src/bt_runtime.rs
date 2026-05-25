@@ -1,6 +1,8 @@
 use anyhow::{Context, Result};
 use base64::Engine as Base64Engine;
-use raria_bt::service::{BtService, BtServiceConfig, BtSource, BtStatus, PieceSelectionStrategy};
+use raria_bt::service::{
+    BtMetadata, BtService, BtServiceConfig, BtSource, BtStatus, PieceSelectionStrategy,
+};
 use raria_bt::torrent_meta::TorrentMeta;
 use raria_core::config::BtPieceStrategy;
 use raria_core::engine::Engine;
@@ -160,6 +162,46 @@ fn sync_bt_status_into_job(
         seed_time: job.options.seed_time,
         idle_download_timeout: job.options.bt_idle_download_timeout,
     })
+}
+
+fn sync_bt_metadata_into_job(job: &mut Job, metadata: &BtMetadata) {
+    job.total_size = Some(metadata.total_size);
+    job.bt_files = Some(
+        metadata
+            .files
+            .iter()
+            .map(|file| BtFile {
+                index: file.index,
+                path: file.path.clone(),
+                length: file.size,
+                completed_length: 0,
+                selected: file.selected,
+            })
+            .collect(),
+    );
+    let bt = job.bt.get_or_insert_with(Default::default);
+    bt.info_hash = Some(metadata.info_hash.clone());
+    bt.torrent_name = metadata.torrent_name.clone();
+    bt.piece_length = Some(metadata.piece_length);
+    bt.num_pieces = Some(metadata.num_pieces);
+}
+
+fn sync_bt_job_from_metadata(engine: &Engine, gid: Gid, metadata: &BtMetadata) -> Result<()> {
+    engine
+        .registry
+        .update(gid, |job| sync_bt_metadata_into_job(job, metadata))
+        .context("BT job not found in registry")?;
+    if let Some(task_id) = engine.task_id_for_gid(gid) {
+        engine.publish_native_bt_metadata_resolved(
+            &task_id,
+            &metadata.info_hash,
+            metadata.torrent_name.as_deref(),
+            Some(metadata.total_size),
+            Some(metadata.piece_length),
+            Some(metadata.num_pieces),
+        )?;
+    }
+    Ok(())
 }
 
 fn sync_bt_job_from_status(
@@ -445,6 +487,43 @@ pub(crate) async fn run_bt_download(
         }
     }
 
+    if job.options.bt_metadata_only {
+        let metadata = bt_service
+            .inspect_metadata(
+                source,
+                job.options.bt_selected_files.clone(),
+                job.options.bt_trackers.clone(),
+            )
+            .await
+            .context("failed to inspect BT metadata")?;
+        sync_bt_job_from_metadata(engine.as_ref(), gid, &metadata)?;
+        engine.pause_native_task(&task_id)?;
+        persist_bt_job(engine.as_ref(), gid);
+        return Ok(());
+    }
+
+    if uri_str.starts_with("magnet:") {
+        match bt_service
+            .inspect_metadata(
+                source.clone(),
+                job.options.bt_selected_files.clone(),
+                job.options.bt_trackers.clone(),
+            )
+            .await
+        {
+            Ok(metadata) => {
+                sync_bt_job_from_metadata(engine.as_ref(), gid, &metadata)?;
+                persist_bt_job(engine.as_ref(), gid);
+            }
+            Err(error) => {
+                debug_assert!(
+                    error.to_string().contains("metadata-only"),
+                    "unexpected magnet metadata inspection error: {error:#}"
+                );
+            }
+        }
+    }
+
     let handle = bt_service
         .add(
             source,
@@ -610,7 +689,7 @@ mod tests {
     };
     use crate::bt_runtime::PieceSelectionStrategy;
     use librqbit::{CreateTorrentOptions, create_torrent};
-    use raria_bt::service::{BtFileInfo, BtPeerInfo, BtStatus};
+    use raria_bt::service::{BtFileInfo, BtMetadata, BtMetadataFile, BtPeerInfo, BtStatus};
     use raria_core::config::{BtPieceStrategy, GlobalConfig, JobOptions};
     use raria_core::engine::{AddUriSpec, Engine};
     use raria_core::job::{BtPeer, BtSnapshot, Job, Status};
@@ -687,6 +766,40 @@ mod tests {
         assert_eq!(mapped[0].port, 6881);
         assert_eq!(mapped[0].download_speed, 123);
         assert!(mapped[0].seeder);
+    }
+
+    #[test]
+    fn sync_bt_metadata_populates_native_job_state_without_payload_progress() {
+        let engine = Engine::new(GlobalConfig::default());
+        let gid = insert_active_bt_job(&engine, JobOptions::default());
+        let metadata = BtMetadata {
+            info_hash: "0123456789abcdef0123456789abcdef01234567".into(),
+            torrent_name: Some("metadata-fixture".into()),
+            total_size: 4096,
+            piece_length: 1024,
+            num_pieces: 4,
+            files: vec![BtMetadataFile {
+                index: 0,
+                path: PathBuf::from("fixture.bin"),
+                size: 4096,
+                selected: true,
+            }],
+        };
+
+        super::sync_bt_job_from_metadata(&engine, gid, &metadata).expect("sync BT metadata");
+
+        let job = engine.registry.get(gid).expect("job");
+        assert_eq!(job.downloaded, 0);
+        assert_eq!(job.total_size, Some(4096));
+        assert_eq!(
+            job.bt_files.as_ref().expect("files")[0].path,
+            PathBuf::from("fixture.bin")
+        );
+        let bt = job.bt.expect("BT snapshot");
+        assert_eq!(bt.info_hash.as_deref(), Some(metadata.info_hash.as_str()));
+        assert_eq!(bt.torrent_name.as_deref(), Some("metadata-fixture"));
+        assert_eq!(bt.piece_length, Some(1024));
+        assert_eq!(bt.num_pieces, Some(4));
     }
 
     #[test]

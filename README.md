@@ -84,7 +84,7 @@ Current native routes include:
 
 Task responses use native field names such as `taskId`, `lifecycle`, `outputPath`, `files`, `sources`, `segments`, `completedBytes`, `totalBytes`, `downloadBytesPerSecond`, `activeConnections`, `estimatedSecondsRemaining`, `downloadBytesPerSecondLimit`, `uploadBytesPerSecondLimit`, `createdAt`, `updatedAt`, and `errorMessage`.
 
-Task creation accepts direct `sources`, a `metalink` object with `bytesBase64` or `path`, and BitTorrent options under `bt`, including `selectedFileIds`, `trackerUris`, `webSeedUris`, `deleteUnselectedFilesOnCompletion`, and `seeding`.
+Task creation accepts direct `sources`, a `metalink` object with `bytesBase64` or `path`, and BitTorrent options under `bt`, including `selectedFileIds`, `trackerUris`, `metadataOnly`, `webSeedUris`, `deleteUnselectedFilesOnCompletion`, and `seeding`.
 
 Mutation routes use native field names. Global transfer policy uses `downloadBytesPerSecondLimit`, `uploadBytesPerSecondLimit`, and `maxActiveTasks`. Task transfer policy uses `downloadBytesPerSecondLimit`, `uploadBytesPerSecondLimit`, and `segments`. Queue placement uses absolute `position`. Source replacement uses `sources`. File selection uses `selectedFileIds`. Tracker policy uses `trackerUris`, `excludedTrackerUris`, `connectTimeoutSeconds`, `timeoutSeconds`, and `intervalSeconds`. BitTorrent seeding policy uses `targetRatio`, `stopAfterMinutes`, and `idleDownloadTimeoutSeconds`.
 

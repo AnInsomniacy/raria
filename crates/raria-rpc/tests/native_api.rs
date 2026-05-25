@@ -519,6 +519,7 @@ mod tests {
                         "udp://tracker.example:6969/announce",
                         "https://tracker.example/announce"
                     ],
+                    "metadataOnly": true,
                     "webSeedUris": ["https://explicit-webseed.example/file.iso"],
                     "deleteUnselectedFilesOnCompletion": true,
                     "seeding": {
@@ -557,6 +558,7 @@ mod tests {
                 "https://explicit-webseed.example/file.iso".to_string()
             ])
         );
+        assert!(job.options.bt_metadata_only);
         assert!(job.options.bt_delete_unselected_files_on_completion);
         assert_eq!(job.options.seed_ratio, Some(1.25));
         assert_eq!(job.options.seed_time, Some(30));

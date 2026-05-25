@@ -152,6 +152,36 @@ pub struct BtStatus {
     pub num_pieces: Option<u64>,
 }
 
+/// Metadata returned by a BitTorrent inspection request that does not start payload transfer.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BtMetadata {
+    /// Info hash (hex).
+    pub info_hash: String,
+    /// Torrent display name, when available.
+    pub torrent_name: Option<String>,
+    /// Total torrent payload size in bytes.
+    pub total_size: u64,
+    /// Piece length in bytes.
+    pub piece_length: u64,
+    /// Number of pieces.
+    pub num_pieces: u64,
+    /// Files described by the torrent metadata.
+    pub files: Vec<BtMetadataFile>,
+}
+
+/// File metadata returned by a BitTorrent inspection request.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BtMetadataFile {
+    /// File index within the torrent.
+    pub index: usize,
+    /// Relative file path.
+    pub path: PathBuf,
+    /// File size in bytes.
+    pub size: u64,
+    /// Whether this file was selected by the inspection filter.
+    pub selected: bool,
+}
+
 /// Information about a file within a torrent.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BtFileInfo {
@@ -303,6 +333,102 @@ impl BtService {
         trackers: Option<Vec<String>>,
         overwrite: bool,
     ) -> Result<BtHandle> {
+        let response = self
+            .add_torrent_with_options(source, selected_files, trackers, overwrite, false)
+            .await
+            .context("failed to add torrent")?;
+
+        let (torrent_id, handle) = match response {
+            AddTorrentResponse::Added(id, h) => {
+                info!(%gid, torrent_id = id, "torrent added");
+                (id, h)
+            }
+            AddTorrentResponse::AlreadyManaged(id, h) => {
+                warn!(%gid, torrent_id = id, "torrent already managed");
+                drop(h);
+                anyhow::bail!("duplicate torrent info hash is already managed: {id}");
+            }
+            AddTorrentResponse::ListOnly(_) => {
+                anyhow::bail!("torrent was list-only, not added for download");
+            }
+        };
+
+        // Store the handle for later operations.
+        self.handles.write().insert(gid, handle);
+
+        Ok(BtHandle { torrent_id, gid })
+    }
+
+    /// Inspect torrent metadata without starting payload transfer.
+    pub async fn inspect_metadata(
+        &self,
+        source: BtSource,
+        selected_files: Option<Vec<usize>>,
+        trackers: Option<Vec<String>>,
+    ) -> Result<BtMetadata> {
+        let response = self
+            .add_torrent_with_options(source, selected_files, trackers, false, true)
+            .await?;
+
+        match response {
+            AddTorrentResponse::ListOnly(response) => {
+                let selected_files = response.only_files.as_deref();
+                let files = response
+                    .info
+                    .iter_file_details()
+                    .context("failed to inspect torrent files")?
+                    .enumerate()
+                    .map(|(index, file)| {
+                        Ok(BtMetadataFile {
+                            index,
+                            path: file
+                                .filename
+                                .to_pathbuf()
+                                .context("failed to decode torrent file path")?,
+                            size: file.len,
+                            selected: is_selected_file(selected_files, index),
+                        })
+                    })
+                    .collect::<Result<Vec<_>>>()?;
+                let total_size: u64 = files.iter().map(|file| file.size).sum();
+                let piece_length = response.info.piece_length as u64;
+                let num_pieces = if piece_length == 0 {
+                    0
+                } else {
+                    total_size.div_ceil(piece_length)
+                };
+                let torrent_name = response
+                    .info
+                    .name
+                    .as_ref()
+                    .and_then(|name| std::str::from_utf8(name.as_ref()).ok())
+                    .map(str::to_string);
+
+                Ok(BtMetadata {
+                    info_hash: hex::encode(response.info_hash.0),
+                    torrent_name,
+                    total_size,
+                    piece_length,
+                    num_pieces,
+                    files,
+                })
+            }
+            AddTorrentResponse::Added(id, handle)
+            | AddTorrentResponse::AlreadyManaged(id, handle) => {
+                drop(handle);
+                anyhow::bail!("metadata-only torrent unexpectedly started payload transfer: {id}")
+            }
+        }
+    }
+
+    async fn add_torrent_with_options(
+        &self,
+        source: BtSource,
+        selected_files: Option<Vec<usize>>,
+        trackers: Option<Vec<String>>,
+        overwrite: bool,
+        list_only: bool,
+    ) -> Result<AddTorrentResponse> {
         let session = self.ensure_session().await?;
 
         let add_torrent = match &source {
@@ -322,32 +448,14 @@ impl BtService {
             initial_peers: self.config.initial_peers.clone(),
             trackers,
             overwrite,
+            list_only,
             ..Default::default()
         };
 
-        let response = session
+        session
             .add_torrent(add_torrent, Some(opts))
             .await
-            .context("failed to add torrent")?;
-
-        let (torrent_id, handle) = match response {
-            AddTorrentResponse::Added(id, h) => {
-                info!(%gid, torrent_id = id, "torrent added");
-                (id, h)
-            }
-            AddTorrentResponse::AlreadyManaged(id, h) => {
-                warn!(%gid, torrent_id = id, "torrent already managed");
-                (id, h)
-            }
-            AddTorrentResponse::ListOnly(_) => {
-                anyhow::bail!("torrent was list-only, not added for download");
-            }
-        };
-
-        // Store the handle for later operations.
-        self.handles.write().insert(gid, handle);
-
-        Ok(BtHandle { torrent_id, gid })
+            .context("failed to add torrent")
     }
 
     /// Pause a torrent.

@@ -247,6 +247,8 @@ pub struct JobOptions {
     pub bt_selected_files: Option<Vec<usize>>,
     /// Additional BT trackers appended to the torrent.
     pub bt_trackers: Option<Vec<String>>,
+    /// Inspect BitTorrent metadata without starting payload transfer.
+    pub bt_metadata_only: bool,
     /// Native BT tracker URIs excluded before task submission.
     pub bt_excluded_trackers: Vec<String>,
     /// Native BT tracker connect timeout in seconds.
@@ -285,6 +287,7 @@ impl Default for JobOptions {
             checksum: None,
             bt_selected_files: None,
             bt_trackers: None,
+            bt_metadata_only: false,
             bt_excluded_trackers: Vec::new(),
             bt_tracker_connect_timeout_seconds: None,
             bt_tracker_timeout_seconds: None,
@@ -421,6 +424,7 @@ mod tests {
         assert_eq!(opts.max_download_limit, 0);
         assert!(opts.headers.is_empty());
         assert!(opts.out.is_none());
+        assert!(!opts.bt_metadata_only);
     }
 
     #[test]
@@ -429,10 +433,12 @@ mod tests {
         opts.headers
             .push(("Referer".into(), "https://example.com".into()));
         opts.out = Some("custom_name.zip".into());
+        opts.bt_metadata_only = true;
 
         let json = serde_json::to_string(&opts).unwrap();
         let recovered: JobOptions = serde_json::from_str(&json).unwrap();
         assert_eq!(recovered.headers.len(), 1);
         assert_eq!(recovered.out.as_deref(), Some("custom_name.zip"));
+        assert!(recovered.bt_metadata_only);
     }
 }

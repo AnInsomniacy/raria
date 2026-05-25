@@ -482,6 +482,29 @@ impl Engine {
         Ok(web_seed_uris)
     }
 
+    /// Update whether a BitTorrent task should stop after metadata inspection.
+    pub fn update_native_bt_metadata_only_policy(
+        &self,
+        task_id: &TaskId,
+        metadata_only: bool,
+    ) -> Result<NativeTaskSummary> {
+        let gid = self
+            .gid_for_task_id(task_id)
+            .context("native task not found")?;
+        self.registry
+            .update(gid, |job| {
+                anyhow::ensure!(
+                    job.kind == crate::job::JobKind::Bt,
+                    "metadata-only policy is only supported for BitTorrent jobs"
+                );
+                job.options.bt_metadata_only = metadata_only;
+                Ok(())
+            })
+            .context("native task not found")?
+            .context("metadata-only policy mutation failed")?;
+        self.native_task_summary(task_id)
+    }
+
     /// Update whether unselected BitTorrent files are deleted after completion.
     pub fn update_native_bt_delete_unselected_files_policy(
         &self,

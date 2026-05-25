@@ -606,6 +606,104 @@ async fn bt_service_status_exposes_reachable_bt_metadata_fields() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[serial_test::serial]
+async fn bt_service_rejects_duplicate_info_hash_in_same_session() {
+    let seed = start_seed_fixture(512 * 1024).await.expect("seed fixture");
+    let download_dir = tempdir().expect("download tempdir");
+    let service = BtService::with_config(
+        download_dir.path().to_path_buf(),
+        BtServiceConfig {
+            disable_dht: true,
+            disable_dht_persistence: true,
+            ..Default::default()
+        },
+    )
+    .expect("create bt service");
+
+    service
+        .add(
+            BtSource::TorrentBytes(seed.torrent_bytes.clone()),
+            Gid::from_raw(23),
+            None,
+            None,
+            false,
+        )
+        .await
+        .expect("first torrent should be accepted");
+
+    let error = service
+        .add(
+            BtSource::TorrentBytes(seed.torrent_bytes.clone()),
+            Gid::from_raw(24),
+            None,
+            None,
+            false,
+        )
+        .await
+        .expect_err("duplicate info-hash should be rejected");
+
+    assert!(
+        error.to_string().contains("duplicate torrent info hash"),
+        "unexpected duplicate error: {error:#}"
+    );
+
+    service.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[serial_test::serial]
+async fn bt_service_metadata_only_lists_torrent_without_starting_payload() {
+    let seed = start_seed_fixture(512 * 1024).await.expect("seed fixture");
+    let download_dir = tempdir().expect("download tempdir");
+    let service = BtService::with_config(
+        download_dir.path().to_path_buf(),
+        BtServiceConfig {
+            disable_dht: true,
+            disable_dht_persistence: true,
+            ..Default::default()
+        },
+    )
+    .expect("create bt service");
+
+    let metadata = service
+        .inspect_metadata(
+            BtSource::TorrentBytes(seed.torrent_bytes.clone()),
+            Some(vec![0]),
+            None,
+        )
+        .await
+        .expect("inspect torrent metadata");
+
+    assert_eq!(
+        metadata.torrent_name.as_deref(),
+        Some(seed.torrent_name.as_str())
+    );
+    assert_eq!(metadata.piece_length, 16 * 1024);
+    assert_eq!(metadata.num_pieces, metadata.total_size.div_ceil(16 * 1024));
+    assert_eq!(metadata.info_hash.len(), 40);
+    assert_eq!(metadata.files.len(), 2);
+    let selected_file = metadata
+        .files
+        .iter()
+        .find(|file| file.selected)
+        .expect("selected metadata file");
+    assert_eq!(selected_file.index, 0);
+    assert_eq!(selected_file.path, Path::new("extra.bin"));
+    assert_eq!(selected_file.size, 256 * 1024);
+    assert!(metadata.files.iter().any(|file| {
+        !file.selected
+            && file.path == Path::new(&seed.output_name)
+            && file.size == seed.payload.len() as u64
+    }));
+    assert!(
+        !download_dir.path().join(&seed.output_name).exists(),
+        "metadata-only inspection must not start payload transfer"
+    );
+
+    service.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[serial_test::serial]
 async fn bt_service_downloads_real_torrent_through_udp_tracker() {
     let seed = start_seed_fixture(2 * 1024 * 1024)
         .await
