@@ -20,6 +20,7 @@ contract is native.
 | `roadmap.csv` | Single checkpoint index and progress entry point |
 | `capability-ledger.csv` | Feature ownership, status, and closing checkpoint |
 | `dependency-ledger.csv` | Rust library ownership and replacement decisions |
+| `native-surface-audit.md` | Native public surface inventory and legacy deletion map |
 | `source-evidence.md` | Source inputs, local evidence rules, and old-doc migration notes |
 | `progress.md` | Compact chronological evidence trail |
 | `checkpoints/CM-001-tracker-rebuild.csv` | Tracker rebuild, old-doc retirement, and validation |

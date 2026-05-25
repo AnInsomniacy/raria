@@ -66,3 +66,14 @@ Verified: `cargo check --workspace --locked` passed. CSV parser validation
 passed for 25 files. `git diff --check` passed.
 Remaining: Start CM-003 native surface audit and deletion map.
 Blocked: none.
+
+2026-05-25 CM-003 verified
+Changed: Added `native-surface-audit.md` as the native API, event, CLI,
+configuration, JSON-RPC, test, documentation, and stale-surface deletion map.
+Mapped retained `/api/v1` resources, native event types, legacy JSON-RPC
+removal targets, transitional config names, compatibility test deletion
+candidates, and reproducible stale-surface scans.
+Verified: CSV parser validation passed for 25 files. `git diff --check`
+passed.
+Remaining: Start CM-004 core ownership audit.
+Blocked: none.
