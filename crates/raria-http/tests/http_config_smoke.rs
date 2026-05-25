@@ -2,9 +2,11 @@ use raria_http::backend::{HttpBackend, HttpBackendConfig};
 use raria_range::backend::{ByteSourceBackend, OpenContext, ProbeContext};
 use rustls::pki_types::{PrivateKeyDer, PrivatePkcs8KeyDer};
 use rustls::{RootCertStore, ServerConfig};
+use serial_test::serial;
 use std::io::Write;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::Duration;
 use tempfile::{NamedTempFile, tempdir};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
@@ -79,6 +81,74 @@ async fn http_backend_bypasses_invalid_proxy_for_no_proxy_host() {
         .expect("probe should bypass invalid proxy");
 
     assert_eq!(probe.size, Some(5));
+}
+
+#[tokio::test]
+#[serial]
+async fn http_backend_ignores_environment_proxy_without_native_proxy_config() {
+    let server = MockServer::start().await;
+    Mock::given(method("HEAD"))
+        .and(path("/probe"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-length", "5")
+                .insert_header("accept-ranges", "bytes"),
+        )
+        .mount(&server)
+        .await;
+
+    let proxy_listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind unused proxy");
+    let proxy_addr = proxy_listener.local_addr().expect("unused proxy addr");
+    let proxy_hit = Arc::new(AtomicUsize::new(0));
+    let proxy_hit_task = Arc::clone(&proxy_hit);
+    tokio::spawn(async move {
+        if let Ok(Ok((_stream, _))) =
+            tokio::time::timeout(Duration::from_secs(1), proxy_listener.accept()).await
+        {
+            proxy_hit_task.fetch_add(1, Ordering::SeqCst);
+        }
+    });
+
+    let previous_http_proxy = std::env::var_os("HTTP_PROXY");
+    let previous_http_proxy_lower = std::env::var_os("http_proxy");
+    unsafe {
+        std::env::set_var("HTTP_PROXY", format!("http://{proxy_addr}"));
+        std::env::set_var("http_proxy", format!("http://{proxy_addr}"));
+    }
+
+    let backend = HttpBackend::with_config(&HttpBackendConfig {
+        check_certificate: true,
+        ..Default::default()
+    })
+    .expect("backend");
+
+    let url = format!("{}/probe", server.uri()).parse().expect("url");
+    let probe = backend
+        .probe(&url, &ProbeContext::default())
+        .await
+        .expect("probe should not use environment proxy");
+
+    unsafe {
+        if let Some(value) = previous_http_proxy {
+            std::env::set_var("HTTP_PROXY", value);
+        } else {
+            std::env::remove_var("HTTP_PROXY");
+        }
+        if let Some(value) = previous_http_proxy_lower {
+            std::env::set_var("http_proxy", value);
+        } else {
+            std::env::remove_var("http_proxy");
+        }
+    }
+
+    assert_eq!(probe.size, Some(5));
+    assert_eq!(
+        proxy_hit.load(Ordering::SeqCst),
+        0,
+        "HTTP backend must ignore environment proxy unless raria proxy config is set"
+    );
 }
 
 #[tokio::test]

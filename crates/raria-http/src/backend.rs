@@ -129,6 +129,9 @@ impl HttpBackend {
             }
             builder = builder.proxy(proxy);
         }
+        if config.proxy.is_none() && config.http_proxy.is_none() && config.https_proxy.is_none() {
+            builder = builder.no_proxy();
+        }
 
         // Configure custom CA certificate.
         if let Some(ref ca_path) = config.ca_certificate {

@@ -568,3 +568,22 @@ passed with 11 tests, and `cargo test -p raria-cli --test native_api_smoke --
 --nocapture` passed with 28 tests.
 Remaining: Start CM-018 transfer policy and network controls.
 Blocked: none.
+
+2026-05-25 CM-018 partial
+Changed: Closed the main transfer-policy slice for limits, retry,
+ordinary-transfer stall protection, and explicit environment proxy behavior.
+HTTP now disables reqwest system proxy inheritance when no raria-native proxy
+configuration is set. DNS and interface binding are documented as current
+technical limitations because reqwest exposes HTTP-only hooks while FTP, SFTP,
+and BT selected libraries do not provide one uniform cross-protocol policy.
+Verified: `cargo test -p raria-http --test http_config_smoke
+http_backend_ignores_environment_proxy_without_native_proxy_config --
+--nocapture`, `cargo test -p raria-range --lib -- --nocapture`, `cargo test
+-p raria-core --lib limiter -- --nocapture`, `cargo test -p raria-core --lib
+native_runtime_helpers_manage_rate_limiter_and_segment_state -- --nocapture`,
+and `cargo test -p raria-rpc --test native_api transfer -- --nocapture`
+passed.
+`cargo test -p raria-http --test http_config_smoke -- --nocapture` passed with
+10 tests after the environment proxy change.
+Remaining: Start CM-019 daemon lifecycle security logs and hooks.
+Blocked: none.

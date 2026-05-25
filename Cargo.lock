@@ -3281,6 +3281,7 @@ dependencies = [
  "reqwest_cookie_store",
  "rust-netrc",
  "rustls",
+ "serial_test",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",

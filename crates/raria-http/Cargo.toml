@@ -33,3 +33,4 @@ tokio-test = { workspace = true }
 wiremock = { workspace = true }
 tokio-rustls = { workspace = true }
 rcgen = { workspace = true }
+serial_test = { workspace = true }
