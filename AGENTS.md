@@ -71,7 +71,7 @@ Keep documentation synchronized with behavior. If an API route, event field, CLI
 
 `Cargo.toml` under `[workspace.package]` is the single source of truth for the project version. Workspace crates inherit it through `version.workspace = true`.
 
-Use `./scripts/bump-version.sh <major.minor.patch>` to change the workspace version once that script exists. The script must accept only plain numeric Semantic Versioning releases and must update the lockfile if Cargo requires it.
+Use `./scripts/bump-version.sh <major.minor.patch>` to change the workspace version. The script accepts only plain numeric Semantic Versioning releases and keeps Cargo metadata locked.
 
 Use normal SemVer arithmetic. A minor bump from `1.0.6` is `1.1.0`; a patch bump from `1.0.6` is `1.0.7`.
 
