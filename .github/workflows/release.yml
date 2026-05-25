@@ -17,6 +17,7 @@
 # collects every artifact and publishes a GitHub Release.
 
 name: Release
+run-name: Release ${{ github.ref_name }}
 
 on:
   push:
