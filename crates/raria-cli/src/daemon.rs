@@ -989,6 +989,10 @@ async fn run_job_download(
                     "mirror failed, trying next mirror",
                     range_structured_fields(gid, &context.task_id, [("uri", redacted_url.clone())]),
                 );
+                cleanup_segment_checkpoints(&engine, gid, &context.task_id);
+                segments = None;
+                effective_connections = None;
+                on_checkpoint = None;
                 continue;
             }
 
@@ -1324,6 +1328,73 @@ mod tests {
         assert_eq!(
             std::fs::read(dir.path().join("ok.bin")).expect("downloaded output"),
             b"ok"
+        );
+    }
+
+    #[tokio::test]
+    async fn mirror_failover_replans_segments_for_selected_source_capabilities() {
+        let primary = MockServer::start().await;
+        Mock::given(method("HEAD"))
+            .and(path("/adaptive.bin"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("content-length", "4096")
+                    .insert_header("accept-ranges", "bytes"),
+            )
+            .mount(&primary)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/adaptive.bin"))
+            .respond_with(ResponseTemplate::new(500))
+            .mount(&primary)
+            .await;
+
+        let fallback = MockServer::start().await;
+        Mock::given(method("HEAD"))
+            .and(path("/adaptive.bin"))
+            .respond_with(ResponseTemplate::new(200).insert_header("content-length", "4"))
+            .mount(&fallback)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/adaptive.bin"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(b"done"))
+            .expect(1)
+            .mount(&fallback)
+            .await;
+
+        let dir = tempdir().expect("tempdir");
+        let engine = Arc::new(Engine::new(GlobalConfig::default()));
+        let spec = AddUriSpec {
+            uris: vec![
+                format!("{}/adaptive.bin", primary.uri()),
+                format!("{}/adaptive.bin", fallback.uri()),
+            ],
+            dir: dir.path().to_path_buf(),
+            filename: Some("adaptive.bin".into()),
+            connections: 4,
+            headers: Vec::new(),
+            http_user: None,
+            http_password: None,
+            checksum: None,
+        };
+        let handle = engine.add_uri(&spec).expect("add uri");
+        let cancel = engine.activate_job(handle.gid).expect("activate job");
+        let task_id = engine.task_id_for_gid(handle.gid).expect("task id");
+
+        run_job_download(
+            Arc::clone(&engine),
+            RangeExecutionContext { task_id },
+            cancel,
+            Vec::new(),
+        )
+        .await
+        .expect("download should succeed after adaptive failover");
+
+        let job = engine.registry.get(handle.gid).expect("job");
+        assert_eq!(job.status, Status::Complete);
+        assert_eq!(
+            std::fs::read(dir.path().join("adaptive.bin")).expect("downloaded output"),
+            b"done"
         );
     }
 

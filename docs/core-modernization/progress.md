@@ -453,3 +453,26 @@ simple_ssh --locked`, and `cargo info fast-scp --locked` recorded dependency
 freshness and SCP decision evidence.
 Remaining: Start CM-013 multi-source adaptive transfers.
 Blocked: none.
+
+2026-05-25 CM-013 verified
+Changed: Closed multi-source adaptive transfers. Daemon mirror failover now
+discards the failed mirror's segment plan and checkpoint callback before
+trying the next mirror, so fallback mirrors with different size or range
+capabilities get a fresh resume-safe plan. Added a focused regression that
+failed before the fix and passes after it.
+Verified: `cargo test -p raria-cli --bin raria
+mirror_failover_replans_segments_for_selected_source_capabilities --
+--nocapture` failed before the fix and passed after it. `cargo test -p
+raria-cli --bin raria plan_download_segments_uses_selected_source_health --
+--nocapture` passed. `cargo test -p raria-cli --bin raria
+mirror_failover_publishes_source_failed_event_before_completion --
+--nocapture` passed. `cargo test -p raria-cli --test session_smoke
+daemon_fails_over_to_next_mirror_when_first_mirror_fails -- --nocapture`
+passed. `cargo test -p raria-cli --bin raria native_segment -- --nocapture`
+passed. `cargo test -p raria-core native_source_selection -- --nocapture`
+passed. `cargo test -p raria-core native_segment_planning -- --nocapture`
+passed. `cargo test -p raria-core
+native_runtime_helpers_manage_rate_limiter_and_segment_state -- --nocapture`
+passed.
+Remaining: Start CM-014 integrity and disk policy.
+Blocked: none.
