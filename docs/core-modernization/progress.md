@@ -77,3 +77,13 @@ Verified: CSV parser validation passed for 25 files. `git diff --check`
 passed.
 Remaining: Start CM-004 core ownership audit.
 Blocked: none.
+
+2026-05-25 CM-004 verified
+Changed: Added `core-ownership-audit.md` with the TaskId/Gid bridge map,
+Job-driven runtime ownership, native scheduler state, redb table decisions,
+event ownership, BitTorrent librqbit boundary, and refactor order for CM-005
+through CM-020.
+Verified: CSV parser validation passed for 25 files. `git diff --check`
+passed.
+Remaining: Start CM-005 native API and event stream closure.
+Blocked: none.
