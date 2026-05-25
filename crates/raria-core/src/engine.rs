@@ -10,7 +10,7 @@
 // 7. Handles graceful shutdown via CancellationToken
 //
 // The Engine does NOT own the download loop itself — that is driven by
-// the caller (CLI or daemon) which calls activatable_jobs() and spawns
+// the caller (CLI or daemon) which calls activatable_native_tasks() and spawns
 // SegmentExecutor tasks.
 
 use crate::cancel::CancelRegistry;
@@ -994,12 +994,6 @@ impl Engine {
         );
         self.clear_job_rate_limiter(gid);
         Ok(())
-    }
-
-    /// Get the GIDs eligible for activation (based on concurrency limit).
-    pub fn activatable_jobs(&self) -> Vec<Gid> {
-        self.scheduler
-            .jobs_to_activate(&self.registry, &self.native_task_index.lock())
     }
 
     /// Get the native task ids eligible for activation.
@@ -2796,7 +2790,7 @@ mod tests {
     }
 
     #[test]
-    fn activatable_jobs_respects_concurrency() {
+    fn activatable_native_tasks_respects_concurrency() {
         let engine = Engine::new(GlobalConfig {
             max_concurrent_downloads: 2,
             ..Default::default()
@@ -2805,11 +2799,13 @@ mod tests {
         let h1 = engine.add_uri(&default_spec()).unwrap();
         let h2 = engine.add_uri(&default_spec()).unwrap();
         let _h3 = engine.add_uri(&default_spec()).unwrap();
+        let task1 = engine.task_id_for_gid(h1.gid).unwrap();
+        let task2 = engine.task_id_for_gid(h2.gid).unwrap();
 
-        let activatable = engine.activatable_jobs();
+        let activatable = engine.activatable_native_tasks();
         assert_eq!(activatable.len(), 2);
-        assert_eq!(activatable[0], h1.gid);
-        assert_eq!(activatable[1], h2.gid);
+        assert_eq!(activatable[0], task1);
+        assert_eq!(activatable[1], task2);
     }
 
     #[test]
@@ -3026,13 +3022,14 @@ mod tests {
         let h2 = engine.add_uri(&default_spec()).unwrap();
 
         engine.activate_job(h1.gid).unwrap();
-        assert!(engine.activatable_jobs().is_empty());
+        assert!(engine.activatable_native_tasks().is_empty());
 
         engine.complete_job(h1.gid).unwrap();
+        let task2 = engine.task_id_for_gid(h2.gid).unwrap();
 
-        let activatable = engine.activatable_jobs();
+        let activatable = engine.activatable_native_tasks();
         assert_eq!(activatable.len(), 1);
-        assert_eq!(activatable[0], h2.gid);
+        assert_eq!(activatable[0], task2);
     }
 
     #[test]

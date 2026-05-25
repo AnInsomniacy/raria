@@ -185,3 +185,14 @@ passed. `cargo check --workspace --locked` passed.
 Remaining: Continue CM-007 scheduler lookup and public `Gid` projection
 cleanup.
 Blocked: none.
+
+2026-05-25 CM-007 partial
+Changed: Removed the scheduler `jobs_to_activate` runtime-id path and the
+engine `activatable_jobs` wrapper. Scheduler and daemon activation now use
+`TaskId` as the activation list, with `Gid` kept only inside the current
+runtime bridge after task activation.
+Verified: `cargo test -p raria-core scheduler -- --nocapture` passed with
+17 matching tests. `cargo test -p raria-core activatable_native_tasks --
+--nocapture` passed. `cargo check --workspace --locked` passed.
+Remaining: Continue CM-007 public `Gid` projection cleanup.
+Blocked: none.

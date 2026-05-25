@@ -3,8 +3,8 @@
 // The scheduler controls which jobs are active, how many run concurrently,
 // and handles the waiting → active state transitions.
 
-use crate::job::{Gid, Status};
-use crate::native::{NativeTaskIndex, TaskId};
+use crate::job::Status;
+use crate::native::TaskId;
 use crate::registry::JobRegistry;
 use parking_lot::RwLock;
 use std::collections::VecDeque;
@@ -115,31 +115,6 @@ fn change_task_position_locked(
 }
 
 impl Scheduler {
-    /// Determine which runtime bridge ids should be promoted from Waiting to Active.
-    pub fn jobs_to_activate(
-        &self,
-        registry: &JobRegistry,
-        native_task_index: &NativeTaskIndex,
-    ) -> Vec<Gid> {
-        let max = self.max_concurrent.load(Ordering::Relaxed);
-        let active_count = registry.by_status(Status::Active).len() as u32;
-        if active_count >= max {
-            return Vec::new();
-        }
-
-        let slots = (max - active_count) as usize;
-        let queue = self.queue.read();
-        queue
-            .iter()
-            .take(slots)
-            .filter_map(|task_id| {
-                registry
-                    .gid_for_task_id(task_id)
-                    .or_else(|| native_task_index.gid_for_task_id(task_id))
-            })
-            .collect()
-    }
-
     /// Determine which native task ids should be promoted from queued to running.
     pub fn native_tasks_to_activate(&self, registry: &JobRegistry) -> Vec<TaskId> {
         let max = self.max_concurrent.load(Ordering::Relaxed);
@@ -315,36 +290,32 @@ mod tests {
     }
 
     #[test]
-    fn jobs_to_activate_respects_concurrency() {
+    fn native_tasks_to_activate_respects_concurrency() {
         let sched = Scheduler::new(2);
         let reg = JobRegistry::new();
-        let index = NativeTaskIndex::default();
 
         let j1 = make_job("https://example.test/1");
         let j2 = make_job("https://example.test/2");
         let j3 = make_job("https://example.test/3");
-        let g1 = j1.gid;
-        let g2 = j2.gid;
         let task1 = j1.task_id.clone();
         let task2 = j2.task_id.clone();
         let task3 = j3.task_id.clone();
         reg.insert(j1).unwrap();
         reg.insert(j2).unwrap();
         reg.insert(j3).unwrap();
-        sched.enqueue_task(task1);
-        sched.enqueue_task(task2);
+        sched.enqueue_task(task1.clone());
+        sched.enqueue_task(task2.clone());
         sched.enqueue_task(task3);
 
-        let to_activate = sched.jobs_to_activate(&reg, &index);
+        let to_activate = sched.native_tasks_to_activate(&reg);
         assert_eq!(to_activate.len(), 2);
-        assert_eq!(to_activate, vec![g1, g2]);
+        assert_eq!(to_activate, vec![task1, task2]);
     }
 
     #[test]
-    fn jobs_to_activate_with_existing_active() {
+    fn native_tasks_to_activate_with_existing_active() {
         let sched = Scheduler::new(2);
         let reg = JobRegistry::new();
-        let index = NativeTaskIndex::default();
 
         let mut active_job = make_job("a");
         active_job.status = Status::Active;
@@ -352,24 +323,23 @@ mod tests {
 
         let j1 = make_job("https://example.test/1");
         let j2 = make_job("https://example.test/2");
-        let g1 = j1.gid;
         let task1 = j1.task_id.clone();
         let task2 = j2.task_id.clone();
+        let expected_task_id = task1.clone();
         reg.insert(j1).unwrap();
         reg.insert(j2).unwrap();
-        sched.enqueue_task(task1);
+        sched.enqueue_task(task1.clone());
         sched.enqueue_task(task2);
 
-        let to_activate = sched.jobs_to_activate(&reg, &index);
+        let to_activate = sched.native_tasks_to_activate(&reg);
         assert_eq!(to_activate.len(), 1);
-        assert_eq!(to_activate[0], g1);
+        assert_eq!(to_activate[0], expected_task_id);
     }
 
     #[test]
-    fn jobs_to_activate_at_capacity_returns_empty() {
+    fn native_tasks_to_activate_at_capacity_returns_empty() {
         let sched = Scheduler::new(1);
         let reg = JobRegistry::new();
-        let index = NativeTaskIndex::default();
 
         let mut active_job = make_job("a");
         active_job.status = Status::Active;
@@ -377,7 +347,7 @@ mod tests {
 
         sched.enqueue_task(TaskId::new());
 
-        let to_activate = sched.jobs_to_activate(&reg, &index);
+        let to_activate = sched.native_tasks_to_activate(&reg);
         assert!(to_activate.is_empty());
     }
 
