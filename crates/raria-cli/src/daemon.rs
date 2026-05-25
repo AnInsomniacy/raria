@@ -17,7 +17,7 @@ use raria_core::persist::Store;
 use raria_core::segment::SegmentStatus;
 use raria_range::backend::{ByteSourceBackend, Credentials, ProbeContext};
 use raria_range::executor::{ExecutorConfig, SegmentExecutor, apply_results};
-use raria_rpc::server::{RpcServerConfig, start_rpc_server};
+use raria_rpc::api::{NativeApiConfig, start_native_api_server};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -174,7 +174,7 @@ pub(crate) async fn run_daemon_with_config(
         });
     }
 
-    let rpc_cancel = CancellationToken::new();
+    let api_cancel = CancellationToken::new();
     spawn_hook_runner(
         Arc::clone(&engine),
         HookConfig {
@@ -184,15 +184,17 @@ pub(crate) async fn run_daemon_with_config(
         },
         shutdown_token.clone(),
     );
-    let rpc_config = RpcServerConfig {
+    let api_config = NativeApiConfig {
         listen_addr: std::net::SocketAddr::from(([0, 0, 0, 0], api_port)),
+        auth_token: config.api_auth_token.clone(),
     };
-    let rpc_addrs = start_rpc_server(Arc::clone(&engine), &rpc_config, rpc_cancel.clone()).await?;
-    info!(rpc = %rpc_addrs.rpc, "native API server ready");
+    let api_addrs =
+        start_native_api_server(Arc::clone(&engine), &api_config, api_cancel.clone()).await?;
+    info!(api = %api_addrs.http, "native API server ready");
     if !config.quiet {
         println!(
             "raria daemon running — API at http://{}/api/v1",
-            rpc_addrs.rpc
+            api_addrs.http
         );
     }
 
@@ -282,7 +284,7 @@ pub(crate) async fn run_daemon_with_config(
         Err(e) => warn!(error = %e, "failed to save session on shutdown"),
     }
 
-    rpc_cancel.cancel();
+    api_cancel.cancel();
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
     info!("daemon stopped");
     Ok(())

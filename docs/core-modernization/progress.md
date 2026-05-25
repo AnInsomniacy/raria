@@ -87,3 +87,15 @@ Verified: CSV parser validation passed for 25 files. `git diff --check`
 passed.
 Remaining: Start CM-005 native API and event stream closure.
 Blocked: none.
+
+2026-05-25 CM-005 partial
+Changed: Changed the daemon to start `start_native_api_server` directly, so
+the running product listener exposes `/api/v1` and `/api/v1/events` without
+mounting `/jsonrpc`. Updated raria-rpc crate docs to describe the native
+contract first. Added a daemon smoke assertion that `/jsonrpc` is not exposed.
+Verified: `cargo test -p raria-rpc --test native_api -- --nocapture` passed
+with 36 tests. `cargo test -p raria-cli --test native_api_smoke daemon_ --
+--nocapture` passed with 28 tests. `cargo check --workspace --locked` passed.
+Remaining: CM-006 native CLI and configuration closure, then CM-020 deletes
+remaining JSON-RPC modules and compatibility tests.
+Blocked: none.

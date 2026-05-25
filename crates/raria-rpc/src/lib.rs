@@ -2,17 +2,19 @@
 #![warn(missing_docs)]
 //! # raria-rpc
 //!
-//! aria2-compatible JSON-RPC/WebSocket server for raria.
+//! Native HTTP JSON API and WebSocket event stream for raria.
 //!
-//! Provides an aria2-style JSON-RPC interface including `system.multicall`,
-//! token-based authentication, WebSocket push notifications, and CORS.
+//! The retained public contract is `/api/v1` resources plus
+//! `/api/v1/events`. The JSON-RPC modules remain temporary implementation
+//! debt until native coverage is sufficient to delete them.
 //!
 //! ## Modules
 //!
-//! - [`methods`] — RPC method implementations (add, pause, remove, tellStatus…)
-//! - [`server`] — HTTP + WebSocket transport, auth wrapping, CORS
-//! - [`facade`] — conversion between raria-core types and aria2 response format
-//! - [`events`] — mapping download events to aria2 notification methods
+//! - [`api`] — native HTTP resources and event stream
+//! - [`methods`] — temporary JSON-RPC implementation pending deletion
+//! - [`server`] — temporary shared listener pending native-only replacement
+//! - [`facade`] — temporary JSON-RPC projection pending deletion
+//! - [`events`] — temporary legacy notification projection pending deletion
 
 mod metalink_tasks;
 

@@ -752,6 +752,41 @@ async fn daemon_native_api_shutdown_stops_daemon_without_json_rpc() {
 }
 
 #[tokio::test]
+async fn daemon_does_not_expose_legacy_jsonrpc_endpoint() {
+    let temp = tempdir().expect("tempdir");
+    let session_file = temp.path().join("native-only.session.redb");
+    let port = allocate_port();
+    let mut child = spawn_native_daemon(temp.path(), &session_file, port);
+
+    wait_for_native_api_ready(port, &mut child)
+        .await
+        .expect("native API ready");
+
+    let client = reqwest::Client::new();
+    let response = client
+        .post(format!("http://127.0.0.1:{port}/jsonrpc"))
+        .json(&serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": "legacy",
+            "method": "aria2.getVersion",
+            "params": [],
+        }))
+        .send()
+        .await
+        .expect("legacy JSON-RPC probe");
+
+    assert_eq!(response.status(), reqwest::StatusCode::NOT_FOUND);
+
+    let shutdown = client
+        .post(format!("http://127.0.0.1:{port}/api/v1/daemon/shutdown"))
+        .send()
+        .await
+        .expect("native shutdown request");
+    assert!(shutdown.status().is_success());
+    wait_for_child_exit_after_native_shutdown(&mut child).await;
+}
+
+#[tokio::test]
 async fn daemon_native_task_create_applies_request_headers_to_downloads() {
     let server = MockServer::start().await;
 
