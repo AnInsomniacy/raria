@@ -210,3 +210,39 @@ daemon_log_file_contains_structured_bt_lifecycle_events -- --nocapture`
 passed. `cargo check --workspace --locked` passed.
 Remaining: Continue CM-007 migration helper cleanup and identity stale scans.
 Blocked: none.
+
+2026-05-25 CM-007 partial
+Changed: Removed the duplicate task-id index and the migration task-id
+registration helper. TaskId lookup now uses `JobRegistry.by_task_id`; native
+row and summary adapters use runtime-job terminology; TaskId parsing accepts
+only generated opaque native ids. Old-prefix assertions were replaced with
+native-format checks.
+Verified: `cargo test -p raria-core
+native_task_id_lookup_uses_registry_task_index -- --nocapture` passed. Stale
+migration helper scan found no matches outside tracker history.
+Remaining: Run CM-007.5 identity closure checks and record private runtime
+bridge debt for CM-008 and CM-009.
+Blocked: none.
+
+2026-05-25 CM-007 verified
+Changed: Closed TaskId ownership for this checkpoint. Public identity uses
+opaque native TaskId values; cancellation, queue activation, API lookups,
+structured logs, and runtime helper tests no longer rely on migration task-id
+helpers. The private runtime Gid bridge remains assigned to CM-008 and CM-009.
+Verified: `cargo test -p raria-core task_id -- --nocapture` passed with 13
+matching tests. `cargo test -p raria-rpc --test native_api registry_task_ids
+-- --nocapture` passed with 2 matching tests. `cargo test -p raria-rpc --test
+native_api task_creation_files_and_sources_are_native_resources --
+--nocapture` passed. `cargo test -p raria-rpc --test native_api
+task_created_event_uses_created_native_task_id -- --nocapture` passed. `cargo
+test -p raria-cli --bin raria range_structured_fields_use_native_task_id --
+--nocapture` passed. `cargo test -p raria-cli --bin raria bt -- --nocapture`
+passed with 24 matching tests. `cargo test -p raria-cli --test
+native_api_smoke daemon_exposes_native_api_endpoints -- --nocapture` passed.
+`cargo test -p raria-cli --test session_smoke
+daemon_restores_saved_job_after_restart -- --nocapture` passed. `cargo check
+--workspace --locked` passed. `cargo fmt --all --check` passed. CSV validation
+passed for 25 files. `git diff --check` passed. Stale migration helper scan
+passed.
+Remaining: Start CM-008 native task runtime model.
+Blocked: none.

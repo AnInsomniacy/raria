@@ -21,7 +21,7 @@ use crate::limiter::SharedRateLimiter;
 use crate::logging::emit_structured_log;
 use crate::native::{
     NativeEvent, NativeEventData, NativeEventType, NativePeerSnapshot, NativeSourceHealth,
-    NativeTaskIndex, NativeTaskRow, NativeTaskSummary, NativeTrackerSnapshot, TaskId,
+    NativeTaskRow, NativeTaskSummary, NativeTrackerSnapshot, TaskId,
 };
 use crate::persist::Store;
 use crate::progress::{DownloadEvent, EventBus, NativeEventBus};
@@ -151,8 +151,6 @@ pub struct Engine {
     global_upload_limit: AtomicU64,
     /// Per-job limiter handles layered on top of the global limiter.
     job_rate_limiters: Mutex<HashMap<Gid, Arc<SharedRateLimiter>>>,
-    /// Native task id index for the current migration runtime.
-    native_task_index: Mutex<NativeTaskIndex>,
     /// Unique session identifier (random hex, persisted for lifetime of process).
     pub session_id: String,
     store: Option<Arc<Store>>,
@@ -178,7 +176,6 @@ impl Engine {
             global_rate_limiter,
             global_upload_limit: AtomicU64::new(global_upload_limit),
             job_rate_limiters: Mutex::new(HashMap::new()),
-            native_task_index: Mutex::new(NativeTaskIndex::default()),
             session_id: format!("{:016x}", rand::random::<u64>()),
             store: None,
             shutdown: CancellationToken::new(),
@@ -202,7 +199,6 @@ impl Engine {
             global_rate_limiter,
             global_upload_limit: AtomicU64::new(global_upload_limit),
             job_rate_limiters: Mutex::new(HashMap::new()),
-            native_task_index: Mutex::new(NativeTaskIndex::default()),
             session_id: format!("{:016x}", rand::random::<u64>()),
             store: Some(store),
             shutdown: CancellationToken::new(),
@@ -256,7 +252,7 @@ impl Engine {
             native_rows
                 .iter()
                 .map(|row| {
-                    row.to_job_for_migration()
+                    row.to_runtime_job()
                         .map(|job| (job, Some(row.task_id.clone())))
                 })
                 .collect::<std::result::Result<Vec<_>, _>>()
@@ -267,12 +263,7 @@ impl Engine {
         for (mut job, task_id) in jobs_with_task_ids {
             let gid = job.gid;
             if let Some(task_id) = task_id {
-                job.task_id = task_id.clone();
-                self.native_task_index.lock().register(task_id, gid);
-            } else {
-                self.native_task_index
-                    .lock()
-                    .register(job.task_id.clone(), gid);
+                job.task_id = task_id;
             }
             let task_id_for_queue = job.task_id.clone();
             match job.status {
@@ -319,26 +310,12 @@ impl Engine {
 
     /// Resolve a native task id to the current runtime job id.
     pub fn gid_for_task_id(&self, task_id: &TaskId) -> Option<Gid> {
-        self.registry
-            .gid_for_task_id(task_id)
-            .or_else(|| self.native_task_index.lock().gid_for_task_id(task_id))
-    }
-
-    /// Register an existing runtime job under a native task id during migration.
-    pub fn register_native_task_id_for_migration(&self, task_id: TaskId, gid: Gid) -> bool {
-        if self.registry.get(gid).is_none() {
-            return false;
-        }
-        self.registry.update(gid, |job| {
-            job.task_id = task_id.clone();
-        });
-        self.native_task_index.lock().register(task_id.clone(), gid);
-        true
+        self.registry.gid_for_task_id(task_id)
     }
 
     /// Resolve a runtime job id to the native task id.
     pub fn task_id_for_gid(&self, gid: Gid) -> Option<TaskId> {
-        self.native_task_index.lock().task_id_for_gid(gid)
+        self.registry.get(gid).map(|job| job.task_id)
     }
 
     /// Return a native task projection by native task id.
@@ -346,7 +323,6 @@ impl Engine {
         let gid = self
             .registry
             .gid_for_task_id(task_id)
-            .or_else(|| self.native_task_index.lock().gid_for_task_id(task_id))
             .context("native task not found")?;
         let job = self
             .registry
@@ -763,7 +739,7 @@ impl Engine {
     }
 
     fn native_task_summary_from_job(&self, job: &Job) -> NativeTaskSummary {
-        let mut summary = NativeTaskSummary::from_job_for_migration(job);
+        let mut summary = NativeTaskSummary::from_runtime_job(job);
         summary.task_id = job.task_id.clone();
         summary
     }
@@ -798,7 +774,6 @@ impl Engine {
         self.persist_job(&job);
 
         self.cancel_registry.register(task_id.clone());
-        self.native_task_index.lock().register(task_id.clone(), gid);
         self.registry
             .insert(job)
             .map_err(|e| anyhow::anyhow!("{e}"))
@@ -1812,7 +1787,7 @@ impl Engine {
             if let Err(e) = store.put_job(job) {
                 error!(gid = %job.gid, error = %e, "failed to persist job");
             }
-            let row = NativeTaskRow::from_job_for_migration(job);
+            let row = NativeTaskRow::from_runtime_job(job);
             if let Err(e) = store.put_native_task(&row) {
                 error!(
                     gid = %job.gid,
@@ -2005,10 +1980,7 @@ impl Engine {
             store
                 .put_job(job)
                 .with_context(|| format!("failed to persist job {}", job.gid))?;
-            let mut row = NativeTaskRow::from_job_for_migration(job);
-            if let Some(task_id) = self.task_id_for_gid(job.gid) {
-                row.task_id = task_id;
-            }
+            let row = NativeTaskRow::from_runtime_job(job);
             store
                 .put_native_task(&row)
                 .with_context(|| format!("failed to persist native task row {}", job.gid))?;
@@ -2089,15 +2061,14 @@ mod tests {
     }
 
     #[test]
-    fn register_native_task_id_for_migration_requires_existing_job() {
+    fn native_task_id_lookup_uses_registry_task_index() {
         let engine = Engine::new(default_config());
-        let task_id = TaskId::new();
-
-        assert!(!engine.register_native_task_id_for_migration(task_id.clone(), Gid::from_raw(404)));
-
         let handle = engine.add_uri(&default_spec()).unwrap();
-        assert!(engine.register_native_task_id_for_migration(task_id.clone(), handle.gid));
+
+        let task_id = engine.task_id_for_gid(handle.gid).expect("task id");
         assert_eq!(engine.gid_for_task_id(&task_id), Some(handle.gid));
+        assert!(engine.gid_for_task_id(&TaskId::new()).is_none());
+        assert!(engine.task_id_for_gid(Gid::from_raw(404)).is_none());
     }
 
     #[test]
@@ -2106,7 +2077,6 @@ mod tests {
 
         let created = engine.add_native_task(&default_spec()).unwrap();
         assert!(created.task_id.as_str().starts_with("task_"));
-        assert!(!created.task_id.as_str().starts_with("task_migration_"));
         assert_eq!(created.lifecycle, crate::native::TaskLifecycle::Queued);
 
         let paused = engine.pause_native_task(&created.task_id).unwrap();
@@ -3221,7 +3191,7 @@ mod tests {
         let handle = engine1.add_uri(&default_spec()).unwrap();
         let gid = handle.gid;
         let mut native_row =
-            NativeTaskRow::from_job_for_migration(&engine1.registry.get(gid).expect("job"));
+            NativeTaskRow::from_runtime_job(&engine1.registry.get(gid).expect("job"));
         native_row.sources = vec!["https://native.example/file.bin".into()];
         native_row.output_path = PathBuf::from("/tmp/native/file.bin");
         native_row.completed_bytes = 512;
@@ -3593,24 +3563,21 @@ mod tests {
         let h2_task_id = engine.task_id_for_gid(h2.gid).expect("h2 task id");
         assert!(rows.iter().any(|row| {
             row.task_id == h1_task_id
-                && !row.task_id.as_str().starts_with("task_migration_")
                 && row.runtime_bridge_id == Some(h1.gid.as_raw())
                 && row.lifecycle == crate::native::TaskLifecycle::Queued
         }));
         assert!(rows.iter().any(|row| {
             row.task_id == h2_task_id
-                && !row.task_id.as_str().starts_with("task_migration_")
                 && row.runtime_bridge_id == Some(h2.gid.as_raw())
                 && row.lifecycle == crate::native::TaskLifecycle::Paused
         }));
     }
 
     #[test]
-    fn save_session_preserves_registered_native_task_ids() {
+    fn save_session_preserves_native_task_ids() {
         let (engine, _dir) = engine_with_store();
         let handle = engine.add_uri(&default_spec()).unwrap();
-        let task_id = TaskId::new();
-        assert!(engine.register_native_task_id_for_migration(task_id.clone(), handle.gid));
+        let task_id = engine.task_id_for_gid(handle.gid).expect("task id");
 
         engine.save_session().unwrap();
 

@@ -139,7 +139,7 @@ async fn create_native_task_with_sources(
     let created: serde_json::Value = response.json().await.expect("parse native task response");
     let task_id = created["taskId"].as_str().expect("task id").to_string();
     assert!(task_id.starts_with("task_"));
-    assert!(!task_id.starts_with("task_migration_"));
+    assert_eq!(task_id.len(), "task_".len() + 32);
     assert!(created.get("gid").is_none());
     assert!(created.get("jsonrpc").is_none());
     task_id
@@ -172,7 +172,7 @@ async fn create_native_task_with_checksum(
     let created: serde_json::Value = response.json().await.expect("parse native task response");
     let task_id = created["taskId"].as_str().expect("task id").to_string();
     assert!(task_id.starts_with("task_"));
-    assert!(!task_id.starts_with("task_migration_"));
+    assert_eq!(task_id.len(), "task_".len() + 32);
     assert!(created.get("gid").is_none());
     assert!(created.get("jsonrpc").is_none());
     task_id

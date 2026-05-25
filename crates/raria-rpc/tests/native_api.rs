@@ -335,7 +335,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn task_detail_resolves_native_task_index_ids() {
+    async fn task_detail_resolves_registry_task_ids() {
         let engine = Arc::new(Engine::new(GlobalConfig::default()));
         let handle = engine
             .add_uri(&AddUriSpec {
@@ -349,8 +349,7 @@ mod tests {
                 checksum: None,
             })
             .expect("add task");
-        let task_id = TaskId::new();
-        assert!(engine.register_native_task_id_for_migration(task_id.clone(), handle.gid));
+        let task_id = engine.task_id_for_gid(handle.gid).expect("task id");
 
         let cancel = CancellationToken::new();
         let addrs = start_native_api_server(
@@ -379,7 +378,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn tasks_endpoint_projects_native_task_index_ids() {
+    async fn tasks_endpoint_projects_registry_task_ids() {
         let engine = Arc::new(Engine::new(GlobalConfig::default()));
         let handle = engine
             .add_uri(&AddUriSpec {
@@ -393,8 +392,7 @@ mod tests {
                 checksum: None,
             })
             .expect("add task");
-        let task_id = TaskId::new();
-        assert!(engine.register_native_task_id_for_migration(task_id.clone(), handle.gid));
+        let task_id = engine.task_id_for_gid(handle.gid).expect("task id");
 
         let cancel = CancellationToken::new();
         let addrs = start_native_api_server(
@@ -454,7 +452,6 @@ mod tests {
 
         let task_id = created["taskId"].as_str().expect("task id");
         assert!(task_id.starts_with("task_"));
-        assert!(!task_id.starts_with("task_migration_"));
         assert_eq!(created["lifecycle"], "queued");
         assert!(created.get("gid").is_none());
 
@@ -1628,12 +1625,6 @@ mod tests {
         .expect("timed out waiting for task created event");
 
         assert_eq!(event["taskId"], task_id);
-        assert!(
-            !event["taskId"]
-                .as_str()
-                .expect("event task id")
-                .starts_with("task_migration_")
-        );
 
         cancel.cancel();
     }

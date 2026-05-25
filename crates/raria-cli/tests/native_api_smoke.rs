@@ -643,7 +643,7 @@ async fn daemon_exposes_native_api_endpoints() {
 
     let task_id = created["taskId"].as_str().expect("task id");
     assert!(task_id.starts_with("task_"));
-    assert!(!task_id.starts_with("task_migration_"));
+    assert_eq!(task_id.len(), "task_".len() + 32);
     assert!(
         matches!(created["lifecycle"].as_str(), Some("queued" | "running")),
         "created task should be queued or running, got {created}"

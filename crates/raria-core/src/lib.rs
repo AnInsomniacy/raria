@@ -79,10 +79,12 @@ mod native_model_tests {
         let rendered = id.as_str();
 
         assert!(rendered.starts_with("task_"));
-        assert!(rendered.len() > "task_".len());
-        assert_ne!(rendered.len(), 16);
-        assert!(!rendered.chars().all(|ch| ch.is_ascii_hexdigit()));
-        assert!(!rendered.starts_with("task_migration_"));
+        assert_eq!(rendered.len(), "task_".len() + 32);
+        assert!(
+            rendered["task_".len()..]
+                .chars()
+                .all(|ch| ch.is_ascii_hexdigit())
+        );
     }
 
     #[test]
@@ -184,7 +186,7 @@ mod native_persist_tests {
     }
 
     #[test]
-    fn task_row_carries_migration_job_restore_fields() {
+    fn task_row_carries_runtime_job_restore_fields() {
         let mut job = crate::job::Job::new_range_with_options(
             vec!["https://example.com/file.iso".into()],
             std::path::PathBuf::from("/tmp/file.iso"),
@@ -200,7 +202,7 @@ mod native_persist_tests {
             crate::native::NativeSourceHealth::healthy(4096),
         );
 
-        let row = NativeTaskRow::from_job_for_migration(&job);
+        let row = NativeTaskRow::from_runtime_job(&job);
 
         assert_eq!(row.task_id, job.task_id);
         assert_eq!(row.runtime_bridge_id, Some(job.gid.as_raw()));
@@ -217,7 +219,7 @@ mod native_persist_tests {
     }
 
     #[test]
-    fn task_row_restores_migration_job_fields() {
+    fn task_row_restores_runtime_job_fields() {
         let mut job = crate::job::Job::new_range_with_options(
             vec!["https://example.com/file.iso".into()],
             std::path::PathBuf::from("/tmp/file.iso"),
@@ -232,9 +234,9 @@ mod native_persist_tests {
             "https://example.com/file.iso".to_string(),
             crate::native::NativeSourceHealth::failed(1, "transient error: timeout"),
         );
-        let row = NativeTaskRow::from_job_for_migration(&job);
+        let row = NativeTaskRow::from_runtime_job(&job);
 
-        let restored = row.to_job_for_migration().expect("restored job");
+        let restored = row.to_runtime_job().expect("restored job");
 
         assert_eq!(restored.gid, job.gid);
         assert_eq!(restored.status, crate::job::Status::Waiting);
@@ -258,25 +260,22 @@ mod native_persist_tests {
             std::path::PathBuf::from("/tmp/file.iso"),
         );
         job.gid = crate::job::Gid::from_raw(99);
-        let mut row = NativeTaskRow::from_job_for_migration(&job);
+        let mut row = NativeTaskRow::from_runtime_job(&job);
         row.task_id = TaskId::new();
 
-        let restored = row.to_job_for_migration().expect("restored job");
+        let restored = row.to_runtime_job().expect("restored job");
 
         assert_eq!(restored.gid, crate::job::Gid::from_raw(99));
     }
 
     #[test]
     fn task_row_requires_explicit_runtime_bridge_for_job_restore() {
-        let mut row = NativeTaskRow::new(
-            TaskId::parse("task_migration_0000000000000063").expect("task id"),
-            TaskLifecycle::Queued,
-        );
+        let mut row = NativeTaskRow::new(TaskId::new(), TaskLifecycle::Queued);
         row.sources = vec!["https://example.com/file.iso".into()];
         row.output_path = std::path::PathBuf::from("/tmp/file.iso");
 
         let err = row
-            .to_job_for_migration()
+            .to_runtime_job()
             .expect_err("task id fallback must not restore runtime job id");
 
         assert_eq!(err.to_string(), "missing runtime bridge id");
@@ -288,7 +287,7 @@ mod native_projection_tests {
     use crate::job::{BtFile, Gid, Job, Status};
     use crate::native::{
         ByteRange, NativeEvent, NativeEventData, NativeEventType, NativePeerSnapshot,
-        NativeSegmentRow, NativeTaskFile, NativeTaskIndex, NativeTaskPiece, NativeTaskSummary,
+        NativeSegmentRow, NativeTaskFile, NativeTaskPiece, NativeTaskSummary,
         NativeTrackerSnapshot, SourceProtocol, TaskId, TaskLifecycle,
     };
     use std::path::PathBuf;
@@ -326,7 +325,7 @@ mod native_projection_tests {
     }
 
     #[test]
-    fn task_summary_projection_from_job_is_private_migration_adapter() {
+    fn task_summary_projection_from_runtime_job_is_native_adapter() {
         let mut job = Job::new_range(
             vec!["https://example.com/file.iso".into()],
             PathBuf::from("/tmp/file.iso"),
@@ -337,7 +336,7 @@ mod native_projection_tests {
         job.downloaded = 512;
         job.download_speed = 128;
 
-        let summary = NativeTaskSummary::from_job_for_migration(&job);
+        let summary = NativeTaskSummary::from_runtime_job(&job);
 
         assert_eq!(summary.lifecycle, TaskLifecycle::Running);
         assert_eq!(summary.completed_bytes, 512);
@@ -368,7 +367,7 @@ mod native_projection_tests {
             },
         ]);
 
-        let summary = NativeTaskSummary::from_job_for_migration(&job);
+        let summary = NativeTaskSummary::from_runtime_job(&job);
 
         assert_eq!(summary.files.len(), 2);
         assert_eq!(summary.files[0].id, "file_0");
@@ -380,23 +379,12 @@ mod native_projection_tests {
     }
 
     #[test]
-    fn native_task_index_resolves_task_ids_and_runtime_job_ids() {
-        let mut index = NativeTaskIndex::default();
-        let gid = Gid::from_raw(42);
-        let task_id = TaskId::new();
+    fn task_id_parse_accepts_native_opaque_ids_only() {
+        let task_id = TaskId::parse("task_0123456789abcdef0123456789abcdef").expect("task id");
 
-        index.register(task_id.clone(), gid);
-
-        assert_eq!(index.gid_for_task_id(&task_id), Some(gid));
-        assert_eq!(index.task_id_for_gid(gid), Some(task_id));
-    }
-
-    #[test]
-    fn task_id_parse_accepts_native_task_prefix_only() {
-        let task_id = TaskId::parse("task_custom").expect("task id");
-
-        assert_eq!(task_id.as_str(), "task_custom");
+        assert_eq!(task_id.as_str(), "task_0123456789abcdef0123456789abcdef");
         assert!(TaskId::parse("gid_123").is_err());
+        assert!(TaskId::parse("task_custom").is_err());
     }
 
     #[test]

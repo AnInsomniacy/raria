@@ -476,7 +476,7 @@ mod tests {
         );
 
         assert!(job.task_id.as_str().starts_with("task_"));
-        assert!(!job.task_id.as_str().starts_with("task_migration_"));
+        assert_eq!(job.task_id.as_str().len(), "task_".len() + 32);
         assert_ne!(job.task_id.as_str(), job.gid.to_string());
     }
 

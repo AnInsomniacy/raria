@@ -611,7 +611,7 @@ mod tests {
     use raria_core::engine::{AddUriSpec, Engine};
     use raria_core::job::{BtPeer, BtSnapshot, Job, Status};
     use raria_core::native::{
-        NativeEventData, NativeEventType, NativePeerSnapshot, NativeTrackerSnapshot, TaskId,
+        NativeEventData, NativeEventType, NativePeerSnapshot, NativeTrackerSnapshot,
     };
     use std::path::PathBuf;
     use std::time::{Duration, Instant};
@@ -625,7 +625,6 @@ mod tests {
         let gid = job.gid;
         job.status = Status::Active;
         engine.registry.insert(job).expect("insert bt job");
-        engine.register_native_task_id_for_migration(TaskId::new(), gid);
         gid
     }
 

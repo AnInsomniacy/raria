@@ -4,7 +4,6 @@ use chrono::{DateTime, Utc};
 use rand::Rng;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::collections::HashMap;
 use std::fmt;
 use std::path::PathBuf;
 
@@ -29,7 +28,10 @@ impl TaskId {
     /// Parse a task identifier received from a native public surface.
     pub fn parse(value: impl Into<String>) -> Result<Self, NativeModelError> {
         let value = value.into();
-        if value.starts_with("task_") {
+        let suffix = value
+            .strip_prefix("task_")
+            .ok_or(NativeModelError::InvalidTaskId)?;
+        if suffix.len() == 32 && suffix.chars().all(|ch| ch.is_ascii_hexdigit()) {
             Ok(Self(value))
         } else {
             Err(NativeModelError::InvalidTaskId)
@@ -46,31 +48,6 @@ impl Default for TaskId {
 impl fmt::Display for TaskId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&self.0)
-    }
-}
-
-/// In-memory mapping from native task identifiers to the current runtime job id.
-#[derive(Debug, Clone, Default)]
-pub struct NativeTaskIndex {
-    by_task_id: HashMap<TaskId, crate::job::Gid>,
-    by_gid: HashMap<crate::job::Gid, TaskId>,
-}
-
-impl NativeTaskIndex {
-    /// Register a runtime job under a native task id.
-    pub fn register(&mut self, task_id: TaskId, gid: crate::job::Gid) {
-        self.by_gid.insert(gid, task_id.clone());
-        self.by_task_id.insert(task_id, gid);
-    }
-
-    /// Resolve a native task id to the current runtime job id.
-    pub fn gid_for_task_id(&self, task_id: &TaskId) -> Option<crate::job::Gid> {
-        self.by_task_id.get(task_id).copied()
-    }
-
-    /// Resolve a runtime job id to the native task id.
-    pub fn task_id_for_gid(&self, gid: crate::job::Gid) -> Option<TaskId> {
-        self.by_gid.get(&gid).cloned()
     }
 }
 
@@ -564,8 +541,8 @@ impl NativeTaskRow {
         }
     }
 
-    /// Build a native task row from the current job model during migration.
-    pub fn from_job_for_migration(job: &crate::job::Job) -> Self {
+    /// Build a native task row from the current runtime job model.
+    pub fn from_runtime_job(job: &crate::job::Job) -> Self {
         let lifecycle = match job.status {
             crate::job::Status::Waiting => TaskLifecycle::Queued,
             crate::job::Status::Active => TaskLifecycle::Running,
@@ -599,8 +576,8 @@ impl NativeTaskRow {
         Ok(())
     }
 
-    /// Convert a migration task row back into the current job model.
-    pub fn to_job_for_migration(&self) -> Result<crate::job::Job, NativeModelError> {
+    /// Convert a native task row back into the current runtime job model.
+    pub fn to_runtime_job(&self) -> Result<crate::job::Job, NativeModelError> {
         self.validate_version()?;
         let gid = self
             .runtime_bridge_id
@@ -787,8 +764,8 @@ pub struct NativeTaskSummary {
 }
 
 impl NativeTaskSummary {
-    /// Build a native projection from the current job model during migration.
-    pub fn from_job_for_migration(job: &crate::job::Job) -> Self {
+    /// Build a native projection from the current runtime job model.
+    pub fn from_runtime_job(job: &crate::job::Job) -> Self {
         let task_id = job.task_id.clone();
         let lifecycle = match job.status {
             crate::job::Status::Waiting => TaskLifecycle::Queued,

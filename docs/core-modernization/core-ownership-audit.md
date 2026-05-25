@@ -25,14 +25,14 @@ Current bridge points are:
 | --- | --- | --- | --- |
 | Public task id | `TaskId` in `native.rs` and `Job.task_id` | `TaskId` only | CM-007 |
 | Runtime id | `Gid` in `job.rs`, `registry.rs`, `engine.rs` | private executor handle or deleted | CM-007, CM-008 |
-| Bridge index | `JobRegistry.by_task_id` and `NativeTaskIndex` | one native task registry | CM-007 |
-| Public projections | `NativeTaskSummary::from_job_for_migration` | native task row and runtime snapshot | CM-008 |
+| Bridge index | `JobRegistry.by_task_id` | one native task registry | CM-007 |
+| Public projections | `NativeTaskSummary::from_runtime_job` | native task row and runtime snapshot | CM-008 |
 | API lookup | API parses `TaskId`, engine resolves to `Gid` | direct native task lookup | CM-007, CM-008 |
 | Logs | several structured logs still emit `gid` | taskId correlation | CM-019 |
 
-`NativeTaskIndex` duplicates `JobRegistry.by_task_id`. Keep one source of
-truth during CM-007. Delete `register_native_task_id_for_migration` and
-fallback lookups after restored rows and API tests use native identity only.
+CM-007 removed the duplicate task-id index. `JobRegistry.by_task_id` is the
+only current TaskId-to-runtime bridge until CM-008 replaces the Job-driven
+runtime model.
 
 ## Runtime Model
 
@@ -113,7 +113,7 @@ proven limitation.
 Use these searches to refresh the ownership map:
 
 ```bash
-rg -n "\\bGid\\b|\\bgid\\b|register_native_task_id_for_migration|NativeTaskIndex|from_job_for_migration" crates/raria-core crates/raria-cli crates/raria-rpc
+rg -n "\\bGid\\b|\\bgid\\b|from_runtime_job|runtime_bridge_id" crates/raria-core crates/raria-cli crates/raria-rpc
 rg -n "put_job|get_job|list_jobs|remove_job|put_segment|get_segment|list_segments|remove_segments|native_tasks|native_segments" crates/raria-core/src/persist.rs crates/raria-core/tests
 rg -n "EventBus|DownloadEvent|NativeEventBus|NativeEvent" crates/raria-core crates/raria-rpc crates/raria-cli
 rg -n "BtHandle|BtStatus|bt_files|bt_peers|persist_bt_job|librqbit|ManagedTorrent|Session" crates/raria-bt crates/raria-cli/src/bt_runtime.rs crates/raria-core

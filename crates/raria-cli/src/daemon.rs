@@ -1104,7 +1104,7 @@ mod tests {
     #[test]
     fn range_structured_fields_use_native_task_id() {
         let gid = Gid::from_raw(42);
-        let task_id = TaskId::parse("task_native_logging").expect("task id");
+        let task_id = TaskId::new();
 
         let fields = range_structured_fields(
             gid,
@@ -1112,7 +1112,7 @@ mod tests {
             [("uri", "https://example.test/file.bin".to_string())],
         );
 
-        assert!(fields.contains(&("task_id", "task_native_logging".to_string())));
+        assert!(fields.contains(&("task_id", task_id.to_string())));
         assert!(fields.contains(&("uri", "https://example.test/file.bin".to_string())));
         assert!(!fields.iter().any(|(key, _)| *key == "gid"));
     }
