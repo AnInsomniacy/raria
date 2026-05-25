@@ -251,6 +251,7 @@ pub(crate) async fn run_daemon_with_config(
                     let range_context = RangeExecutionContext {
                         task_id: task_id.clone(),
                     };
+                    let engine_for_failure = Arc::clone(&engine_ref);
                     tokio::spawn(async move {
                         if let Err(e) = run_job_download(
                             engine_ref,
@@ -261,6 +262,10 @@ pub(crate) async fn run_daemon_with_config(
                         .await
                         {
                             error!(%task_id, error = %e, "range download task failed");
+                            let _ = engine_for_failure.fail_native_task(
+                                &task_id,
+                                &classified_error_message(&e.to_string()),
+                            );
                         }
                     });
                 }

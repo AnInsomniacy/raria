@@ -986,6 +986,104 @@ async fn daemon_native_task_reports_effective_active_connections() {
 }
 
 #[tokio::test]
+async fn daemon_native_http_range_task_progresses_with_bounded_segments() {
+    let payload = Arc::new(
+        (0..(512 * 1024))
+            .map(|i| (i % 251) as u8)
+            .collect::<Vec<_>>(),
+    );
+    let server = MockServer::start().await;
+
+    Mock::given(method("HEAD"))
+        .and(path("/bounded-range.bin"))
+        .respond_with(RangeResponder::new(Arc::clone(&payload)))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/bounded-range.bin"))
+        .respond_with(RangeResponder::new(Arc::clone(&payload)))
+        .mount(&server)
+        .await;
+
+    let temp = tempdir().expect("tempdir");
+    let session_file = temp.path().join("native-bounded-range.session.redb");
+    let port = allocate_port();
+    let mut child = spawn_native_daemon(temp.path(), &session_file, port);
+    wait_for_native_api_ready(port, &mut child)
+        .await
+        .expect("native API ready");
+
+    let client = reqwest::Client::new();
+    let download_dir = temp.path().join("nested").join("downloads");
+    let created: serde_json::Value = client
+        .post(format!("http://127.0.0.1:{port}/api/v1/tasks"))
+        .json(&serde_json::json!({
+            "sources": [format!("{}/bounded-range.bin", server.uri())],
+            "downloadDir": download_dir,
+            "filename": "bounded-range.bin",
+            "segments": 4
+        }))
+        .send()
+        .await
+        .expect("create bounded range task")
+        .json()
+        .await
+        .expect("bounded range task json");
+    let task_id = created["taskId"].as_str().expect("task id");
+
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let completed = loop {
+        let task: serde_json::Value = client
+            .get(format!("http://127.0.0.1:{port}/api/v1/tasks/{task_id}"))
+            .send()
+            .await
+            .expect("bounded range task detail request")
+            .json()
+            .await
+            .expect("bounded range task detail json");
+        if task["completedBytes"].as_u64().unwrap_or(0) > 0 {
+            assert!(
+                task["downloadBytesPerSecond"].as_u64().unwrap_or(0) > 0,
+                "bounded range task should expose a non-zero speed after progress: {task}"
+            );
+        }
+        if task["lifecycle"] == "completed" {
+            break task;
+        }
+
+        assert!(
+            Instant::now() < deadline,
+            "bounded range task never completed: {task}"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    };
+    assert_eq!(
+        completed["completedBytes"].as_u64(),
+        Some(payload.len() as u64)
+    );
+    assert_eq!(
+        std::fs::read(temp.path().join("nested/downloads/bounded-range.bin"))
+            .expect("read bounded range output"),
+        payload.as_ref().clone()
+    );
+
+    let requests = server.received_requests().await.expect("received requests");
+    let bounded_range_seen = requests.iter().any(|request| {
+        request.method.as_str() == "GET"
+            && request.url.path() == "/bounded-range.bin"
+            && request
+                .headers
+                .get("range")
+                .and_then(|value| value.to_str().ok())
+                .is_some_and(|range| range.starts_with("bytes=") && !range.ends_with('-'))
+    });
+    assert!(
+        bounded_range_seen,
+        "native HTTP range task should issue bounded Range requests"
+    );
+}
+
+#[tokio::test]
 async fn daemon_native_task_stops_after_file_not_found_budget() {
     let server = MockServer::start().await;
 

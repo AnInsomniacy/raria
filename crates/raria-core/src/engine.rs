@@ -33,13 +33,18 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
 fn native_task_log_fields(task_id: &TaskId) -> [(&'static str, String); 1] {
     [("task_id", task_id.to_string())]
+}
+
+fn speed_from_delta(bytes: u64, elapsed: Duration) -> u64 {
+    let nanos = elapsed.as_nanos().max(1);
+    ((bytes as u128).saturating_mul(1_000_000_000) / nanos) as u64
 }
 
 /// Input for planning a native segmented range download.
@@ -155,6 +160,8 @@ pub struct Engine {
     global_upload_limit: AtomicU64,
     /// Per-job limiter handles layered on top of the global limiter.
     job_rate_limiters: Mutex<HashMap<Gid, Arc<SharedRateLimiter>>>,
+    /// Per-job progress sampling state used to project native range speed.
+    job_speed_samples: Mutex<HashMap<Gid, SpeedSample>>,
     /// Unique session identifier (random hex, persisted for lifetime of process).
     pub session_id: String,
     store: Option<Arc<Store>>,
@@ -162,6 +169,12 @@ pub struct Engine {
     work_notify: Arc<Notify>,
     /// Monotonic timestamp of engine creation (for uptime tracking).
     started_at: Instant,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct SpeedSample {
+    downloaded: u64,
+    sampled_at: Instant,
 }
 
 impl Engine {
@@ -180,6 +193,7 @@ impl Engine {
             global_rate_limiter,
             global_upload_limit: AtomicU64::new(global_upload_limit),
             job_rate_limiters: Mutex::new(HashMap::new()),
+            job_speed_samples: Mutex::new(HashMap::new()),
             session_id: format!("{:016x}", rand::random::<u64>()),
             store: None,
             shutdown: CancellationToken::new(),
@@ -203,6 +217,7 @@ impl Engine {
             global_rate_limiter,
             global_upload_limit: AtomicU64::new(global_upload_limit),
             job_rate_limiters: Mutex::new(HashMap::new()),
+            job_speed_samples: Mutex::new(HashMap::new()),
             session_id: format!("{:016x}", rand::random::<u64>()),
             store: Some(store),
             shutdown: CancellationToken::new(),
@@ -778,6 +793,7 @@ impl Engine {
         self.cancel_registry.cancel(task_id);
         self.scheduler.dequeue_task(task_id);
         self.clear_job_rate_limiter(gid);
+        self.clear_job_speed_sample(gid);
         self.registry
             .update(gid, |job| {
                 job.status = Status::Removed;
@@ -805,6 +821,7 @@ impl Engine {
         let gid = self
             .gid_for_task_id(task_id)
             .context("native task not found")?;
+        self.clear_job_speed_sample(gid);
         self.registry
             .update(gid, |job| {
                 job.status = Status::Waiting;
@@ -1065,6 +1082,7 @@ impl Engine {
             [("gid", gid.to_string())],
         );
         self.clear_job_rate_limiter(gid);
+        self.clear_job_speed_sample(gid);
         Ok(())
     }
 
@@ -1155,6 +1173,7 @@ impl Engine {
             [("gid", gid.to_string())],
         );
         self.clear_job_rate_limiter(gid);
+        self.clear_job_speed_sample(gid);
         self.work_notify.notify_one();
         Ok(())
     }
@@ -1196,6 +1215,7 @@ impl Engine {
             [("gid", gid.to_string()), ("error", error_msg.to_string())],
         );
         self.clear_job_rate_limiter(gid);
+        self.clear_job_speed_sample(gid);
         self.work_notify.notify_one();
         Ok(())
     }
@@ -1374,10 +1394,45 @@ impl Engine {
         self.job_rate_limiters.lock().remove(&gid);
     }
 
+    fn clear_job_speed_sample(&self, gid: Gid) {
+        self.job_speed_samples.lock().remove(&gid);
+    }
+
     /// Update download progress for a job.
     pub fn update_progress(&self, gid: Gid, bytes: u64) {
         let _ = self.registry.update(gid, |job| {
-            job.downloaded += bytes;
+            job.downloaded = job.downloaded.saturating_add(bytes);
+            let downloaded = job.downloaded;
+            let now = Instant::now();
+            let mut samples = self.job_speed_samples.lock();
+            let speed = if let Some(sample) = samples.get(&gid).copied() {
+                let elapsed = now.duration_since(sample.sampled_at);
+                if !elapsed.is_zero() && downloaded >= sample.downloaded {
+                    let delta = downloaded - sample.downloaded;
+                    let bps = speed_from_delta(delta, elapsed);
+                    samples.insert(
+                        gid,
+                        SpeedSample {
+                            downloaded,
+                            sampled_at: now,
+                        },
+                    );
+                    bps
+                } else {
+                    job.download_speed
+                }
+            } else {
+                let speed = job.download_speed;
+                samples.insert(
+                    gid,
+                    SpeedSample {
+                        downloaded,
+                        sampled_at: now,
+                    },
+                );
+                speed
+            };
+            job.download_speed = speed;
         });
     }
 
@@ -1705,6 +1760,7 @@ impl Engine {
                 job.connections = 0;
             })
             .context("native task not found")?;
+        self.clear_job_speed_sample(gid);
         Ok(())
     }
 
@@ -1948,6 +2004,7 @@ impl Engine {
             self.scheduler.dequeue_task(&task_id);
         }
         self.clear_job_rate_limiter(gid);
+        self.clear_job_speed_sample(gid);
 
         // Force transition to Removed regardless of current state.
         self.registry
@@ -1975,6 +2032,7 @@ impl Engine {
             Status::Complete | Status::Error | Status::Removed => {
                 self.registry.remove(gid);
                 self.clear_job_rate_limiter(gid);
+                self.clear_job_speed_sample(gid);
                 debug!(%gid, "download result removed");
                 Ok(())
             }
@@ -1993,6 +2051,7 @@ impl Engine {
                 Status::Complete | Status::Error | Status::Removed => {
                     self.registry.remove(job.gid);
                     self.clear_job_rate_limiter(job.gid);
+                    self.clear_job_speed_sample(job.gid);
                     purged += 1;
                 }
                 _ => {}
@@ -3087,6 +3146,19 @@ mod tests {
 
         let job = engine.registry.get(handle.gid).unwrap();
         assert_eq!(job.downloaded, 3000);
+    }
+
+    #[test]
+    fn update_progress_projects_speed_after_delta() {
+        let engine = Engine::new(default_config());
+        let handle = engine.add_uri(&default_spec()).unwrap();
+
+        engine.update_progress(handle.gid, 1000);
+        std::thread::sleep(std::time::Duration::from_millis(1));
+        engine.update_progress(handle.gid, 1000);
+
+        let job = engine.registry.get(handle.gid).unwrap();
+        assert!(job.download_speed > 0);
     }
 
     #[test]

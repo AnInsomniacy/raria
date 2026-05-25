@@ -399,8 +399,16 @@ impl ByteSourceBackend for HttpBackend {
                         request = request.header(name, value);
                     }
 
-                    if offset > 0 {
-                        request = request.header(RANGE, format!("bytes={offset}-"));
+                    if offset > 0 || ctx.length.is_some() {
+                        let range = match ctx.length {
+                            Some(0) => format!("bytes={offset}-{offset}"),
+                            Some(length) => {
+                                let end = offset.saturating_add(length).saturating_sub(1);
+                                format!("bytes={offset}-{end}")
+                            }
+                            None => format!("bytes={offset}-"),
+                        };
+                        request = request.header(RANGE, range);
                         if let Some(ref etag) = ctx.etag {
                             request = request.header("If-Range", etag.as_str());
                         }

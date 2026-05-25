@@ -449,6 +449,7 @@ impl SegmentExecutor {
             headers: request_headers.to_vec(),
             auth: request_auth.cloned(),
             etag: request_etag.map(ToOwned::to_owned),
+            length: (remaining != u64::MAX).then_some(remaining),
         };
         let mut stream = backend
             .open_from(uri, offset, &ctx)
@@ -534,6 +535,12 @@ async fn prepare_output_file(
     total_size: Option<u64>,
     allocation: FileAllocation,
 ) -> Result<()> {
+    if let Some(parent) = out_path.parent() {
+        tokio::fs::create_dir_all(parent)
+            .await
+            .with_context(|| format!("failed to create output directory {}", parent.display()))?;
+    }
+
     let existed = out_path.exists();
     OpenOptions::new()
         .create(true)
@@ -614,6 +621,7 @@ mod tests {
     #[derive(Debug)]
     struct MockBackend {
         data: Vec<u8>,
+        opened_lengths: Option<Arc<std::sync::Mutex<Vec<Option<u64>>>>>,
     }
 
     #[async_trait::async_trait]
@@ -634,8 +642,11 @@ mod tests {
             &self,
             _uri: &Url,
             offset: u64,
-            _ctx: &OpenContext,
+            ctx: &OpenContext,
         ) -> Result<ByteStream> {
+            if let Some(lengths) = &self.opened_lengths {
+                lengths.lock().unwrap().push(ctx.length);
+            }
             let offset = offset as usize;
             let slice = if offset < self.data.len() {
                 &self.data[offset..]
@@ -945,7 +956,10 @@ mod tests {
     #[tokio::test]
     async fn single_segment_correct_content() {
         let data = vec![42u8; 1000];
-        let backend: Arc<dyn ByteSourceBackend> = Arc::new(MockBackend { data: data.clone() });
+        let backend: Arc<dyn ByteSourceBackend> = Arc::new(MockBackend {
+            data: data.clone(),
+            opened_lengths: None,
+        });
 
         let dir = tempfile::tempdir().unwrap();
         let out_path = dir.path().join("output.bin");
@@ -980,7 +994,10 @@ mod tests {
     #[tokio::test]
     async fn multi_segment_correct_content() {
         let data: Vec<u8> = (0..=255u8).cycle().take(10000).collect();
-        let backend: Arc<dyn ByteSourceBackend> = Arc::new(MockBackend { data: data.clone() });
+        let backend: Arc<dyn ByteSourceBackend> = Arc::new(MockBackend {
+            data: data.clone(),
+            opened_lengths: None,
+        });
 
         let dir = tempfile::tempdir().unwrap();
         let out_path = dir.path().join("output.bin");
@@ -1014,6 +1031,43 @@ mod tests {
             written, data,
             "assembled file must match original byte-for-byte"
         );
+    }
+
+    #[tokio::test]
+    async fn multi_segment_passes_bounded_lengths_to_backend() {
+        let opened_lengths = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let backend: Arc<dyn ByteSourceBackend> = Arc::new(MockBackend {
+            data: vec![7u8; 4096],
+            opened_lengths: Some(Arc::clone(&opened_lengths)),
+        });
+
+        let dir = tempfile::tempdir().unwrap();
+        let out_path = dir.path().join("nested").join("output.bin");
+        let uri: Url = "http://example.com/file".parse().unwrap();
+        let segments = init_segment_states(&plan_segments(4096, 4));
+
+        let executor = SegmentExecutor::new(ExecutorConfig {
+            max_connections: 4,
+            buffer_size: 1024,
+            ..Default::default()
+        });
+
+        executor
+            .execute(
+                backend,
+                &uri,
+                &out_path,
+                &segments,
+                CancellationToken::new(),
+                noop_progress(),
+            )
+            .await
+            .unwrap();
+
+        let lengths = opened_lengths.lock().unwrap();
+        assert_eq!(lengths.len(), 4);
+        assert!(lengths.iter().all(|length| *length == Some(1024)));
+        assert!(out_path.is_file());
     }
 
     // ═══════════════════════════════════════════════════════════════════
@@ -1287,7 +1341,10 @@ mod tests {
     #[tokio::test]
     async fn cancellation_stops_all_segments() {
         let data = vec![0u8; 100_000];
-        let backend: Arc<dyn ByteSourceBackend> = Arc::new(MockBackend { data });
+        let backend: Arc<dyn ByteSourceBackend> = Arc::new(MockBackend {
+            data,
+            opened_lengths: None,
+        });
 
         let dir = tempfile::tempdir().unwrap();
         let out_path = dir.path().join("output.bin");
@@ -1319,7 +1376,10 @@ mod tests {
     #[tokio::test]
     async fn progress_callback_receives_all_bytes() {
         let data = vec![99u8; 2000];
-        let backend: Arc<dyn ByteSourceBackend> = Arc::new(MockBackend { data });
+        let backend: Arc<dyn ByteSourceBackend> = Arc::new(MockBackend {
+            data,
+            opened_lengths: None,
+        });
 
         let dir = tempfile::tempdir().unwrap();
         let out_path = dir.path().join("output.bin");
@@ -1365,7 +1425,10 @@ mod tests {
     #[tokio::test]
     async fn skips_done_segments() {
         let data = vec![0u8; 500];
-        let backend: Arc<dyn ByteSourceBackend> = Arc::new(MockBackend { data });
+        let backend: Arc<dyn ByteSourceBackend> = Arc::new(MockBackend {
+            data,
+            opened_lengths: None,
+        });
 
         let dir = tempfile::tempdir().unwrap();
         let out_path = dir.path().join("output.bin");

@@ -4,8 +4,8 @@ Date: 2026-05-25
 Binary: `var/releases/macos/raria`
 Version: `raria 0.1.0`
 Platform: macOS arm64
-SHA-256: `c9fb336e97fdad2f4dc7ab2fd131919f1acaaadbbe4206fe33280443a4c9292f`
-Evidence root: `var/smoke-runs/20260525-084539-real`
+SHA-256: `ef682fb2b31e2e7a59e6ad6e2bac174fe0675cc8fd9d3ffc9974c832ffbb8d81`
+Evidence root: `var/smoke-runs/20260525-091956-fixed-clean`
 
 ## Scope
 
@@ -20,28 +20,32 @@ The run intentionally bounded public downloads. Large artifacts were not downloa
 Focused validation also passed:
 
 ```bash
-cargo test -p raria-rpc --test native_api -- --nocapture
-cargo test -p raria-cli --test native_api_smoke -- --nocapture
-cargo test -p raria-cli --test session_smoke -- --nocapture
+cargo test -p raria-core update_progress_projects_speed_after_delta
+cargo test -p raria-range multi_segment_passes_bounded_lengths_to_backend
+cargo test -p raria-cli --test native_api_smoke daemon_native_http_range_task_progresses_with_bounded_segments
 ```
-
-Results: 35 native API tests passed, 29 native daemon API smoke tests passed, and 19 session smoke tests passed.
 
 ## Public Input Results
 
-HTTPS Apple IPSW failed to transfer data in this run. The task was accepted and exposed as running with 8 active connections, total size `238319275`, and then paused successfully. During a 12.19 second bounded sample window it stayed at `0` completed bytes and `0` bytes per second. Evidence: `reports/https-apple-summary.json`.
+Local HTTP control passed. A nested `downloadDir` task completed `4194304` bytes, produced the expected SHA-256, exposed nonzero speed, and issued bounded segment ranges: `bytes=0-1048575`, `bytes=1048576-2097151`, `bytes=2097152-3145727`, and `bytes=3145728-4194303`. Peak sampled speed was `8153271` B/s. Evidence: `reports/local-http-control-summary.json`.
 
-Magnet metadata passed. The KNOPPIX CD magnet resolved metadata, exposed 9 files, reported total size `700612589`, entered `paused` lifecycle for metadata-only mode, and accepted native BT seeding policy updates through `/api/v1/tasks/:task_id/bt/seeding`. Peers and trackers were not sampled after metadata-only pause. Evidence: `reports/magnet-metadata-summary.json`.
+HTTPS Apple IPSW passed the bounded sample. The task accepted the public URL, created nested output directories, advanced from zero to `36593706` sampled bytes in `3.06` seconds, exposed first nonzero speed at `0.51` seconds, peaked at `614392320` B/s, and paused successfully. Evidence: `reports/https-apple-summary.json`.
 
-Torrent-file bounded download passed. The KNOPPIX DVD torrent was accepted, tracker and peer snapshots became visible, selected-file policy was applied, speed became nonzero, pause returned `paused`, and resume returned `running`. Peak sampled speed was `23754` B/s, and max sampled completed bytes was `798567`. Evidence: `reports/torrent-file-summary.json`.
+Magnet metadata passed. The KNOPPIX CD magnet resolved metadata in `4.10` seconds, exposed 9 files, reported total size `700612589`, entered `paused` lifecycle for metadata-only mode, and accepted native BT seeding policy updates through `/api/v1/tasks/:task_id/bt/seeding`. Peers and trackers were not sampled after metadata-only pause. Evidence: `reports/magnet-metadata-summary.json`.
+
+Torrent-file bounded download passed. The KNOPPIX DVD torrent was accepted, tracker and peer snapshots became visible, selected-file policy was applied, speed became nonzero, pause returned `paused`, and resume returned `running`. Peak sampled speed was `7782` B/s, and max sampled completed bytes was `798567`. Evidence: `reports/torrent-file-summary.json`.
 
 ## Bug Ledger
 
-`SMOKE-001`: HTTP/HTTPS range tasks can enter `running` with active connections but never advance completed bytes. The local range fixture reproduced the issue before the public HTTPS run: running task stayed at 0 bytes with 4 active connections. The Apple HTTPS task reproduced the same zero-byte behavior with 8 active connections. This blocks ordinary HTTP/HTTPS confidence.
+`SMOKE-001` fixed. HTTP/HTTPS native range tasks now pass bounded segment lengths to the backend. HTTP emits `Range: bytes=start-end` when segment length is known. The executor still caps reads locally.
 
-`SMOKE-002`: Transfer speed projection remains unreliable for ordinary HTTP/HTTPS. In this clean run the data path did not advance, so speed stayed zero. A prior smoke run also observed bytes increasing while `downloadBytesPerSecond` stayed zero. Treat speed reporting for ordinary range transfers as suspect until the range progress path is traced.
+`SMOKE-002` fixed. Native range progress now updates `downloadBytesPerSecond` from real byte deltas. The API exposes nonzero speed during local HTTP and public HTTPS transfers.
 
-`SMOKE-003`: The real-smoke harness must treat `totalBytes: null` as valid before magnet metadata is available. The first magnet probe crashed on a null comparison, while the product task itself resolved metadata successfully. This is a harness issue, not a product failure.
+`SMOKE-003` fixed in the smoke harness. Magnet metadata probes now treat `totalBytes: null` as valid before metadata resolution.
+
+`SMOKE-004` fixed. Native range tasks now create nested output directories before opening files.
+
+`SMOKE-005` fixed. Spawned range task failures now transition the native task to `failed` instead of leaving it stuck as `running`.
 
 ## Artifact Hygiene
 
@@ -49,4 +53,4 @@ Generated binaries, session databases, logs, raw API payloads, and partial downl
 
 ## Next Engineering Target
 
-Investigate the ordinary HTTP/HTTPS range execution path before any new feature work. Start with `crates/raria-range/src/executor.rs`, `crates/raria-core/src/engine.rs`, `crates/raria-core/src/progress.rs`, and the native task projection used by `crates/raria-rpc/src/api.rs`. The first failing reproducer should assert that a local range-capable HTTP task advances completed bytes and exposes nonzero speed while running.
+Continue from the active `docs/core-modernization/roadmap.csv` checkpoint. The HTTP/HTTPS smoke blocker is closed and should remain covered by focused native API, range executor, and engine speed regression tests.

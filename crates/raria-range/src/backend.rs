@@ -44,6 +44,9 @@ pub struct OpenContext {
     pub etag: Option<String>,
     /// Custom HTTP headers for stream requests.
     pub headers: Vec<(String, String)>,
+    /// Maximum number of bytes the backend should stream when the protocol
+    /// can express an upper bound. The executor still caps reads locally.
+    pub length: Option<u64>,
 }
 
 impl Default for OpenContext {
@@ -53,6 +56,7 @@ impl Default for OpenContext {
             timeout: Duration::from_secs(60),
             etag: None,
             headers: Vec::new(),
+            length: None,
         }
     }
 }
@@ -93,12 +97,12 @@ pub type ByteStream = Pin<Box<dyn AsyncRead + Send>>;
 /// Implementations exist for HTTP (`raria-http`), FTP (`raria-ftp`),
 /// and SFTP (`raria-sftp`).
 ///
-/// The key insight: `open_from(offset)` returns a forward-only stream
-/// with no upper bound. The caller (SegmentExecutor) is responsible for
-/// consuming only the bytes it needs and then dropping the stream.
+/// `open_from(offset)` returns a forward-only stream. Protocols that can
+/// express an upper bound should honor [`OpenContext::length`]. The caller
+/// still consumes only the bytes it needs and then drops the stream.
 ///
 /// This matches the natural semantics of:
-/// - HTTP: `Range: bytes=offset-`
+/// - HTTP: `Range: bytes=offset-end` when length is known
 /// - FTP: `REST offset` + `RETR`
 /// - SFTP: `read_from(offset)`
 #[async_trait]
@@ -109,8 +113,8 @@ pub trait ByteSourceBackend: Send + Sync + fmt::Debug {
     /// Open a byte stream starting from the given offset.
     ///
     /// The stream reads forward from `offset` until EOF or the caller
-    /// stops consuming. There is no upper-bound parameter because the
-    /// SegmentExecutor controls how many bytes to read.
+    /// stops consuming. When [`OpenContext::length`] is set, backends should
+    /// request that bounded span if the protocol supports it.
     async fn open_from(&self, uri: &Url, offset: u64, ctx: &OpenContext) -> Result<ByteStream>;
 
     /// Human-readable name for this backend (e.g., "http", "ftp", "sftp").

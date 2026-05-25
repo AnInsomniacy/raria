@@ -1592,7 +1592,7 @@ async fn single_download_continue_resumes_from_existing_file_length() {
 
     Mock::given(method("GET"))
         .and(path("/continue.bin"))
-        .and(header("range", "bytes=4-"))
+        .and(header("range", "bytes=4-7"))
         .respond_with(ResponseTemplate::new(206).set_body_bytes(b"5678"))
         .mount(&server)
         .await;
