@@ -245,11 +245,12 @@ pub(crate) async fn run_daemon_with_config(
                     });
                 }
                 raria_core::job::JobKind::Bt => {
-                    let gid = activation.runtime_gid;
                     let bt_service = Arc::clone(&bt_service);
                     tokio::spawn(async move {
-                        if let Err(e) = run_bt_download(engine_ref, gid, token, bt_service).await {
-                            error!(%gid, error = %e, "BT download task failed");
+                        if let Err(e) =
+                            run_bt_download(engine_ref, task_id.clone(), token, bt_service).await
+                        {
+                            error!(%task_id, error = %e, "BT download task failed");
                         }
                     });
                 }

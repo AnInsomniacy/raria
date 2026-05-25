@@ -282,3 +282,18 @@ passed. `cargo check --workspace --locked` passed. `cargo fmt --all --check`
 passed.
 Remaining: Continue CM-008 BT activation.
 Blocked: none.
+
+2026-05-25 CM-008 partial
+Changed: Moved daemon BT activation to TaskId entry. `run_bt_download` now
+receives `TaskId` and resolves the current runtime Gid only inside the
+remaining private Job and librqbit bridge.
+Verified: `cargo test -p raria-cli --bin raria bt_cancel_handler --
+--nocapture` passed with 2 matching tests. `cargo test -p raria-cli --bin
+raria bt_service_config -- --nocapture` passed with 4 matching tests. `cargo
+test -p raria-cli --bin raria
+sync_bt_job_from_status_publishes_native_peer_and_tracker_events --
+--nocapture` passed. `cargo test -p raria-cli --bin raria bt -- --nocapture`
+passed with 24 matching tests. `cargo check --workspace --locked` passed.
+`cargo fmt --all --check` passed.
+Remaining: Continue CM-008 native mutation policy.
+Blocked: none.

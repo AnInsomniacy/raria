@@ -6,6 +6,7 @@ use raria_core::config::BtPieceStrategy;
 use raria_core::engine::Engine;
 use raria_core::job::{BtCompletionDisposition, BtFile, BtPeer, Gid, Job, Status};
 use raria_core::logging::emit_structured_log;
+use raria_core::native::TaskId;
 use raria_core::progress::DownloadEvent;
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -350,15 +351,17 @@ async fn fetch_remote_torrent_metadata(uri: &str) -> Result<Vec<u8>> {
 
 pub(crate) async fn run_bt_download(
     engine: Arc<Engine>,
-    gid: Gid,
+    task_id: TaskId,
     cancel: CancellationToken,
     bt_service: Arc<BtService>,
 ) -> Result<()> {
+    let gid = engine
+        .gid_for_task_id(&task_id)
+        .context("BT task runtime bridge missing")?;
     let job = engine
         .registry
         .get(gid)
         .context("BT job not found in registry")?;
-    let task_id = job.task_id.clone();
 
     let uri_str = job.uris.first().context("BT job has no URIs")?;
     info!(%gid, "daemon: starting BT download");
