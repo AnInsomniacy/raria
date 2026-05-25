@@ -245,23 +245,14 @@ impl Engine {
         let native_rows = store
             .list_native_tasks()
             .context("failed to list native task rows from store")?;
-        let jobs_with_task_ids = if native_rows.is_empty() {
-            store
-                .list_jobs()
-                .context("failed to list jobs from store")?
-                .into_iter()
-                .map(|job| (job, None))
-                .collect::<Vec<_>>()
-        } else {
-            native_rows
-                .iter()
-                .map(|row| {
-                    row.to_runtime_job()
-                        .map(|job| (job, Some(row.task_id.clone())))
-                })
-                .collect::<std::result::Result<Vec<_>, _>>()
-                .context("failed to restore native task rows")?
-        };
+        let jobs_with_task_ids = native_rows
+            .iter()
+            .map(|row| {
+                row.to_runtime_job()
+                    .map(|job| (job, Some(row.task_id.clone())))
+            })
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .context("failed to restore native task rows")?;
         let count = jobs_with_task_ids.len();
 
         for (mut job, task_id) in jobs_with_task_ids {
@@ -1588,18 +1579,12 @@ impl Engine {
         Ok(())
     }
 
-    /// Remove native segment checkpoints and current migration fallback rows for a task.
+    /// Remove native segment checkpoints for a task.
     pub fn cleanup_native_segment_checkpoints(&self, task_id: &TaskId) -> Result<()> {
-        let gid = self
-            .gid_for_task_id(task_id)
-            .context("native task not found")?;
         if let Some(store) = self.store.as_ref() {
             store
                 .remove_native_segments(task_id)
                 .context("failed to remove native segment checkpoints")?;
-            store
-                .remove_segments(gid)
-                .context("failed to remove migration segment checkpoints")?;
         }
         Ok(())
     }
@@ -1723,9 +1708,6 @@ impl Engine {
         task_id: &TaskId,
         input: NativeSegmentPlanningInput<'_>,
     ) -> Result<NativeSegmentPlan> {
-        let gid = self
-            .gid_for_task_id(task_id)
-            .context("native task not found")?;
         let file_size = input.total_size.unwrap_or(0);
         let mut connections = if input.supports_range && file_size > 0 {
             input
@@ -1739,7 +1721,10 @@ impl Engine {
             connections = connections.min(max_by_min);
         }
         if let Some(source_uri) = input.source_uri {
-            let job = self.registry.get(gid).context("native task not found")?;
+            let job = self
+                .registry
+                .get_by_task_id(task_id)
+                .context("native task not found")?;
             if let Some(health) = job.options.source_health.get(source_uri) {
                 if matches!(
                     health.state,
@@ -1763,13 +1748,6 @@ impl Engine {
         if let Some(store) = self.store.as_ref() {
             let persisted = store
                 .list_native_segments(task_id)
-                .and_then(|native_segments| {
-                    if native_segments.is_empty() {
-                        store.list_segments(gid)
-                    } else {
-                        Ok(native_segments)
-                    }
-                })
                 .context("failed to load persisted segment checkpoints")?;
             for (seg_id, persisted_state) in persisted {
                 if let Some(segment) = segments.get_mut(seg_id as usize) {
@@ -1874,9 +1852,6 @@ impl Engine {
     /// Persist a job to the store (no-op if store is not configured).
     fn persist_job(&self, job: &Job) {
         if let Some(ref store) = self.store {
-            if let Err(e) = store.put_job(job) {
-                error!(gid = %job.gid, error = %e, "failed to persist job");
-            }
             let row = NativeTaskRow::from_runtime_job(job);
             if let Err(e) = store.put_native_task(&row) {
                 error!(
@@ -1979,12 +1954,6 @@ impl Engine {
             Status::Complete | Status::Error | Status::Removed => {
                 self.registry.remove(gid);
                 self.clear_job_rate_limiter(gid);
-                if let Some(ref store) = self.store {
-                    if let Err(e) = store.remove_job(gid) {
-                        warn!(%gid, error = %e, "failed to delete job from store");
-                    }
-                    let _ = store.remove_segments(gid);
-                }
                 debug!(%gid, "download result removed");
                 Ok(())
             }
@@ -2004,10 +1973,6 @@ impl Engine {
                 Status::Complete | Status::Error | Status::Removed => {
                     self.registry.remove(job.gid);
                     self.clear_job_rate_limiter(job.gid);
-                    if let Some(ref store) = self.store {
-                        let _ = store.remove_job(job.gid);
-                        let _ = store.remove_segments(job.gid);
-                    }
                     purged += 1;
                 }
                 _ => {}
@@ -2067,9 +2032,6 @@ impl Engine {
 
         let jobs = self.registry.snapshot();
         for job in &jobs {
-            store
-                .put_job(job)
-                .with_context(|| format!("failed to persist job {}", job.gid))?;
             let row = NativeTaskRow::from_runtime_job(job);
             store
                 .put_native_task(&row)
@@ -2273,7 +2235,6 @@ mod tests {
         store
             .put_native_segment(&created.task_id, 0, &segment)
             .unwrap();
-        store.put_segment(runtime_gid, 0, &segment).unwrap();
 
         let limiter = engine
             .native_task_rate_limiter(&created.task_id, 1024)
@@ -2306,23 +2267,24 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
-        assert!(store.list_segments(runtime_gid).unwrap().is_empty());
+        assert_eq!(engine.gid_for_task_id(&created.task_id), Some(runtime_gid));
     }
 
     #[test]
     fn native_segment_planning_restores_checkpoints_and_writes_native_rows() {
         let (engine, _dir) = engine_with_store();
         let created = engine.add_native_task(&default_spec()).unwrap();
-        let runtime_gid = engine.gid_for_task_id(&created.task_id).unwrap();
         let store = engine.store.as_ref().unwrap();
-        let legacy_segment = SegmentState {
+        let native_segment = SegmentState {
             start: 0,
             end: 2048,
             downloaded: 1024,
             etag: None,
             status: SegmentStatus::Active,
         };
-        store.put_segment(runtime_gid, 0, &legacy_segment).unwrap();
+        store
+            .put_native_segment(&created.task_id, 0, &native_segment)
+            .unwrap();
 
         let plan = engine
             .plan_native_segments(
@@ -2340,24 +2302,20 @@ mod tests {
         assert_eq!(plan.connections, 2);
         assert_eq!(plan.segments[0].downloaded, 1024);
         assert_eq!(plan.segments[0].status, SegmentStatus::Pending);
-        assert!(
-            store
-                .list_native_segments(&created.task_id)
-                .unwrap()
-                .is_empty(),
-            "legacy fallback restore must not synthesize native rows"
-        );
 
         engine
             .checkpoint_native_segment(&created.task_id, 1, &plan.segments, 512)
             .unwrap();
         let native_segments = store.list_native_segments(&created.task_id).unwrap();
-        assert_eq!(native_segments.len(), 1);
-        assert_eq!(native_segments[0].0, 1);
-        assert_eq!(native_segments[0].1.start, 2048);
-        assert_eq!(native_segments[0].1.end, 4096);
-        assert_eq!(native_segments[0].1.downloaded, 512);
-        assert_eq!(native_segments[0].1.status, SegmentStatus::Active);
+        assert_eq!(native_segments.len(), 2);
+        let (_, checkpointed) = native_segments
+            .iter()
+            .find(|(seg_id, _)| *seg_id == 1)
+            .expect("checkpointed segment");
+        assert_eq!(checkpointed.start, 2048);
+        assert_eq!(checkpointed.end, 4096);
+        assert_eq!(checkpointed.downloaded, 512);
+        assert_eq!(checkpointed.status, SegmentStatus::Active);
     }
 
     #[test]
@@ -3137,23 +3095,7 @@ mod tests {
     // ═══════════════════════════════════════════════════════════════════
 
     #[test]
-    fn engine_persists_job_on_add_uri() {
-        let (engine, _dir) = engine_with_store();
-        let handle = engine.add_uri(&default_spec()).unwrap();
-
-        // Verify the job was persisted to the store.
-        let store = engine.store.as_ref().unwrap();
-        let persisted = store
-            .get_job(handle.gid)
-            .unwrap()
-            .expect("job should be in store");
-        assert_eq!(persisted.gid, handle.gid);
-        assert_eq!(persisted.status, Status::Waiting);
-        assert_eq!(persisted.uris, vec!["https://example.com/file.zip"]);
-    }
-
-    #[test]
-    fn engine_persists_native_task_row_on_add_uri() {
+    fn engine_persists_native_task_only_on_add_uri() {
         let (engine, _dir) = engine_with_store();
         let handle = engine.add_uri(&default_spec()).unwrap();
         let task_id = engine.task_id_for_gid(handle.gid).expect("task id");
@@ -3179,8 +3121,6 @@ mod tests {
         engine.activate_job(handle.gid).unwrap();
 
         let store = engine.store.as_ref().unwrap();
-        let persisted = store.get_job(handle.gid).unwrap().unwrap();
-        assert_eq!(persisted.status, Status::Active);
         let row = store
             .get_native_task(&task_id)
             .unwrap()
@@ -3197,8 +3137,6 @@ mod tests {
         engine.complete_job(handle.gid).unwrap();
 
         let store = engine.store.as_ref().unwrap();
-        let persisted = store.get_job(handle.gid).unwrap().unwrap();
-        assert_eq!(persisted.status, Status::Complete);
         let row = store
             .get_native_task(&task_id)
             .unwrap()
@@ -3215,9 +3153,6 @@ mod tests {
         engine.fail_job(handle.gid, "network error").unwrap();
 
         let store = engine.store.as_ref().unwrap();
-        let persisted = store.get_job(handle.gid).unwrap().unwrap();
-        assert_eq!(persisted.status, Status::Error);
-        assert_eq!(persisted.error_msg.as_deref(), Some("network error"));
         let row = store
             .get_native_task(&task_id)
             .unwrap()
@@ -3234,8 +3169,6 @@ mod tests {
         engine.pause(handle.gid).unwrap();
 
         let store = engine.store.as_ref().unwrap();
-        let persisted = store.get_job(handle.gid).unwrap().unwrap();
-        assert_eq!(persisted.status, Status::Paused);
         let row = store
             .get_native_task(&task_id)
             .unwrap()
@@ -3252,8 +3185,6 @@ mod tests {
         engine.remove(handle.gid).unwrap();
 
         let store = engine.store.as_ref().unwrap();
-        let persisted = store.get_job(handle.gid).unwrap().unwrap();
-        assert_eq!(persisted.status, Status::Removed);
         let row = store
             .get_native_task(&task_id)
             .unwrap()
@@ -3325,6 +3256,20 @@ mod tests {
     }
 
     #[test]
+    fn engine_restore_with_empty_native_schema_loads_no_tasks() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("native-only-restore.redb");
+        let store = Arc::new(Store::open(&db_path).unwrap());
+
+        let engine = Engine::with_store(default_config(), Arc::clone(&store));
+        let count = engine.restore().unwrap();
+
+        assert_eq!(count, 0);
+        assert_eq!(engine.registry.len(), 0);
+        assert_eq!(engine.scheduler.queue_len(), 0);
+    }
+
+    #[test]
     fn engine_restore_demotes_active_to_waiting() {
         let dir = tempfile::tempdir().unwrap();
         let db_path = dir.path().join("crash.redb");
@@ -3359,9 +3304,6 @@ mod tests {
         engine1
             .registry
             .update(handle.gid, |job| job.status = Status::Seeding)
-            .unwrap();
-        store
-            .put_job(&engine1.registry.get(handle.gid).unwrap())
             .unwrap();
         let gid = handle.gid;
         drop(engine1);
@@ -3643,25 +3585,10 @@ mod tests {
     }
 
     #[test]
-    fn save_session_persists_all_jobs() {
+    fn save_session_persists_native_rows_only() {
         let (engine, _dir) = engine_with_store();
         let h1 = engine.add_uri(&default_spec()).unwrap();
         let h2 = engine.add_uri(&default_spec()).unwrap();
-
-        engine.save_session().unwrap();
-
-        // Verify by reading from store directly.
-        let store = engine.store.as_ref().unwrap();
-        assert!(store.get_job(h1.gid).unwrap().is_some());
-        assert!(store.get_job(h2.gid).unwrap().is_some());
-    }
-
-    #[test]
-    fn save_session_persists_native_task_rows() {
-        let (engine, _dir) = engine_with_store();
-        let h1 = engine.add_uri(&default_spec()).unwrap();
-        let h2 = engine.add_uri(&default_spec()).unwrap();
-        engine.pause(h2.gid).unwrap();
 
         engine.save_session().unwrap();
 
@@ -3678,7 +3605,7 @@ mod tests {
         assert!(rows.iter().any(|row| {
             row.task_id == h2_task_id
                 && row.runtime_bridge_id == Some(h2.gid.as_raw())
-                && row.lifecycle == crate::native::TaskLifecycle::Paused
+                && row.lifecycle == crate::native::TaskLifecycle::Queued
         }));
     }
 

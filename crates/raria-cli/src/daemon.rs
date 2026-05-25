@@ -1151,13 +1151,6 @@ mod tests {
 
         persist_interrupted_segments(&engine, handle.gid, &task_id, &segments, 512);
 
-        assert!(
-            store
-                .list_segments(handle.gid)
-                .expect("legacy segments")
-                .is_empty(),
-            "native checkpointing must not create legacy gid segment rows"
-        );
         assert_eq!(
             store
                 .list_native_segments(&task_id)
@@ -1169,7 +1162,7 @@ mod tests {
     }
 
     #[test]
-    fn legacy_gid_segment_rows_remain_read_fallback_for_resume() {
+    fn native_segment_rows_are_read_for_resume() {
         let dir = tempdir().expect("tempdir");
         let store_path = dir.path().join("session.redb");
         let store = Arc::new(Store::open(&store_path).expect("store"));
@@ -1193,7 +1186,7 @@ mod tests {
         let task = engine
             .native_range_execution_task(&task_id)
             .expect("range task");
-        let legacy_segment = raria_core::segment::SegmentState {
+        let native_segment = raria_core::segment::SegmentState {
             start: 0,
             end: 2048,
             downloaded: 1024,
@@ -1201,8 +1194,8 @@ mod tests {
             status: SegmentStatus::Active,
         };
         store
-            .put_segment(handle.gid, 0, &legacy_segment)
-            .expect("legacy segment");
+            .put_native_segment(&task_id, 0, &native_segment)
+            .expect("native segment");
         let probe = raria_range::backend::FileProbe {
             size: Some(4096),
             supports_range: true,
@@ -1223,13 +1216,6 @@ mod tests {
 
         assert_eq!(segments[0].downloaded, 1024);
         assert_eq!(segments[0].status, SegmentStatus::Pending);
-        assert!(
-            store
-                .list_native_segments(&task_id)
-                .expect("native segments")
-                .is_empty(),
-            "legacy fallback reads must not synthesize native rows"
-        );
     }
 
     #[tokio::test]

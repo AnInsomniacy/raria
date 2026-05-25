@@ -338,3 +338,32 @@ mirror_failover_publishes_source_failed_event_before_completion --
 --workspace --locked` passed.
 Remaining: Start CM-009 versioned native persistence.
 Blocked: none.
+
+2026-05-25 CM-009 partial
+Changed: Moved active session persistence to native rows. Store no longer
+creates or exposes direct `jobs`, `segments`, or `job_options` session tables.
+Native segment checkpoints now persist versioned native segment rows. Restore,
+save-session, engine persistence, BT runtime persistence, and daemon segment
+resume no longer use old Gid-keyed session tables.
+Verified: `cargo test -p raria-core native_persist -- --nocapture` passed
+with 10 tests. `cargo test -p raria-core persist -- --nocapture` passed with
+28 core tests plus focused integration coverage. `cargo test -p raria-core
+engine_restore -- --nocapture` passed with 7 tests. `cargo test -p raria-core
+save_session -- --nocapture` passed with 4 tests. `cargo test -p raria-cli
+--bin raria native_segment -- --nocapture` passed. `cargo test -p raria-cli
+--bin raria bt -- --nocapture` passed with 24 tests. Stale old-table API scan
+passed for production and test sources. `cargo check --workspace --locked`
+passed.
+Remaining: Run CM-009 closure validation and mark CM-009.5 when clean.
+Blocked: none.
+
+2026-05-25 CM-009 verified
+Changed: Closed versioned native persistence. Native task and segment rows are
+the active session truth. Direct `Job` rows, old Gid segment rows, raw
+`JobOptions` rows, old Store APIs, and old persistence tests were removed.
+Verified: Focused native persistence, restore, save-session, daemon native
+segment, and BT tests passed. `cargo check --workspace --locked`,
+`cargo fmt --all --check`, CSV validation, stale old-table API scan, and
+`git diff --check` passed.
+Remaining: Start CM-010 session save and crash recovery.
+Blocked: none.

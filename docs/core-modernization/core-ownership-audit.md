@@ -55,22 +55,23 @@ in CM-008 and CM-018.
 
 ## Persistence Ownership
 
-redb remains the storage engine. Current tables are mixed:
+redb remains the storage engine. CM-009 removed the old direct session tables
+from the active store API:
 
 | Table | Current role | Target decision |
 | --- | --- | --- |
 | `native_metadata` | native store metadata | Retain |
 | `native_tasks` | versioned native task rows keyed by `TaskId` | Retain and expand |
-| `native_segments` | native segment checkpoints keyed by `TaskId` | Retain |
-| `jobs` | serialized `Job` keyed by raw `Gid` | Delete after native rows carry full state |
-| `segments` | segment checkpoints keyed by `Gid` | Delete after native segment fallback is removed |
-| `job_options` | serialized `JobOptions` keyed by raw `Gid` | Delete or fold into native task rows |
-| `global_state` | miscellaneous old key-value state | Retain only native metadata that survives CM-009 |
+| `native_segments` | versioned native segment checkpoints keyed by `TaskId` | Retain |
+| `global_state` | retained native key-value state | Retain narrowly |
+| `jobs` | deleted direct `Job` session table | Deleted |
+| `segments` | deleted `Gid` segment checkpoint fallback | Deleted |
+| `job_options` | deleted raw `Gid` options table | Deleted |
 
-`restore`, `persist_job`, `save_session`, and tests still fall back to direct
-`Job` rows. CM-009 must add native schema fixtures, remove legacy row
-deserialization tests, and make unsupported old rows fail with clear native
-errors instead of silently restoring aria2-era storage shapes.
+`restore`, `persist_job`, `save_session`, BT runtime persistence, and segment
+checkpointing now use native rows. `Job` remains a private runtime struct, not
+session truth. Later checkpoints can remove more `Job` fields as native file,
+piece, tracker, and BT state rows take ownership.
 
 ## Event Ownership
 

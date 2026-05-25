@@ -662,6 +662,10 @@ pub struct NativeSegmentRow {
     pub range: ByteRange,
     /// Completed bytes in this segment.
     pub completed_bytes: u64,
+    /// Segment transfer status at the last checkpoint.
+    pub status: crate::segment::SegmentStatus,
+    /// Entity tag associated with the checkpointed response, when available.
+    pub etag: Option<String>,
 }
 
 impl NativeSegmentRow {
@@ -682,7 +686,46 @@ impl NativeSegmentRow {
             source_id: source_id.map(Into::into),
             range,
             completed_bytes: 0,
+            status: crate::segment::SegmentStatus::Pending,
+            etag: None,
         }
+    }
+
+    /// Build a persisted native segment row from the current runtime segment state.
+    pub fn from_segment_state(id: impl Into<String>, state: &crate::segment::SegmentState) -> Self {
+        Self {
+            row_version: Self::CURRENT_ROW_VERSION,
+            id: id.into(),
+            file_id: "file_0".to_string(),
+            source_id: None,
+            range: ByteRange {
+                start: state.start,
+                end: state.end,
+            },
+            completed_bytes: state.downloaded,
+            status: state.status,
+            etag: state.etag.clone(),
+        }
+    }
+
+    /// Validate that this row can be read by the current binary.
+    pub fn validate_version(&self) -> Result<(), NativeModelError> {
+        if self.row_version > Self::CURRENT_ROW_VERSION {
+            return Err(NativeModelError::UnsupportedSegmentRowVersion);
+        }
+        Ok(())
+    }
+
+    /// Convert the persisted row into the current runtime segment state.
+    pub fn to_segment_state(&self) -> Result<crate::segment::SegmentState, NativeModelError> {
+        self.validate_version()?;
+        Ok(crate::segment::SegmentState {
+            start: self.range.start,
+            end: self.range.end,
+            downloaded: self.completed_bytes,
+            etag: self.etag.clone(),
+            status: self.status,
+        })
     }
 }
 
@@ -928,6 +971,9 @@ pub enum NativeModelError {
     /// Native task row version is newer than this binary understands.
     #[error("unsupported native task row version")]
     UnsupportedTaskRowVersion,
+    /// Native segment persistence row is newer than this binary understands.
+    #[error("unsupported native segment row version")]
+    UnsupportedSegmentRowVersion,
     /// Native task row lacks the temporary private runtime bridge id.
     #[error("missing runtime bridge id")]
     MissingRuntimeBridgeId,

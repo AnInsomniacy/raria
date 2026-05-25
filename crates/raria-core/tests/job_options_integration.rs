@@ -1,21 +1,10 @@
-// JobOptions integration tests.
-//
-// These tests verify that per-job options are properly:
-// 1. Stored in the Job struct
-// 2. Persisted to/from redb
-// 3. Retrievable after restore
-// 4. Default to sensible values when not specified
-// 5. Override global defaults
-
 #[cfg(test)]
 mod tests {
     use raria_core::config::JobOptions;
     use raria_core::job::Job;
-    use raria_core::persist::Store;
+    use raria_core::native::NativeTaskRow;
     use std::path::PathBuf;
-    use tempfile::NamedTempFile;
 
-    /// Job must carry its own options.
     #[test]
     fn job_has_options_field() {
         let job = Job::new_range(
@@ -29,7 +18,6 @@ mod tests {
         assert_eq!(opts.max_download_limit, 0);
     }
 
-    /// Job can be created with custom options.
     #[test]
     fn job_with_custom_options() {
         let opts = JobOptions {
@@ -50,7 +38,6 @@ mod tests {
         assert_eq!(job.options.out.as_deref(), Some("custom_name.zip"));
     }
 
-    /// Options survive serialization roundtrip (critical for persistence).
     #[test]
     fn job_options_survive_serialization() {
         let mut opts = JobOptions {
@@ -74,14 +61,11 @@ mod tests {
         assert_eq!(recovered.options.headers[0].0, "Referer");
     }
 
-    /// Options are persisted to redb and recoverable.
     #[test]
-    fn job_options_persist_and_recover_via_store() {
-        let tmp = NamedTempFile::new().unwrap();
-        let store = Store::open(tmp.path()).unwrap();
-
+    fn native_task_row_carries_persisted_task_policy() {
         let opts = JobOptions {
             max_connections: 2,
+            max_download_limit: 1024,
             out: Some("output.tar.gz".into()),
             ..JobOptions::default()
         };
@@ -91,18 +75,14 @@ mod tests {
             PathBuf::from("/tmp/archive.tar.gz"),
             opts,
         );
-        let gid = job.gid;
+        let row = NativeTaskRow::from_runtime_job(&job);
+        let json = serde_json::to_string(&row).unwrap();
+        let recovered: NativeTaskRow = serde_json::from_str(&json).unwrap();
 
-        // Persist the job (which includes options)
-        store.put_job(&job).unwrap();
-
-        // Recover
-        let recovered = store.get_job(gid).unwrap().expect("job should exist");
-        assert_eq!(recovered.options.max_connections, 2);
-        assert_eq!(recovered.options.out.as_deref(), Some("output.tar.gz"));
+        assert_eq!(recovered.segments, 2);
+        assert_eq!(recovered.output_path, PathBuf::from("/tmp/archive.tar.gz"));
     }
 
-    /// Default options should produce a Job that works correctly.
     #[test]
     fn default_options_are_production_ready() {
         let opts = JobOptions::default();

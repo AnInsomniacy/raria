@@ -149,7 +149,9 @@ mod native_model_tests {
 
 #[cfg(test)]
 mod native_persist_tests {
-    use crate::native::{NativeStoreMetadata, NativeTaskRow, TaskId, TaskLifecycle};
+    use crate::native::{
+        NativeSegmentRow, NativeStoreMetadata, NativeTaskRow, TaskId, TaskLifecycle,
+    };
 
     #[test]
     fn store_metadata_has_explicit_schema_version() {
@@ -279,6 +281,61 @@ mod native_persist_tests {
             .expect_err("task id fallback must not restore runtime job id");
 
         assert_eq!(err.to_string(), "missing runtime bridge id");
+    }
+
+    #[test]
+    fn segment_rows_are_versioned_independently_from_runtime_structs() {
+        let state = crate::segment::SegmentState {
+            start: 100,
+            end: 300,
+            downloaded: 75,
+            etag: Some("etag-v1".to_string()),
+            status: crate::segment::SegmentStatus::Active,
+        };
+        let row = NativeSegmentRow::from_segment_state("segment_0", &state);
+
+        assert_eq!(row.row_version, NativeSegmentRow::CURRENT_ROW_VERSION);
+        assert_eq!(row.range.start, 100);
+        assert_eq!(row.range.end, 300);
+        assert_eq!(row.completed_bytes, 75);
+        assert_eq!(row.etag.as_deref(), Some("etag-v1"));
+    }
+
+    #[test]
+    fn segment_row_rejects_unknown_future_versions() {
+        let mut row = NativeSegmentRow::new(
+            "segment_0",
+            "file_0",
+            None::<String>,
+            crate::native::ByteRange::new(0, 100).expect("range"),
+        );
+        row.row_version = NativeSegmentRow::CURRENT_ROW_VERSION + 1;
+
+        let err = row
+            .validate_version()
+            .expect_err("future row version must fail");
+
+        assert_eq!(err.to_string(), "unsupported native segment row version");
+    }
+
+    #[test]
+    fn segment_row_restores_runtime_segment_state() {
+        let state = crate::segment::SegmentState {
+            start: 100,
+            end: 300,
+            downloaded: 75,
+            etag: Some("etag-v1".to_string()),
+            status: crate::segment::SegmentStatus::Active,
+        };
+        let row = NativeSegmentRow::from_segment_state("segment_0", &state);
+
+        let restored = row.to_segment_state().expect("segment state");
+
+        assert_eq!(restored.start, state.start);
+        assert_eq!(restored.end, state.end);
+        assert_eq!(restored.downloaded, state.downloaded);
+        assert_eq!(restored.etag, state.etag);
+        assert_eq!(restored.status, state.status);
     }
 }
 

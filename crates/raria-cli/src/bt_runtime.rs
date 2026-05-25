@@ -233,8 +233,9 @@ async fn cleanup_unselected_bt_files(
 fn persist_bt_job(engine: &Engine, gid: Gid) {
     if let Some(store) = engine.store() {
         if let Some(job) = engine.registry.get(gid) {
-            if let Err(error) = store.put_job(&job) {
-                warn!(%gid, error = %error, "failed to persist BT job");
+            let row = raria_core::native::NativeTaskRow::from_runtime_job(&job);
+            if let Err(error) = store.put_native_task(&row) {
+                warn!(%gid, task_id = %job.task_id, error = %error, "failed to persist BT native task row");
             }
         }
     }
