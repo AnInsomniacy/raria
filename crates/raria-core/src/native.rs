@@ -469,8 +469,8 @@ pub struct NativeStoreMetadata {
     pub store_id: String,
     /// Store creation timestamp.
     pub created_at: DateTime<Utc>,
-    /// Last successful migration timestamp.
-    pub last_migrated_at: Option<DateTime<Utc>>,
+    /// Last successful schema upgrade timestamp.
+    pub last_schema_upgrade_at: Option<DateTime<Utc>>,
 }
 
 impl NativeStoreMetadata {
@@ -483,7 +483,7 @@ impl NativeStoreMetadata {
             schema_version: Self::CURRENT_SCHEMA_VERSION,
             store_id: store_id.into(),
             created_at: Utc::now(),
-            last_migrated_at: None,
+            last_schema_upgrade_at: None,
         }
     }
 }

@@ -393,14 +393,14 @@ mod tests {
     }
 
     #[test]
-    fn parse_rejects_legacy_metalink3_documents() {
+    fn parse_rejects_metalink3_documents() {
         let result = parse_metalink(
             r#"<?xml version="1.0"?>
 <metalink version="3.0">
   <files>
-    <file name="legacy.bin">
+    <file name="old-format.bin">
       <size>1</size>
-      <url>https://mirror.example/legacy.bin</url>
+      <url>https://mirror.example/old-format.bin</url>
     </file>
   </files>
 </metalink>"#,

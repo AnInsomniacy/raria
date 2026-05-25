@@ -1,5 +1,5 @@
 use librqbit_dht::{PersistentDht, PersistentDhtConfig};
-use raria_bt::service::{BtServiceConfig, parity_contract_session_options};
+use raria_bt::service::{BtServiceConfig, native_session_options};
 use serde_json::Value;
 use std::fs;
 use std::net::SocketAddr;
@@ -68,7 +68,7 @@ fn dht_persistence_contract_wires_custom_config_path_into_session_options() {
     let download_dir = tempdir().expect("download tempdir");
     let dht_config = download_dir.path().join("dht-state.json");
 
-    let options = parity_contract_session_options(
+    let options = native_session_options(
         download_dir.path(),
         &BtServiceConfig {
             disable_dht: false,
@@ -115,7 +115,7 @@ fn bt_session_persistence_contract_accepts_native_raria_state_dir() {
     let download_dir = tempdir().expect("download tempdir");
     let native_state_dir = download_dir.path().join("native-state/bt-session");
 
-    let options = parity_contract_session_options(
+    let options = native_session_options(
         download_dir.path(),
         &BtServiceConfig {
             disable_dht: true,

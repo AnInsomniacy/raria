@@ -5,7 +5,7 @@
 
 `raria` is a modern Rust download manager focused on backend correctness, durable task state, protocol coverage, and a native control model.
 
-The project uses aria2 as a feature reference, not as an API, storage, or configuration compatibility target. The long-term public surface is native raria: `raria.toml`, `/api/v1` JSON resources, `/api/v1/events` WebSocket events, versioned persistence schemas, and CLI names that describe raria concepts directly.
+The public surface is native raria: `raria.toml`, `/api/v1` JSON resources, `/api/v1/events` WebSocket events, versioned persistence schemas, and CLI names that describe raria concepts directly. Old external APIs, storage formats, option names, and client bridges are not product targets.
 
 ## Current Status
 
@@ -17,7 +17,7 @@ The current tree is a real backend, not a skeleton:
 - checksum enforcement, conditional GET, mirror failover, and daemon-path Metalink execution
 - structured JSON file logging for the highest-value runtime surfaces
 
-The migration is still in progress. Some internal modules still carry deletion debt, but the daemon product listener is native API only.
+Modernization is still in progress. Some internal modules still carry deletion debt, but the daemon product listener is native API only.
 
 ## Implemented Capabilities
 

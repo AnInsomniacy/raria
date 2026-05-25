@@ -295,7 +295,7 @@ fn is_supported_scheme(scheme: &str) -> bool {
 
 /// Extract WebSeed URIs from the top-level torrent dict.
 ///
-/// Handles both BEP-19 `url-list` (string or list) and legacy `httpseeds`.
+/// Handles both BEP-19 `url-list` (string or list) and BEP-17 `httpseeds`.
 fn extract_web_seed_uris(top: &HashMap<Vec<u8>, BencodeValue<Vec<u8>>>) -> Vec<url::Url> {
     let mut seen = HashSet::<String>::new();
     let mut out = Vec::new();

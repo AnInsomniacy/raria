@@ -162,7 +162,7 @@ mod native_persist_tests {
             NativeStoreMetadata::CURRENT_SCHEMA_VERSION
         );
         assert_eq!(metadata.store_id, "store-test");
-        assert!(metadata.last_migrated_at.is_none());
+        assert!(metadata.last_schema_upgrade_at.is_none());
     }
 
     #[test]
@@ -383,7 +383,7 @@ mod native_projection_tests {
     }
 
     #[test]
-    fn task_summary_projection_from_runtime_job_is_native_adapter() {
+    fn task_summary_projection_from_runtime_job_is_native() {
         let mut job = Job::new_range(
             vec!["https://example.com/file.iso".into()],
             PathBuf::from("/tmp/file.iso"),

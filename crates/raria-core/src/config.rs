@@ -383,7 +383,7 @@ mod tests {
             assert!(fields.contains_key(native), "missing native field {native}");
         }
 
-        for legacy in [
+        for removed in [
             "dir",
             "max_overall_download_limit",
             "max_overall_upload_limit",
@@ -399,7 +399,10 @@ mod tests {
             "max_tries",
             "retry_wait",
         ] {
-            assert!(!fields.contains_key(legacy), "legacy field {legacy} leaked");
+            assert!(
+                !fields.contains_key(removed),
+                "removed field {removed} leaked"
+            );
         }
     }
 

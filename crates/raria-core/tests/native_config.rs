@@ -80,7 +80,7 @@ mod tests {
             r#"
             [daemon]
             download_dir = "/downloads"
-            legacy_key = true
+            unknown_key = true
             "#,
         )
         .expect_err("unknown fields must fail");

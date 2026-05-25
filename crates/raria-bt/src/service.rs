@@ -118,12 +118,9 @@ fn bt_session_options(output_dir: &Path, config: &BtServiceConfig) -> SessionOpt
     }
 }
 
-/// Hidden parity-contract hook for integration tests that validate session wiring.
+/// Hidden native-session hook for integration tests that validate session wiring.
 #[doc(hidden)]
-pub fn parity_contract_session_options(
-    output_dir: &Path,
-    config: &BtServiceConfig,
-) -> SessionOptions {
+pub fn native_session_options(output_dir: &Path, config: &BtServiceConfig) -> SessionOptions {
     bt_session_options(output_dir, config)
 }
 
@@ -243,7 +240,7 @@ pub struct BtPeerInfo {
 /// BitTorrent download service.
 ///
 /// This is the entry point for all BT operations. It manages a librqbit
-/// Session internally and provides raria-compatible operations.
+/// Session internally and provides raria-native operations.
 ///
 #[derive(Debug, Clone)]
 pub struct BtServiceConfig {
@@ -739,7 +736,7 @@ impl BtService {
 
         // Replicate upstream dump_dht: serialize addr + routing table + peer store.
         // Note: dht.peer_store is pub(crate) in upstream, so we include a
-        // placeholder to maintain JSON schema compatibility.
+        // placeholder to maintain JSON schema stability.
         let addr = dht.listen_addr();
         let snapshot = dht.with_routing_table(|table| {
             serde_json::json!({

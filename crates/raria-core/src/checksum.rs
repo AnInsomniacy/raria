@@ -1,7 +1,7 @@
 // raria-core: Checksum verification.
 //
 // Computes digests of downloaded files for integrity verification.
-// Supports SHA-256 (primary), SHA-1, and MD5 (legacy).
+// Supports SHA-256, SHA-1, and MD5.
 
 use crate::job::PieceChecksum;
 use anyhow::{Context, Result};
@@ -17,9 +17,9 @@ use tokio::io::AsyncReadExt;
 pub enum ChecksumAlgo {
     /// SHA-256 (recommended, 256-bit digest).
     Sha256,
-    /// SHA-1 (legacy, 160-bit digest).
+    /// SHA-1 (160-bit digest).
     Sha1,
-    /// MD5 (legacy, 128-bit digest).
+    /// MD5 (128-bit digest).
     Md5,
 }
 

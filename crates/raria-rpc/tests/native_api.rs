@@ -13,10 +13,10 @@ mod tests {
     use std::sync::Arc;
     use tokio_util::sync::CancellationToken;
 
-    fn assert_no_legacy_public_fields(value: &serde_json::Value) {
+    fn assert_no_removed_public_fields(value: &serde_json::Value) {
         match value {
             serde_json::Value::Object(fields) => {
-                for legacy_field in [
+                for removed_field in [
                     "gid",
                     "method",
                     "completedLength",
@@ -31,17 +31,17 @@ mod tests {
                     "announce",
                 ] {
                     assert!(
-                        !fields.contains_key(legacy_field),
-                        "legacy public field {legacy_field} leaked in {value}"
+                        !fields.contains_key(removed_field),
+                        "removed public field {removed_field} leaked in {value}"
                     );
                 }
                 for nested in fields.values() {
-                    assert_no_legacy_public_fields(nested);
+                    assert_no_removed_public_fields(nested);
                 }
             }
             serde_json::Value::Array(values) => {
                 for nested in values {
-                    assert_no_legacy_public_fields(nested);
+                    assert_no_removed_public_fields(nested);
                 }
             }
             _ => {}
@@ -1000,7 +1000,7 @@ mod tests {
         assert_eq!(trackers["trackers"][0]["connectTimeoutSeconds"], 3);
         assert_eq!(trackers["trackers"][0]["timeoutSeconds"], 9);
         assert_eq!(trackers["trackers"][0]["intervalSeconds"], 60);
-        assert_no_legacy_public_fields(&trackers);
+        assert_no_removed_public_fields(&trackers);
 
         let job = engine.registry.get(gid).expect("job");
         assert_eq!(
@@ -1132,7 +1132,7 @@ mod tests {
         assert_eq!(policy["targetRatio"], 1.5);
         assert_eq!(policy["stopAfterMinutes"], 45);
         assert_eq!(policy["idleDownloadTimeoutSeconds"], 7);
-        assert_no_legacy_public_fields(&policy);
+        assert_no_removed_public_fields(&policy);
 
         let job = engine.registry.get(gid).expect("job");
         assert_eq!(job.options.seed_ratio, Some(1.5));
@@ -1209,7 +1209,7 @@ mod tests {
         assert_eq!(policy["downloadBytesPerSecondLimit"], 204800);
         assert_eq!(policy["uploadBytesPerSecondLimit"], 102400);
         assert_eq!(policy["segments"], 8);
-        assert_no_legacy_public_fields(&policy);
+        assert_no_removed_public_fields(&policy);
 
         let job = engine.registry.get(gid).expect("job");
         assert_eq!(job.options.max_download_limit, 204800);
@@ -1300,7 +1300,7 @@ mod tests {
             sources["sources"][1]["uri"],
             "https://mirror-b.example/file.iso"
         );
-        assert_no_legacy_public_fields(&sources);
+        assert_no_removed_public_fields(&sources);
 
         let job = engine.registry.get(gid).expect("job");
         assert_eq!(
@@ -1460,7 +1460,7 @@ mod tests {
 
         assert_eq!(queue["position"], 0);
         assert_eq!(queue["taskId"], third.task_id.as_str());
-        assert_no_legacy_public_fields(&queue);
+        assert_no_removed_public_fields(&queue);
         assert_eq!(
             engine.scheduler.waiting_task_queue(),
             vec![third.task_id, first.task_id, second.task_id]
@@ -1538,7 +1538,7 @@ mod tests {
         assert_eq!(files["files"][0]["selected"], false);
         assert_eq!(files["files"][1]["id"], "file_1");
         assert_eq!(files["files"][1]["selected"], true);
-        assert_no_legacy_public_fields(&files);
+        assert_no_removed_public_fields(&files);
 
         let job = engine.registry.get(gid).expect("job");
         assert_eq!(job.options.bt_selected_files, Some(vec![1]));
@@ -1725,7 +1725,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn native_events_websocket_ignores_legacy_download_event_bus() {
+    async fn native_events_websocket_ignores_internal_download_event_bus() {
         let engine = Arc::new(Engine::new(GlobalConfig::default()));
         let summary = engine
             .add_native_task(&AddUriSpec {
@@ -1772,11 +1772,11 @@ mod tests {
             speed: 64,
         });
 
-        let legacy_frame =
+        let internal_frame =
             tokio::time::timeout(std::time::Duration::from_millis(250), ws.next()).await;
         assert!(
-            legacy_frame.is_err(),
-            "native event stream must not forward legacy DownloadEvent bus messages"
+            internal_frame.is_err(),
+            "native event stream must not forward internal DownloadEvent bus messages"
         );
 
         cancel.cancel();

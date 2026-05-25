@@ -1174,7 +1174,7 @@ mod tests {
     }
 
     #[test]
-    fn interrupted_segment_persistence_does_not_create_legacy_rows() {
+    fn interrupted_segment_persistence_uses_native_rows() {
         let dir = tempdir().expect("tempdir");
         let store_path = dir.path().join("session.redb");
         let store = Arc::new(Store::open(&store_path).expect("store"));

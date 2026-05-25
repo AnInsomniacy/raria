@@ -5,7 +5,7 @@
 //! Metalink 4.0 (RFC 5854) parser for raria.
 //!
 //! Parses `.metalink` / `.meta4` XML files and normalizes them into
-//! raria-compatible multi-mirror download jobs.
+//! raria-native multi-mirror download jobs.
 //!
 //! ## Modules
 //!
