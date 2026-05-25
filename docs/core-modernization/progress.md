@@ -645,3 +645,9 @@ Changed: Closed native product docs and release closure. README now documents th
 Verified: `cargo test -p raria-cli --test product_cli completion_generates_native_script_without_runtime_logs -- --nocapture` passed. `cargo fmt --all --check`, `cargo check --workspace --locked`, CSV validation for 25 files, `git diff --check`, strict product stale scan, and completion output scan passed. The only root-doc Motrix hit is the allowed future native adapter sentence.
 Remaining: Start CM-022 final workspace validation.
 Blocked: none.
+
+2026-05-25 CM-022 verified
+Changed: Closed final validation. Capability ledger rows now classify all capabilities as verified, limited, excluded, or rejected. CM-022 records final formatting, check, test, clippy, smoke evidence, and tracker closure. Roadmap rows CM-001 through CM-022 are verified.
+Verified: `cargo fmt --all --check` passed. `cargo check --workspace --locked` passed. `cargo test --workspace` passed. `cargo clippy --workspace --all-targets -- -D warnings` passed. CSV validation, stale scans, and `git diff --check` passed before tracker closure. Focused local smoke evidence covers native API creation/events, range resume, torrent-file ingress, remote torrent metadata, BitTorrent metadata and UDP tracker behavior, BT fastresume restore, daemon persistence restore, session save, SIGUSR1 save, and clean completion output.
+Remaining: none for the core-modernization tracker.
+Blocked: none.
