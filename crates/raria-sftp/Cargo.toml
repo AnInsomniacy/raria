@@ -10,8 +10,8 @@ rust-version.workspace = true
 [dependencies]
 raria-core = { workspace = true }
 raria-range = { workspace = true }
-russh = "0.51"
-russh-sftp = "2"
+russh = { workspace = true }
+russh-sftp = { workspace = true }
 tokio = { workspace = true }
 async-trait = { workspace = true }
 anyhow = { workspace = true }
@@ -20,7 +20,7 @@ tracing = { workspace = true }
 url = { workspace = true }
 tokio-socks = { workspace = true }
 bytes = { workspace = true }
-home = "0.5"
+home = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

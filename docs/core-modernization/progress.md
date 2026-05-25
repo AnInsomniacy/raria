@@ -55,3 +55,14 @@ Verified: CSV parser validation passed for 25 files. `git diff --check`
 passed.
 Remaining: Start CM-002 dependency policy verification.
 Blocked: none.
+
+2026-05-25 CM-002 verified
+Changed: Centralized repeated direct dependency versions in workspace
+dependencies for FTP, SFTP, BitTorrent, checksum, TLS helper, platform, and
+focused test crates. Rebuilt `dependency-ledger.csv` with locked versions,
+target ownership, accepted transitive duplicate boundaries, rejected dependency
+directions, and upgrade policy. Marked CM-002 rows verified.
+Verified: `cargo check --workspace --locked` passed. CSV parser validation
+passed for 25 files. `git diff --check` passed.
+Remaining: Start CM-003 native surface audit and deletion map.
+Blocked: none.

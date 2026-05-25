@@ -33,6 +33,22 @@ reqwest = { version = "0.12", default-features = false, features = [
     "stream", "gzip", "brotli", "cookies", "socks", "rustls-tls"
 ] }
 reqwest_cookie_store = "0.8"
+cookie_store = "0.21"
+
+# === FTP / SFTP ===
+suppaftp = { version = "8", features = ["tokio-rustls-ring"] }
+russh = "0.51"
+russh-sftp = "2"
+rustls-pemfile = "2"
+rustls-native-certs = "0.8"
+async-stream = "0.3"
+home = "0.5"
+
+# === BitTorrent ===
+librqbit = { version = "8.1.1", default-features = false }
+librqbit-bencode = { version = "3", default-features = false }
+librqbit-dht = { version = "5", default-features = false }
+sha1_smol = "1"
 
 # === RPC ===
 jsonrpsee = { version = "0.24", features = ["server", "macros"] }
@@ -69,6 +85,8 @@ tracing-appender = "0.2"
 # === Utilities ===
 url = "2"
 sha2 = "0.10"
+sha1 = "0.10"
+md-5 = "0.10"
 anyhow = "1"
 thiserror = "2"
 chrono = { version = "0.4", features = ["serde"] }
@@ -82,7 +100,7 @@ tokio-tungstenite = "0.24"
 tokio-socks = "0.5"
 netrc = { package = "rust-netrc", version = "0.1.2" }
 nix = { version = "0.29", features = ["signal", "process"] }
-cookie_store = "0.21"
+libc = "0.2"
 
 # === Workspace Crates ===
 raria-core = { path = "crates/raria-core" }
@@ -102,9 +120,9 @@ rustls = "0.23"
 tokio-rustls = "0.26"
 rcgen = "0.13"
 digest_auth = "0.3.1"
+serial_test = "3"
 
 [profile.release]
 lto = true
 codegen-units = 1
 strip = true
-

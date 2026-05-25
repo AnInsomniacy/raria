@@ -13,9 +13,9 @@ raria-range = { workspace = true }
 raria-http = { workspace = true }
 raria-ftp = { workspace = true }
 raria-sftp = { workspace = true }
-librqbit = { version = "8", default-features = false, features = ["rust-tls", "http-api-client"] }
-librqbit-bencode = { version = "3", default-features = false, features = ["sha1-ring"] }
-librqbit-dht = { version = "5", default-features = false, features = ["sha1-ring"] }
+librqbit = { workspace = true, features = ["rust-tls", "http-api-client"] }
+librqbit-bencode = { workspace = true, features = ["sha1-ring"] }
+librqbit-dht = { workspace = true, features = ["sha1-ring"] }
 tokio = { workspace = true }
 tokio-util = { workspace = true }
 anyhow = { workspace = true }
@@ -26,13 +26,13 @@ serde_json = { workspace = true }
 hex = { workspace = true }
 parking_lot = { workspace = true }
 url = { workspace = true }
-sha1_smol = "1"
+sha1_smol = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
 tokio-test = { workspace = true }
 tokio-util = { workspace = true }
-serial_test = "3"
+serial_test = { workspace = true }
 wiremock = { workspace = true }
-russh = "0.51"
-russh-sftp = "2"
+russh = { workspace = true }
+russh-sftp = { workspace = true }

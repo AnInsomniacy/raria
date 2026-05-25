@@ -10,14 +10,14 @@ rust-version.workspace = true
 [dependencies]
 raria-core = { workspace = true }
 raria-range = { workspace = true }
-suppaftp = { version = "8", features = ["tokio-rustls-ring"] }
+suppaftp = { workspace = true }
 rustls = { workspace = true }
 tokio-rustls = { workspace = true }
-rustls-pemfile = "2"
-rustls-native-certs = "0.8"
+rustls-pemfile = { workspace = true }
+rustls-native-certs = { workspace = true }
 tokio = { workspace = true }
 async-trait = { workspace = true }
-async-stream = "0.3"
+async-stream = { workspace = true }
 anyhow = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
