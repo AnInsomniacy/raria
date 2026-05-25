@@ -287,12 +287,12 @@ impl Engine {
                     );
                     job.status = Status::Waiting;
                     self.registry.load_from(vec![job]);
-                    self.cancel_registry.register(gid);
+                    self.cancel_registry.register(task_id_for_queue.clone());
                     self.scheduler.enqueue_task(task_id_for_queue);
                 }
                 Status::Waiting => {
                     self.registry.load_from(vec![job]);
-                    self.cancel_registry.register(gid);
+                    self.cancel_registry.register(task_id_for_queue.clone());
                     self.scheduler.enqueue_task(task_id_for_queue);
                 }
                 Status::Paused => {
@@ -754,7 +754,7 @@ impl Engine {
                 job.upload_speed = 0;
             })
             .context("native task not found")?;
-        self.cancel_registry.register(gid);
+        self.cancel_registry.register(task_id.clone());
         self.scheduler.enqueue_task(task_id.clone());
         self.persist_job_by_gid(gid);
         self.event_bus.publish(DownloadEvent::Started { gid });
@@ -797,7 +797,7 @@ impl Engine {
         // Persist BEFORE in-memory state so crash-safe.
         self.persist_job(&job);
 
-        self.cancel_registry.register(gid);
+        self.cancel_registry.register(task_id.clone());
         self.native_task_index.lock().register(task_id.clone(), gid);
         self.registry
             .insert(job)
@@ -908,8 +908,8 @@ impl Engine {
             .context("job not found")?
             .context("pause failed")?;
 
-        self.cancel_registry.cancel(gid);
         if let Some(task_id) = self.task_id_for_gid(gid) {
+            self.cancel_registry.cancel(&task_id);
             self.scheduler.dequeue_task(&task_id);
         }
 
@@ -940,8 +940,8 @@ impl Engine {
             .context("job not found")?
             .context("unpause failed")?;
 
-        self.cancel_registry.register(gid);
         if let Some(task_id) = self.task_id_for_gid(gid) {
+            self.cancel_registry.register(task_id.clone());
             self.scheduler.enqueue_task(task_id);
         }
 
@@ -965,8 +965,8 @@ impl Engine {
 
     /// Remove a job (any state → Removed).
     pub fn remove(&self, gid: Gid) -> Result<()> {
-        self.cancel_registry.cancel(gid);
         if let Some(task_id) = self.task_id_for_gid(gid) {
+            self.cancel_registry.cancel(&task_id);
             self.scheduler.dequeue_task(&task_id);
         }
 
@@ -1047,12 +1047,17 @@ impl Engine {
         );
         debug!(%gid, "job activated");
 
-        // Return the cancel token for this job.
+        let task_id = self.task_id_for_gid(gid).context("native task not found")?;
+
+        // Return the cancel token for this task.
         // If one doesn't exist (shouldn't happen), create one.
-        let token = self.cancel_registry.child_token(gid).unwrap_or_else(|| {
-            warn!(%gid, "no cancel token found during activation, creating one");
-            self.cancel_registry.register(gid)
-        });
+        let token = self
+            .cancel_registry
+            .child_token(&task_id)
+            .unwrap_or_else(|| {
+                warn!(%gid, "no cancel token found during activation, creating one");
+                self.cancel_registry.register(task_id)
+            });
         Ok(token)
     }
 
@@ -1066,7 +1071,9 @@ impl Engine {
             .context("job not found")?
             .context("complete transition failed")?;
 
-        self.cancel_registry.remove(gid);
+        if let Some(task_id) = self.task_id_for_gid(gid) {
+            self.cancel_registry.remove(&task_id);
+        }
         self.persist_job_by_gid(gid);
         self.event_bus.publish(DownloadEvent::Complete { gid });
         self.publish_native_task_event_for_gid(
@@ -1099,7 +1106,9 @@ impl Engine {
             .context("job not found")?
             .context("error transition failed")?;
 
-        self.cancel_registry.remove(gid);
+        if let Some(task_id) = self.task_id_for_gid(gid) {
+            self.cancel_registry.remove(&task_id);
+        }
         self.persist_job_by_gid(gid);
         self.event_bus.publish(DownloadEvent::Error {
             gid,
@@ -1324,7 +1333,7 @@ impl Engine {
         let seeding = self.registry.by_status(Status::Seeding);
         let mut count = 0;
         for job in active.iter().chain(seeding.iter()) {
-            if self.cancel_registry.cancel(job.gid) {
+            if self.cancel_registry.cancel(&job.task_id) {
                 count += 1;
             }
         }
@@ -1878,8 +1887,8 @@ impl Engine {
     /// aria2 equivalent: `aria2.forceRemove`
     pub fn force_remove(&self, gid: Gid) -> Result<()> {
         // Cancel first — even if the task is still running.
-        self.cancel_registry.cancel(gid);
         if let Some(task_id) = self.task_id_for_gid(gid) {
+            self.cancel_registry.cancel(&task_id);
             self.scheduler.dequeue_task(&task_id);
         }
         self.clear_job_rate_limiter(gid);

@@ -172,3 +172,16 @@ aliases. CSV parser validation passed for 25 files. `git diff --check`
 passed.
 Remaining: Start CM-007 TaskId ownership after final validation.
 Blocked: none.
+
+2026-05-25 CM-007 partial
+Changed: Moved cancellation ownership from runtime `Gid` keys to native
+`TaskId` keys. Engine restore, submit, restart, pause, resume, remove,
+activate, complete, fail, shutdown, and force-remove paths now register or
+cancel tokens through task identifiers while the runtime bridge remains
+private.
+Verified: `cargo test -p raria-core cancel -- --nocapture` passed with 17
+matching tests. `cargo test -p raria-core activate_job -- --nocapture`
+passed. `cargo check --workspace --locked` passed.
+Remaining: Continue CM-007 scheduler lookup and public `Gid` projection
+cleanup.
+Blocked: none.
