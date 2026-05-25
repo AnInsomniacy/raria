@@ -31,9 +31,9 @@ The retained product contract is `/api/v1`. Current native routes are:
 | `/api/v1/tasks/{taskId}/bt/seeding` | GET, PATCH | BitTorrent seeding policy | Retain |
 | `/api/v1/tasks/{taskId}/transfer` | GET, PATCH | per-task transfer policy | Retain |
 
-Known CM-005 and later gaps are native API contract documentation, exact
-request and response schema stability, native CORS/origin policy, and removal
-of the shared listener merge with the JSON-RPC server.
+CM-005 and CM-020 closed the native API/event replacement path. Native
+resources and `/api/v1/events` are the public contract. JSON-RPC listener
+merge, old method routes, and old notification delivery are deleted.
 
 ## Native Event Stream
 
@@ -45,25 +45,24 @@ types are `task.created`, `task.started`, `task.paused`, `task.resumed`,
 `task.bt.seeding.started`, `task.bt.peer.updated`, and
 `task.bt.tracker.updated`.
 
-`crates/raria-rpc/src/events.rs`, `ws_event_push_loop`, `DownloadEvent`
-notification projection, and same-socket JSON-RPC notification delivery are
-legacy surfaces. Delete them after native event coverage fully replaces useful
-lifecycle, progress, source failure, BitTorrent metadata, seeding, peer, and
-tracker evidence.
+The old event projection and same-socket notification delivery were deleted
+after native event coverage replaced lifecycle, progress, source failure,
+BitTorrent metadata, seeding, peer, and tracker evidence. `DownloadEvent`
+remains private runtime bridge input only where core and daemon internals still
+need it.
 
 ## JSON-RPC Deletion Map
 
-Delete the JSON-RPC server contract. This includes `/`, `/jsonrpc`,
-`jsonrpsee`, `RpcHandler`, `Aria2Rpc`, `RpcOptions`, `system.multicall`,
-`system.listMethods`, `system.listNotifications`, token-in-params auth,
-same-socket notification delivery, and aria2 method or notification names.
+CM-020 deleted the JSON-RPC server contract. Removed surfaces include `/`,
+`/jsonrpc`, the jsonrpsee direct dependency, RPC handlers, method facades,
+system methods, token-in-params auth, same-socket notification delivery, and
+old method or notification names.
 
-Useful behavior that must already have or receive native coverage before
-deletion is task creation, task removal, pause, resume, task status, list by
-lifecycle, global stats, session save, shutdown, per-task options, global
-transfer policy, queue position, file selection, source mutation, tracker
-mutation, peer projection, and event delivery. These map to CM-005 through
-CM-019, then CM-020 deletes the legacy surface.
+Useful behavior is retained through native resources for task creation, task
+removal, pause, resume, task status, list by lifecycle, global stats, session
+save, shutdown, per-task transfer policy, global transfer policy, queue
+position, file selection, source mutation, tracker mutation, peer projection,
+and event delivery.
 
 ## CLI And Configuration Surfaces
 
@@ -72,33 +71,19 @@ Retained CLI names are native names such as `daemon --api-port`,
 `--on-task-start`, `--on-task-complete`, and `--on-task-fail`.
 
 Runtime `GlobalConfig` now uses native names for retained transfer,
-directory, proxy, cookie, retry, resume, and segment policy. Transitional
-fields that remain in CM-006 and dependent checkpoints are `rpc_secret`,
-`rpc_allow_origin_all`, task-level `dir`, task-level `out`,
-`bt_selected_files`, `bt_trackers`, `seed_ratio`, and `seed_time`.
-
-Some of these names describe useful behavior. Keep the behavior through
-native task or BitTorrent policy names. Delete aria2-shaped names and comments
-once callers move to the native schema.
+directory, proxy, cookie, retry, resume, segment, BitTorrent, and daemon
+lifecycle policy. Task-level public fields use native task creation names.
 
 ## Tests And Documentation
 
-Retain high-value native tests in `crates/raria-rpc/tests/native_api.rs`,
-daemon smoke tests, native config tests, protocol smoke tests, persistence
-tests, and targeted regression tests. Trim any test that exists only to prove
-aria2 wire format, JSON-RPC behavior, system method discovery, token-in-params
-auth, or legacy notification shape.
+Retained tests are high-value native contract tests, daemon smoke tests,
+native config tests, protocol smoke tests, persistence tests, and targeted
+regression tests. Tests that existed only for old wire format, JSON-RPC
+behavior, system method discovery, token-in-params auth, or old notification
+shape were deleted instead of translated mechanically.
 
-Current deletion candidates are `crates/raria-rpc/tests/rpc_parity.rs`,
-`multicall_parity.rs`, `options_parity.rs`, `ws_parity.rs`, `ws_push.rs`,
-`rpc_secret.rs`, `global_stat.rs`, `http_cors.rs`, and
-`legacy_surface.rs`. Migrate only the useful behavior that is not already
-covered by native tests. Do not translate parity scaffolding mechanically.
-
-README.md still mentions old JSON-RPC as a temporary harness. Remove that
-wording when CM-020 deletes the legacy implementation. Product docs after
-CM-021 must describe only native API resources, native events, native CLI, and
-native configuration.
+Product docs after CM-021 describe only native API resources, native events,
+native CLI, native completion, and native configuration.
 
 ## Reproducible Stale-Surface Baseline
 
@@ -110,8 +95,7 @@ rg -n "\\bGid\\b|\\bgid\\b" crates README.md docs/core-modernization
 rg -n "compat|parity|legacy|rpc_secret|rpc_allow_origin_all|rpc-port|rpc-secret" crates README.md docs/core-modernization
 ```
 
-Expected CM-003 baseline findings are active JSON-RPC implementation in
-`crates/raria-rpc/src/server.rs`, `methods.rs`, `events.rs`, and `facade.rs`;
-aria2 compatibility tests under `crates/raria-rpc/tests`; transitional
-`Gid` and `Job` ownership in core runtime paths; transitional runtime config
-field names; and README wording that describes JSON-RPC as temporary.
+Expected post-CM-020 findings are historical tracker evidence only for old
+public surfaces. Runtime-private `Gid`, `Job`, `EventBus`, and `DownloadEvent`
+references may remain only where they are documented private implementation
+details and never public product contract.

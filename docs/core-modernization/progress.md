@@ -621,3 +621,27 @@ field. Broad compatibility scan only reports transitive Cargo.lock package
 names `no-std-compat` and `idna_adapter`.
 Remaining: Start CM-021 native product docs completion and release closure.
 Blocked: none.
+
+2026-05-25 CM-021 partial
+Changed: Added native shell completion through `raria completion <shell>`
+using `clap_complete`. Completion exits before logging setup so generated
+scripts are clean stdout. Updated README, CHANGELOG, CONTRIBUTING, package
+metadata, native-surface audit, core-ownership audit, roadmap, checkpoint
+rows, and capability ledger to describe the native product contract only.
+Future clients are documented as `/api/v1` and `/api/v1/events` consumers with
+opaque task IDs and native field names.
+Verified: `cargo test -p raria-cli --test product_cli
+completion_generates_native_script_without_runtime_logs -- --nocapture`
+passed. Earlier focused unit filters for completion parsing and help native
+names passed. Manual completion generation to `var/raria.bash` showed native
+flags such as `--api-port` and `--download-dir` without runtime logs or old
+surface strings.
+Remaining: Run CM-021 product scans, CSV validation, formatting, workspace
+check, and close the checkpoint.
+Blocked: none.
+
+2026-05-25 CM-021 verified
+Changed: Closed native product docs and release closure. README now documents the native client contract, shell completion, native routes, native events, and final verification ladder. CHANGELOG and package metadata match the retained Rust-native product surface. CONTRIBUTING typo was corrected. CM-005 was marked verified because old event projection and JSON-RPC compile-time debt were already deleted in CM-020.
+Verified: `cargo test -p raria-cli --test product_cli completion_generates_native_script_without_runtime_logs -- --nocapture` passed. `cargo fmt --all --check`, `cargo check --workspace --locked`, CSV validation for 25 files, `git diff --check`, strict product stale scan, and completion output scan passed. The only root-doc Motrix hit is the allowed future native adapter sentence.
+Remaining: Start CM-022 final workspace validation.
+Blocked: none.

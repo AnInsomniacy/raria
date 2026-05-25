@@ -23,7 +23,7 @@ Contributions should preserve these rules:
 3. Do not weaken tests, hide regressions, or advertise unsupported capability.
 4. Keep changes inside the intended area unless correctness forces a wider change.
 5. Use mature libraries for protocol ownership and keep raria policy small.
-6. Delete obsolete obsolete public surfaces after useful native coverage exists.
+6. Delete obsolete public surfaces after useful native coverage exists.
 
 ## Dependency Policy
 

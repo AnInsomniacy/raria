@@ -3,21 +3,20 @@
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/rust-1.85%2B-orange.svg)](https://www.rust-lang.org/)
 
-`raria` is a modern Rust download manager focused on backend correctness, durable task state, protocol coverage, and a native control model.
+`raria` is a modern Rust-native download manager focused on backend correctness, durable task state, protocol coverage, and a native control model.
 
 The public surface is native raria: `raria.toml`, `/api/v1` JSON resources, `/api/v1/events` WebSocket events, versioned persistence schemas, and CLI names that describe raria concepts directly. Old external APIs, storage formats, option names, and client bridges are not product targets.
 
 ## Current Status
 
-The current tree is a real backend, not a skeleton:
+The current tree provides:
 
 - multi-protocol downloads across HTTP, HTTPS, FTP, FTPS, SFTP, BitTorrent, and Metalink
 - segmented range downloads, restart and resume, session persistence, and restore
 - native HTTP JSON daemon routes with a WebSocket event stream
 - checksum enforcement, conditional GET, mirror failover, and daemon-path Metalink execution
-- structured JSON file logging for the highest-value runtime surfaces
-
-Modernization is still in progress. Some internal modules still carry deletion debt, but the daemon product listener is native API only.
+- shell completion for retained native CLI commands
+- structured JSON file logging for high-value runtime surfaces
 
 ## Implemented Capabilities
 
@@ -46,6 +45,12 @@ These behaviors are backed by repository tests and current code:
 
 The active modernization and verification contract lives in
 [`docs/core-modernization/overview.md`](docs/core-modernization/overview.md).
+
+## Native Client Contract
+
+Future clients, including any Motrix Next adapter, should use the native HTTP JSON resources under `/api/v1` and the native WebSocket stream at `/api/v1/events`. Client state should treat `taskId` values as opaque identifiers and should depend only on documented native field names, routes, event types, and error codes.
+
+raria does not provide legacy protocol adapters, legacy method names, legacy field aliases, or legacy storage formats. Client integrations should map their UI concepts to raria tasks, sources, files, transfer policy, queue policy, tracker policy, seeding policy, and lifecycle events.
 
 ## Control Surface
 
@@ -129,6 +134,14 @@ raria download https://example.com/file.iso --checksum sha-256=<hex>
 raria daemon --download-dir ~/Downloads --api-port 6800
 ```
 
+### Shell Completion
+
+```bash
+raria completion bash > var/raria.bash
+raria completion zsh > var/_raria
+raria completion fish > var/raria.fish
+```
+
 ### Native API Example
 
 ```bash
@@ -182,8 +195,9 @@ docs/
 The minimum full-repository verification bar is:
 
 ```bash
+cargo fmt --all --check
+cargo check --workspace --locked
 cargo test --workspace
-cargo check --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 ```
 

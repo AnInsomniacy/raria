@@ -7,7 +7,8 @@ mod single;
 mod util;
 
 use anyhow::Result;
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, Parser, Subcommand};
+use clap_complete::{Shell, generate};
 use raria_core::config::GlobalConfig;
 use std::ffi::OsString;
 use std::path::PathBuf;
@@ -108,10 +109,11 @@ mod tests {
         assert_eq!(stop_when_parent_exits, Some(12345));
     }
 
+    #[test]
     fn help_exposes_native_cli_names_only() {
         let mut command = Cli::command();
         let mut help = command.render_long_help().to_string();
-        for subcommand in ["download", "daemon"] {
+        for subcommand in ["download", "daemon", "completion"] {
             help.push_str(
                 &command
                     .find_subcommand_mut(subcommand)
@@ -136,6 +138,7 @@ mod tests {
             "--http-password",
             "--task-file",
             "--detach",
+            "completion",
         ] {
             assert!(tokens.contains(&native), "missing native flag {native}");
         }
@@ -160,6 +163,16 @@ mod tests {
                 "missing native value name {native_value}"
             );
         }
+    }
+
+    #[test]
+    fn completion_accepts_shell_name() {
+        let cli =
+            Cli::try_parse_from(["raria", "completion", "bash"]).expect("parse completion shell");
+        let Commands::Completion { shell } = cli.command else {
+            panic!("expected completion command");
+        };
+        assert_eq!(shell, clap_complete::Shell::Bash);
     }
 }
 
@@ -529,6 +542,13 @@ enum Commands {
         #[arg(long = "stop-when-parent-exits", value_name = "PARENT_PID")]
         stop_when_parent_exits: Option<u32>,
     },
+
+    /// Generate native shell completion for raria.
+    Completion {
+        /// Target shell.
+        #[arg(value_enum)]
+        shell: Shell,
+    },
 }
 
 #[tokio::main]
@@ -536,6 +556,17 @@ async fn main() -> Result<()> {
     #[allow(unused_variables)]
     let raw_args: Vec<OsString> = std::env::args_os().collect();
     let cli = Cli::parse();
+
+    let completion_shell = match &cli.command {
+        Commands::Completion { shell } => Some(*shell),
+        _ => None,
+    };
+    if let Some(shell) = completion_shell {
+        let mut command = Cli::command();
+        let command_name = command.get_name().to_string();
+        generate(shell, &mut command, command_name, &mut std::io::stdout());
+        return Ok(());
+    }
 
     #[cfg(unix)]
     {
@@ -870,6 +901,7 @@ async fn main() -> Result<()> {
             )
             .await?;
         }
+        Commands::Completion { .. } => unreachable!("completion exits before logging setup"),
     }
 
     Ok(())

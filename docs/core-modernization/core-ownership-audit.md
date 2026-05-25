@@ -75,11 +75,11 @@ piece, tracker, and BT state rows take ownership.
 
 ## Event Ownership
 
-`NativeEventBus` is the retained event source. `EventBus` and `DownloadEvent`
-exist for legacy JSON-RPC notification projection and some internal tests.
-Native lifecycle, progress, source failure, BitTorrent metadata, seeding,
-peer, and tracker events must publish through `NativeEventBus` only after
-CM-005. Delete aria2 notification projection in CM-020.
+`NativeEventBus` is the retained public event source. `EventBus` and
+`DownloadEvent` remain private runtime bridge inputs for core and daemon paths.
+The old public notification projection was deleted in CM-020. Native
+lifecycle, progress, source failure, BitTorrent metadata, seeding, peer, and
+tracker events publish through the native event stream.
 
 ## BitTorrent Runtime Bridge
 
@@ -99,11 +99,11 @@ native task rows and native snapshots without wrapping librqbit internals.
 ## Refactor Order
 
 CM-007 should remove public `Gid` behavior and unify identity lookup.
-CM-008 should move lifecycle, scheduler activation, cancellation, status
-projection, and result operations to native task services. CM-009 should make
-native redb rows the only session truth. CM-005 and CM-020 should remove the
-legacy event and JSON-RPC paths after native coverage is sufficient. CM-019
-should finish taskId logging and security surface cleanup.
+CM-008 moved lifecycle, scheduler activation, cancellation, status projection,
+and result operations toward native task services. CM-009 made native redb
+rows the only session truth. CM-005 and CM-020 removed the old public event
+and control paths after native coverage was sufficient. CM-019 finished the
+daemon lifecycle, auth, hooks, and taskId logging surface cleanup.
 
 No implementation cleanup should happen only for appearance. Each deletion
 must remove a legacy owner, replace it with a native owner, or document a
