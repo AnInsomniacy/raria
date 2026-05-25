@@ -130,6 +130,29 @@ mod tests {
     }
 
     #[test]
+    fn daemon_accepts_native_lifecycle_shutdown_policy_names() {
+        let cli = Cli::try_parse_from([
+            "raria",
+            "daemon",
+            "--stop-after",
+            "60",
+            "--stop-when-parent-exits",
+            "12345",
+        ])
+        .expect("parse native daemon lifecycle names");
+        let Commands::Daemon {
+            stop_after,
+            stop_when_parent_exits,
+            ..
+        } = cli.command
+        else {
+            panic!("expected daemon command");
+        };
+        assert_eq!(stop_after, Some(60));
+        assert_eq!(stop_when_parent_exits, Some(12345));
+    }
+
+    #[test]
     fn daemon_rejects_legacy_download_hook_names() {
         let err = match Cli::try_parse_from([
             "raria",
@@ -598,6 +621,14 @@ enum Commands {
         /// Passphrase for the SSH private key used for SFTP authentication.
         #[arg(long)]
         sftp_private_key_passphrase: Option<String>,
+
+        /// Stop the daemon after this many seconds.
+        #[arg(long = "stop-after", value_name = "STOP_AFTER")]
+        stop_after: Option<u64>,
+
+        /// Stop the daemon when this parent process exits.
+        #[arg(long = "stop-when-parent-exits", value_name = "PARENT_PID")]
+        stop_when_parent_exits: Option<u32>,
     },
 }
 
@@ -803,6 +834,8 @@ async fn main() -> Result<()> {
             sftp_known_hosts,
             sftp_private_key,
             sftp_private_key_passphrase,
+            stop_after,
+            stop_when_parent_exits,
         } => {
             let mut config = base_config.clone();
             config.download_dir = dir.clone();
@@ -910,6 +943,8 @@ async fn main() -> Result<()> {
             if sftp_private_key_passphrase.is_some() {
                 config.sftp_private_key_passphrase = sftp_private_key_passphrase;
             }
+            config.daemon_stop_after_seconds = stop_after;
+            config.daemon_parent_pid = stop_when_parent_exits;
             config.file_allocation =
                 raria_core::file_alloc::FileAllocation::parse(&file_allocation)?;
 

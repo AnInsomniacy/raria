@@ -123,6 +123,8 @@ mod tests {
             download_dir = "/downloads"
             session_path = "/state/raria.redb"
             max_active_tasks = 9
+            stop_after_seconds = 60
+            stop_when_parent_exits = 12345
 
             [api]
             listen_addr = "127.0.0.1:7900"
@@ -158,6 +160,8 @@ mod tests {
         assert_eq!(global.download_dir.to_string_lossy(), "/downloads");
         assert_eq!(global.session_file.to_string_lossy(), "/state/raria.redb");
         assert_eq!(global.max_concurrent_downloads, 9);
+        assert_eq!(global.daemon_stop_after_seconds, Some(60));
+        assert_eq!(global.daemon_parent_pid, Some(12345));
         assert_eq!(global.api_listen_port, 7900);
         assert_eq!(global.default_segments, 7);
         assert_eq!(global.min_segment_size, 2097152);

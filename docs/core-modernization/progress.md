@@ -587,3 +587,16 @@ passed.
 10 tests after the environment proxy change.
 Remaining: Start CM-019 daemon lifecycle security logs and hooks.
 Blocked: none.
+
+2026-05-25 CM-019 verified
+Changed: Closed daemon lifecycle, security, structured logs, and hooks.
+Native daemon policy now supports `--stop-after`,
+`--stop-when-parent-exits`, `stop_after_seconds`, and
+`stop_when_parent_exits`. The daemon shuts down through native policy for
+the native API shutdown route, SIGTERM, stop-after timer, and Unix parent
+PID monitoring. Native hooks, bearer auth, and redacted task-context logs
+remain covered by focused daemon smokes.
+Verified: Focused daemon lifecycle, hook, auth, redaction, native config,
+CLI parse, fmt, check, CSV, and diff validations passed.
+Remaining: Start CM-020 legacy deletion and stale scans.
+Blocked: none.

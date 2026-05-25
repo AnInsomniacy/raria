@@ -21,6 +21,7 @@ use raria_rpc::api::{NativeApiConfig, start_native_api_server};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
 
@@ -174,6 +175,25 @@ pub(crate) async fn run_daemon_with_config(
         });
     }
 
+    if let Some(seconds) = config
+        .daemon_stop_after_seconds
+        .filter(|seconds| *seconds > 0)
+    {
+        let engine_ref = Arc::clone(&engine);
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_secs(seconds)).await;
+            info!(seconds, "daemon stop timer elapsed");
+            engine_ref.shutdown();
+        });
+    }
+
+    if let Some(parent_pid) = config.daemon_parent_pid {
+        let engine_ref = Arc::clone(&engine);
+        tokio::spawn(async move {
+            watch_parent_process(parent_pid, engine_ref).await;
+        });
+    }
+
     let api_cancel = CancellationToken::new();
     spawn_hook_runner(
         Arc::clone(&engine),
@@ -289,6 +309,39 @@ pub(crate) async fn run_daemon_with_config(
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
     info!("daemon stopped");
     Ok(())
+}
+
+#[cfg(unix)]
+async fn watch_parent_process(parent_pid: u32, engine: Arc<Engine>) {
+    loop {
+        if engine.shutdown_token().is_cancelled() {
+            break;
+        }
+        if !process_is_alive(parent_pid) {
+            info!(parent_pid, "parent process exited, shutting down daemon");
+            engine.shutdown();
+            break;
+        }
+        tokio::time::sleep(Duration::from_secs(1)).await;
+    }
+}
+
+#[cfg(unix)]
+fn process_is_alive(pid: u32) -> bool {
+    if pid == 0 {
+        return false;
+    }
+    let result = unsafe { libc::kill(pid as libc::pid_t, 0) };
+    result == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+}
+
+#[cfg(not(unix))]
+async fn watch_parent_process(parent_pid: u32, engine: Arc<Engine>) {
+    warn!(
+        parent_pid,
+        "parent process monitoring is not supported on this platform"
+    );
+    engine.shutdown();
 }
 
 /// Configuration context built from engine globals for a single download job.

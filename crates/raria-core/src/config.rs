@@ -157,6 +157,10 @@ pub struct GlobalConfig {
     pub on_task_complete: Option<PathBuf>,
     /// Hook script fired when a task fails.
     pub on_task_fail: Option<PathBuf>,
+    /// Stop the daemon after this many seconds.
+    pub daemon_stop_after_seconds: Option<u64>,
+    /// Stop the daemon when this parent process exits.
+    pub daemon_parent_pid: Option<u32>,
 }
 
 impl Default for GlobalConfig {
@@ -217,6 +221,8 @@ impl Default for GlobalConfig {
             on_task_start: None,
             on_task_complete: None,
             on_task_fail: None,
+            daemon_stop_after_seconds: None,
+            daemon_parent_pid: None,
         }
     }
 }

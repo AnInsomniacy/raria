@@ -75,6 +75,8 @@ impl RariaConfig {
             on_task_start: self.hooks.task_started.clone(),
             on_task_complete: self.hooks.task_completed.clone(),
             on_task_fail: self.hooks.task_failed.clone(),
+            daemon_stop_after_seconds: self.daemon.stop_after_seconds,
+            daemon_parent_pid: self.daemon.stop_when_parent_exits,
             ..GlobalConfig::default()
         };
 
@@ -104,6 +106,10 @@ pub struct DaemonConfig {
     pub session_path: PathBuf,
     /// Maximum number of tasks allowed to run at once.
     pub max_active_tasks: u32,
+    /// Stop the daemon after this many seconds.
+    pub stop_after_seconds: Option<u64>,
+    /// Stop the daemon when this parent process exits.
+    pub stop_when_parent_exits: Option<u32>,
 }
 
 impl Default for DaemonConfig {
@@ -112,6 +118,8 @@ impl Default for DaemonConfig {
             download_dir: PathBuf::from("."),
             session_path: PathBuf::from("raria.session.redb"),
             max_active_tasks: 5,
+            stop_after_seconds: None,
+            stop_when_parent_exits: None,
         }
     }
 }

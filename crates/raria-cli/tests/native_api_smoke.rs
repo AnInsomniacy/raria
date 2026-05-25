@@ -752,6 +752,41 @@ async fn daemon_native_api_shutdown_stops_daemon_without_json_rpc() {
 }
 
 #[tokio::test]
+async fn daemon_stop_after_exits_through_native_timer() {
+    let temp = tempdir().expect("tempdir");
+    let session_file = temp.path().join("native-stop-after.session.redb");
+    let port = allocate_port();
+    let extra_args = vec![
+        std::ffi::OsString::from("--stop-after"),
+        std::ffi::OsString::from("1"),
+    ];
+    let mut child = spawn_native_daemon_with_args(temp.path(), &session_file, port, &extra_args);
+    wait_for_native_api_ready(port, &mut child)
+        .await
+        .expect("native API ready");
+
+    wait_for_child_exit_after_native_shutdown(&mut child).await;
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn daemon_stop_when_parent_exits_uses_native_pid_policy() {
+    let temp = tempdir().expect("tempdir");
+    let session_file = temp.path().join("native-parent-stop.session.redb");
+    let port = allocate_port();
+    let extra_args = vec![
+        std::ffi::OsString::from("--stop-when-parent-exits"),
+        std::ffi::OsString::from("999999"),
+    ];
+    let mut child = spawn_native_daemon_with_args(temp.path(), &session_file, port, &extra_args);
+    wait_for_native_api_ready(port, &mut child)
+        .await
+        .expect("native API ready");
+
+    wait_for_child_exit_after_native_shutdown(&mut child).await;
+}
+
+#[tokio::test]
 async fn daemon_does_not_expose_legacy_jsonrpc_endpoint() {
     let temp = tempdir().expect("tempdir");
     let session_file = temp.path().join("native-only.session.redb");
