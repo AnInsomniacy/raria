@@ -428,3 +428,28 @@ single_download_conditional_get_ignores_legacy_control_file -- --nocapture`
 passed. `cargo test -p raria-http --test if_range -- --nocapture` passed.
 Remaining: Start CM-012 FTP FTPS SFTP and SCP decision.
 Blocked: none.
+
+2026-05-25 CM-012 verified
+Changed: Closed the FTP, FTPS, SFTP, and SCP decision checkpoint. FTP/FTPS
+remain suppaftp-backed. SFTP remains russh/russh-sftp-backed and is the
+supported SSH-family file-transfer path. SCP is documented as a technical
+limitation because current candidate crates do not justify adding a new
+backend: `openssh` shells out to OpenSSH, `simple_ssh` is early 0.1.x, and
+`fast-scp` is a CLI tool. Touched SFTP comments no longer describe retained
+behavior as aria2 compatibility.
+Verified: `cargo test -p raria-ftp --test ftp_smoke -- --nocapture` passed
+with 3 tests. `cargo test -p raria-ftp --test ftps_smoke -- --nocapture`
+passed. `cargo test -p raria-sftp --test sftp_smoke -- --nocapture` passed
+with 5 tests. `cargo test -p raria-cli --test sftp_smoke -- --nocapture`
+passed with 3 tests. `cargo test -p raria-cli --test single_download
+single_download_supports_plain_ftp_urls -- --nocapture` passed. `cargo test
+-p raria-cli --test single_download
+single_download_supports_plain_ftp_urls_through_socks5_proxy -- --nocapture`
+passed. `cargo test -p raria-cli --test single_download
+single_download_supports_explicit_ftps_with_custom_ca -- --nocapture`
+passed. `cargo info suppaftp --locked`, `cargo info russh --locked`, `cargo
+info russh-sftp --locked`, `cargo info openssh --locked`, `cargo info
+simple_ssh --locked`, and `cargo info fast-scp --locked` recorded dependency
+freshness and SCP decision evidence.
+Remaining: Start CM-013 multi-source adaptive transfers.
+Blocked: none.

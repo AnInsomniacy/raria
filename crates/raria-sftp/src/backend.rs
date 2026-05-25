@@ -11,10 +11,9 @@
 //
 // Design notes:
 // - Each probe() and open_from() creates a fresh SSH connection.
-//   SFTP is stateful per-session. This matches aria2's behavior where each
-//   segment task independently connects to the server.
-// - For key-based auth, the URL should still contain the username.
-//   Password auth is the default; key auth support is a future enhancement.
+//   SFTP is stateful per-session, and each range segment owns its own session.
+// - For key-based auth, the URL or request context should still provide the
+//   username. Password auth is used when no private key is configured.
 
 use anyhow::{Context, Result};
 use async_trait::async_trait;
