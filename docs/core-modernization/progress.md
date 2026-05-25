@@ -322,3 +322,19 @@ task_mutation_routes_return_native_not_found_errors -- --nocapture` passed.
 `cargo check --workspace --locked` passed. `cargo fmt --all --check` passed.
 Remaining: Run CM-008 runtime closure checks.
 Blocked: none.
+
+2026-05-25 CM-008 verified
+Changed: Closed the native task runtime checkpoint. Lifecycle, range
+activation, BT activation, transfer policy mutation, and focused runtime
+coverage now use TaskId-first ownership. Remaining Gid bridge debt is private
+and assigned to native persistence and final legacy deletion checkpoints.
+Verified: `cargo test -p raria-core native_runtime -- --nocapture` passed with
+5 tests. `cargo test -p raria-core native_lifecycle -- --nocapture` passed
+with 2 tests. `cargo test -p raria-cli --bin raria bt -- --nocapture` passed
+with 24 tests. `cargo test -p raria-rpc --test native_api -- --nocapture`
+passed with 36 tests. `cargo test -p raria-cli --bin raria
+mirror_failover_publishes_source_failed_event_before_completion --
+--nocapture` passed. Stale runtime bridge scan passed. `cargo check
+--workspace --locked` passed.
+Remaining: Start CM-009 versioned native persistence.
+Blocked: none.
