@@ -249,13 +249,11 @@ fn select_best_piece_hashes(
 mod tests {
     use super::*;
     use crate::parser::{
-        MetalinkFile, MetalinkHash, MetalinkMetaUrl, MetalinkPieces, MetalinkUrl, MetalinkVersion,
-        RawMetalink,
+        MetalinkFile, MetalinkHash, MetalinkMetaUrl, MetalinkPieces, MetalinkUrl, RawMetalink,
     };
 
     fn sample_metalink() -> RawMetalink {
         RawMetalink {
-            version: MetalinkVersion::V4,
             files: vec![MetalinkFile {
                 name: "test.zip".into(),
                 size: Some(5000),
@@ -343,7 +341,6 @@ mod tests {
     #[test]
     fn normalize_can_keep_one_source_per_protocol_after_preference_sorting() {
         let ml = RawMetalink {
-            version: MetalinkVersion::V4,
             files: vec![MetalinkFile {
                 name: "f.bin".into(),
                 size: None,
@@ -404,7 +401,6 @@ mod tests {
     #[test]
     fn normalize_fallback_hash_when_no_preferred() {
         let ml = RawMetalink {
-            version: MetalinkVersion::V4,
             files: vec![MetalinkFile {
                 name: "f.bin".into(),
                 size: None,
@@ -431,7 +427,6 @@ mod tests {
     #[test]
     fn normalize_no_hashes_returns_none() {
         let ml = RawMetalink {
-            version: MetalinkVersion::V4,
             files: vec![MetalinkFile {
                 name: "f.bin".into(),
                 size: None,
@@ -453,7 +448,6 @@ mod tests {
     #[test]
     fn normalize_multifile() {
         let ml = RawMetalink {
-            version: MetalinkVersion::V4,
             files: vec![
                 MetalinkFile {
                     name: "a.bin".into(),
@@ -502,7 +496,6 @@ mod tests {
     #[test]
     fn normalize_keeps_piece_checksum_when_available() {
         let ml = RawMetalink {
-            version: MetalinkVersion::V4,
             files: vec![MetalinkFile {
                 name: "piece.bin".into(),
                 size: Some(2048),
@@ -531,7 +524,6 @@ mod tests {
     #[test]
     fn normalize_keeps_torrent_metaurl_as_metadata_source() {
         let ml = RawMetalink {
-            version: MetalinkVersion::V4,
             files: vec![MetalinkFile {
                 name: "example.iso".into(),
                 size: Some(1048576),

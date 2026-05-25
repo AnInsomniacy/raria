@@ -495,3 +495,25 @@ piece, range allocation, daemon checksum, Metalink piece checksum, rename, and
 overwrite tests passed. `cargo check --workspace --locked` passed.
 Remaining: Start CM-015 native Metalink closure.
 Blocked: none.
+
+2026-05-25 CM-015 verified
+Changed: Closed native Metalink. raria keeps a narrow Metalink 4 manifest path
+because `/api/v1/tasks` already accepts native manifest payloads and daemon
+coverage exists. Metalink 3 and old XML compatibility claims were removed.
+Parser and normalizer behavior covers native range task seeds, mirror filters,
+checksums, piece checksums, and torrent metaurl metadata sources. Torrent
+metaurl tasks are native BT tasks with WebSeed mirrors; `aria2.addMetalink`
+remains rejected.
+Verified: `cargo test -p raria-metalink -- --nocapture` passed with 21 tests.
+`cargo test -p raria-rpc --test native_api
+task_creation_metalink_bytes_creates_native_tasks -- --nocapture` passed.
+`cargo test -p raria-rpc --test native_api
+task_creation_metalink_torrent_metaurl_creates_native_bt_task -- --nocapture`
+passed. `cargo test -p raria-rpc --test native_api
+task_creation_metalink_preserves_checksums_and_expected_size -- --nocapture`
+passed. `cargo test -p raria-rpc --test native_api
+task_creation_metalink_path_creates_native_tasks -- --nocapture` passed.
+Daemon Metalink completion, transfer failover, checksum failover, and
+`legacy_add_metalink_is_not_registered` passed.
+Remaining: Start CM-016 BitTorrent ingress and metadata.
+Blocked: none.

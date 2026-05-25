@@ -1,4 +1,4 @@
-// raria-metalink: Metalink v3/v4 XML parser.
+// raria-metalink: Metalink 4 XML parser.
 //
 // Parses Metalink XML documents into structured data for multi-source
 // download orchestration. Uses quick-xml for parsing.
@@ -8,22 +8,11 @@ use quick_xml::Reader;
 use quick_xml::events::Event;
 use serde::{Deserialize, Serialize};
 
-/// Raw parsed Metalink file representation (v3 or v4).
+/// Raw parsed Metalink file representation.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RawMetalink {
-    /// Metalink version detected.
-    pub version: MetalinkVersion,
     /// Files described in this metalink.
     pub files: Vec<MetalinkFile>,
-}
-
-/// Metalink format version.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum MetalinkVersion {
-    /// Metalink v3 (RFC 5854 predecessor, XML-based).
-    V3,
-    /// Metalink v4 (RFC 5854, also known as Metalink/HTTP).
-    V4,
 }
 
 /// A single file entry in a Metalink document.
@@ -92,8 +81,9 @@ pub fn parse_metalink(xml: &str) -> Result<RawMetalink> {
     let mut reader = Reader::from_str(xml);
     reader.config_mut().trim_text(true);
 
-    let mut version = MetalinkVersion::V4; // default
     let mut files: Vec<MetalinkFile> = Vec::new();
+    let mut root_seen = false;
+    let mut root_is_metalink4 = false;
 
     // Parsing state.
     let mut current_file: Option<MetalinkFile> = None;
@@ -117,14 +107,12 @@ pub fn parse_metalink(xml: &str) -> Result<RawMetalink> {
 
                 match local_name.as_str() {
                     "metalink" => {
-                        // Check xmlns for version detection.
+                        root_seen = true;
                         for attr in e.attributes().flatten() {
                             let key = String::from_utf8_lossy(attr.key.as_ref()).to_string();
                             let val = String::from_utf8_lossy(&attr.value).to_string();
-                            if key == "xmlns" && val.contains("ietf") {
-                                version = MetalinkVersion::V4;
-                            } else if key == "version" && val.starts_with('3') {
-                                version = MetalinkVersion::V3;
+                            if key == "xmlns" && val == "urn:ietf:params:xml:ns:metalink" {
+                                root_is_metalink4 = true;
                             }
                         }
                     }
@@ -205,7 +193,6 @@ pub fn parse_metalink(xml: &str) -> Result<RawMetalink> {
                         text_buf.clear();
                     }
                     "name" if current_file.is_some() => {
-                        // v3 has <name> as child element.
                         in_name = true;
                         text_buf.clear();
                     }
@@ -297,7 +284,13 @@ pub fn parse_metalink(xml: &str) -> Result<RawMetalink> {
         buf.clear();
     }
 
-    Ok(RawMetalink { version, files })
+    anyhow::ensure!(root_seen, "Metalink document is missing a metalink root");
+    anyhow::ensure!(
+        root_is_metalink4,
+        "unsupported Metalink document: only Metalink 4 is supported"
+    );
+
+    Ok(RawMetalink { files })
 }
 
 #[cfg(test)]
@@ -346,7 +339,6 @@ mod tests {
     #[test]
     fn parse_v4_basic() {
         let ml = parse_metalink(METALINK_V4_SAMPLE).unwrap();
-        assert_eq!(ml.version, MetalinkVersion::V4);
         assert_eq!(ml.files.len(), 1);
 
         let file = &ml.files[0];
@@ -397,9 +389,24 @@ mod tests {
     #[test]
     fn parse_metalink_invalid_xml_returns_error() {
         let result = parse_metalink("<not valid xml");
-        // quick-xml may not error on all malformed XML, but at least it shouldn't panic.
-        // This test ensures robustness.
-        let _ = result;
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn parse_rejects_legacy_metalink3_documents() {
+        let result = parse_metalink(
+            r#"<?xml version="1.0"?>
+<metalink version="3.0">
+  <files>
+    <file name="legacy.bin">
+      <size>1</size>
+      <url>https://mirror.example/legacy.bin</url>
+    </file>
+  </files>
+</metalink>"#,
+        );
+
+        assert!(result.is_err());
     }
 
     #[test]

@@ -1,6 +1,6 @@
 [package]
 name = "raria-metalink"
-description = "Metalink v3/v4 parser and normalizer for raria"
+description = "Metalink 4 parser and normalizer for raria"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
