@@ -513,6 +513,8 @@ mod tests {
                 ],
                 "downloadDir": "/tmp",
                 "filename": "fixture.iso",
+                "downloadBytesPerSecondLimit": 204800,
+                "uploadBytesPerSecondLimit": 102400,
                 "bt": {
                     "selectedFileIds": ["file_0", "file_2"],
                     "trackerUris": [
@@ -562,6 +564,10 @@ mod tests {
         assert!(job.options.bt_delete_unselected_files_on_completion);
         assert_eq!(job.options.seed_ratio, Some(1.25));
         assert_eq!(job.options.seed_time, Some(30));
+        assert_eq!(job.options.max_download_limit, 204800);
+        assert_eq!(job.options.max_upload_limit, 102400);
+        assert_eq!(created["downloadBytesPerSecondLimit"], 204800);
+        assert_eq!(created["uploadBytesPerSecondLimit"], 102400);
 
         cancel.cancel();
     }

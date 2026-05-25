@@ -427,6 +427,8 @@ struct CreateTaskRequest {
     download_dir: PathBuf,
     filename: Option<String>,
     segments: Option<u32>,
+    download_bytes_per_second_limit: Option<u64>,
+    upload_bytes_per_second_limit: Option<u64>,
     headers: Option<BTreeMap<String, String>>,
     auth: Option<CreateTaskAuth>,
     checksum: Option<String>,
@@ -571,6 +573,19 @@ async fn handle_create_task(
                 seeding.target_ratio,
                 seeding.stop_after_minutes,
                 seeding.idle_download_timeout_seconds,
+            )
+            .map_err(|_| NativeApiError::InvalidRequest)?;
+    }
+    if request.download_bytes_per_second_limit.is_some()
+        || request.upload_bytes_per_second_limit.is_some()
+    {
+        state
+            .engine
+            .update_native_transfer_policy(
+                &summary.task_id,
+                request.download_bytes_per_second_limit,
+                request.upload_bytes_per_second_limit,
+                None,
             )
             .map_err(|_| NativeApiError::InvalidRequest)?;
     }

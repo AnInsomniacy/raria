@@ -1,7 +1,8 @@
 use anyhow::{Context, Result};
 use base64::Engine as Base64Engine;
 use raria_bt::service::{
-    BtMetadata, BtService, BtServiceConfig, BtSource, BtStatus, PieceSelectionStrategy,
+    BtMetadata, BtRateLimits, BtService, BtServiceConfig, BtSource, BtStatus,
+    PieceSelectionStrategy,
 };
 use raria_bt::torrent_meta::TorrentMeta;
 use raria_core::config::BtPieceStrategy;
@@ -68,6 +69,8 @@ fn bt_service_config(engine: &Engine) -> BtServiceConfig {
             BtPieceStrategy::Current => PieceSelectionStrategy::Current,
             BtPieceStrategy::RarestFirst => PieceSelectionStrategy::RarestFirst,
         },
+        download_limit_bps: engine.config.global_download_limit,
+        upload_limit_bps: engine.global_upload_limit_bps(),
         ..Default::default()
     }
 }
@@ -524,13 +527,18 @@ pub(crate) async fn run_bt_download(
         }
     }
 
+    let task_limits = BtRateLimits {
+        download_bps: job.options.max_download_limit,
+        upload_bps: job.options.max_upload_limit,
+    };
     let handle = bt_service
-        .add(
+        .add_with_limits(
             source,
             gid,
             job.options.bt_selected_files.clone(),
             job.options.bt_trackers.clone(),
             web_seed_uris.is_some(),
+            task_limits,
         )
         .await
         .context("failed to add torrent to BtService")?;
@@ -835,6 +843,19 @@ mod tests {
             bt_config.piece_selection_strategy,
             PieceSelectionStrategy::RarestFirst
         );
+    }
+
+    #[test]
+    fn bt_service_config_forwards_global_transfer_limits() {
+        let engine = Engine::new(GlobalConfig {
+            global_download_limit: 4096,
+            global_upload_limit: 2048,
+            ..Default::default()
+        });
+        let bt_config = bt_service_config(&engine);
+
+        assert_eq!(bt_config.download_limit_bps, 4096);
+        assert_eq!(bt_config.upload_limit_bps, 2048);
     }
 
     #[test]

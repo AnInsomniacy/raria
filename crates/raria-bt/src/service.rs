@@ -11,6 +11,7 @@
 
 use anyhow::{Context, Result};
 use librqbit::api::{Api, TorrentIdOrHash};
+use librqbit::limits::LimitsConfig;
 use librqbit::{
     AddTorrent, AddTorrentOptions, AddTorrentResponse, ManagedTorrent, Session, SessionOptions,
     SessionPersistenceConfig,
@@ -19,6 +20,7 @@ use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
+use std::num::NonZeroU32;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tracing::{debug, info, warn};
@@ -32,6 +34,26 @@ pub enum PieceSelectionStrategy {
     RarestFirst,
     /// Download pieces in order (sequential).
     Current,
+}
+
+/// BitTorrent byte-per-second limits forwarded to librqbit.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct BtRateLimits {
+    /// Download limit in bytes per second. Zero means unlimited.
+    pub download_bps: u64,
+    /// Upload limit in bytes per second. Zero means unlimited.
+    pub upload_bps: u64,
+}
+
+fn librqbit_limit_cell(limit_bps: u64) -> Option<NonZeroU32> {
+    NonZeroU32::new(limit_bps.min(u32::MAX as u64) as u32)
+}
+
+fn librqbit_limits_config(limits: BtRateLimits) -> LimitsConfig {
+    LimitsConfig {
+        upload_bps: librqbit_limit_cell(limits.upload_bps),
+        download_bps: librqbit_limit_cell(limits.download_bps),
+    }
 }
 
 fn is_selected_file(selected_files: Option<&[usize]>, file_index: usize) -> bool {
@@ -87,6 +109,10 @@ fn bt_session_options(output_dir: &Path, config: &BtServiceConfig) -> SessionOpt
         fastresume: true,
         persistence: Some(SessionPersistenceConfig::Json {
             folder: Some(effective_bt_session_persistence_dir(output_dir, config)),
+        }),
+        ratelimits: librqbit_limits_config(BtRateLimits {
+            download_bps: config.download_limit_bps,
+            upload_bps: config.upload_limit_bps,
         }),
         ..Default::default()
     }
@@ -237,6 +263,10 @@ pub struct BtServiceConfig {
     pub enable_pex: bool,
     /// Piece selection strategy forwarded into librqbit.
     pub piece_selection_strategy: PieceSelectionStrategy,
+    /// Session-wide BT download limit in bytes per second.
+    pub download_limit_bps: u64,
+    /// Session-wide BT upload limit in bytes per second.
+    pub upload_limit_bps: u64,
 }
 
 impl Default for BtServiceConfig {
@@ -250,6 +280,8 @@ impl Default for BtServiceConfig {
             session_persistence_dir: None,
             enable_pex: true,
             piece_selection_strategy: PieceSelectionStrategy::default(),
+            download_limit_bps: 0,
+            upload_limit_bps: 0,
         }
     }
 }
@@ -333,8 +365,29 @@ impl BtService {
         trackers: Option<Vec<String>>,
         overwrite: bool,
     ) -> Result<BtHandle> {
+        self.add_with_limits(
+            source,
+            gid,
+            selected_files,
+            trackers,
+            overwrite,
+            BtRateLimits::default(),
+        )
+        .await
+    }
+
+    /// Add a new torrent download with per-task transfer limits.
+    pub async fn add_with_limits(
+        &self,
+        source: BtSource,
+        gid: raria_core::job::Gid,
+        selected_files: Option<Vec<usize>>,
+        trackers: Option<Vec<String>>,
+        overwrite: bool,
+        limits: BtRateLimits,
+    ) -> Result<BtHandle> {
         let response = self
-            .add_torrent_with_options(source, selected_files, trackers, overwrite, false)
+            .add_torrent_with_options(source, selected_files, trackers, overwrite, false, limits)
             .await
             .context("failed to add torrent")?;
 
@@ -367,7 +420,14 @@ impl BtService {
         trackers: Option<Vec<String>>,
     ) -> Result<BtMetadata> {
         let response = self
-            .add_torrent_with_options(source, selected_files, trackers, false, true)
+            .add_torrent_with_options(
+                source,
+                selected_files,
+                trackers,
+                false,
+                true,
+                BtRateLimits::default(),
+            )
             .await?;
 
         match response {
@@ -428,6 +488,7 @@ impl BtService {
         trackers: Option<Vec<String>>,
         overwrite: bool,
         list_only: bool,
+        limits: BtRateLimits,
     ) -> Result<AddTorrentResponse> {
         let session = self.ensure_session().await?;
 
@@ -449,6 +510,7 @@ impl BtService {
             trackers,
             overwrite,
             list_only,
+            ratelimits: librqbit_limits_config(limits),
             ..Default::default()
         };
 
@@ -923,6 +985,8 @@ mod tests {
                 session_persistence_dir: None,
                 enable_pex: true,
                 piece_selection_strategy: PieceSelectionStrategy::Current,
+                download_limit_bps: 1024,
+                upload_limit_bps: 2048,
             },
         );
 
@@ -938,6 +1002,14 @@ mod tests {
         assert!(options.peer_opts.is_none());
         assert!(options.disable_dht);
         assert!(options.disable_dht_persistence);
+        assert_eq!(
+            options.ratelimits.download_bps.map(|limit| limit.get()),
+            Some(1024)
+        );
+        assert_eq!(
+            options.ratelimits.upload_bps.map(|limit| limit.get()),
+            Some(2048)
+        );
         assert_eq!(
             options
                 .dht_config

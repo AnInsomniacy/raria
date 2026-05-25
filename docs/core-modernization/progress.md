@@ -536,3 +536,10 @@ tests passed. `cargo fmt --all --check`, `cargo check --workspace --locked`,
 CSV validation, and `git diff --check` passed.
 Remaining: Start CM-017 BitTorrent runtime behavior.
 Blocked: none.
+
+
+2026-05-25 CM-017 partial
+Changed: Closed the first BitTorrent runtime policy slice. Native task creation now accepts and persists `downloadBytesPerSecondLimit` and `uploadBytesPerSecondLimit`. The BT runtime forwards global session limits and per-task limits to librqbit public `LimitsConfig` through `SessionOptions.ratelimits` and `AddTorrentOptions.ratelimits`. PEX remains librqbit-owned; rustdoc for librqbit 8.1.1 exposes no public PEX disable control, so raria documents that disable-policy enforcement is a backend limitation instead of reimplementing peer exchange.
+Verified: `cargo test -p raria-rpc --test native_api task_creation_accepts_native_bt_options -- --nocapture` failed before the create-task limit fix and passed after it. `cargo test -p raria-bt --lib bt_service_session_options_enable_fastresume_and_json_persistence -- --nocapture`, `cargo test -p raria-cli --bin raria bt_service_config_forwards_global_transfer_limits -- --nocapture`, and `cargo check --workspace --locked` passed.
+Remaining: Finish CM-017 grouped validation for WebSeed, file selection, peer/tracker projection, seeding lifecycle, and fastresume restore, then close the checkpoint.
+Blocked: none.
