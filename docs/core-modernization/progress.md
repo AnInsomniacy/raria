@@ -154,3 +154,21 @@ island_wiring -- --nocapture` passed with 4 tests.
 Remaining: CM-006 still needs final stale config/help scans, tracker updates,
 and a fresh `cargo check --workspace --locked` before the next checkpoint.
 Blocked: none.
+
+2026-05-25 CM-006 verified
+Changed: Closed native CLI and configuration ownership for this checkpoint.
+The public CLI uses native flags, strict `raria.toml` rejects unknown and
+legacy keys, retained runtime config fields use native names, and stale
+task-file/proxy comments were removed. Remaining `dir/out`, persistence
+fixture, JSON-RPC auth, and BitTorrent policy debt is assigned to later
+checkpoints.
+Verified: `cargo fmt --all --check` passed. `cargo check --workspace
+--locked` passed. `cargo test -p raria-cli --bin raria -- --nocapture`
+passed with 68 tests. `cargo test -p raria-core --test native_config --
+--nocapture` passed with 8 tests. `cargo test -p raria-rpc --test
+native_api config_endpoint_returns_native_runtime_projection -- --nocapture`
+passed. CLI help scan found retained native flags and no deleted legacy
+aliases. CSV parser validation passed for 25 files. `git diff --check`
+passed.
+Remaining: Start CM-007 TaskId ownership after final validation.
+Blocked: none.

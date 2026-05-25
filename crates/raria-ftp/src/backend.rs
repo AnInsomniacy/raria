@@ -75,7 +75,7 @@ unsafe impl<S: AsyncRead + Unpin + Send> Send for FtpOwnedStream<S> {}
 /// FTP/FTPS download backend.
 #[derive(Debug, Clone)]
 pub struct FtpBackendConfig {
-    /// SOCKS5 or HTTP proxy for all connections (aria2: `--all-proxy`).
+    /// SOCKS5 or HTTP proxy for all connections.
     pub proxy: Option<String>,
     /// Comma-separated hosts/CIDRs that bypass the proxy.
     pub no_proxy: Option<String>,

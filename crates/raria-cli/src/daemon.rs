@@ -109,12 +109,12 @@ pub(crate) async fn run_daemon_with_config(
                     warn!(
                         gid = %handle.gid,
                         error = %error,
-                        "failed to parse input-file headers, continuing without them"
+                        "failed to parse task-file headers, continuing without them"
                     );
                 }
-                info!(gid = %handle.gid, "added job from input file");
+                info!(gid = %handle.gid, "added job from task file");
             }
-            Err(e) => warn!(uris = ?entry.uris, error = %e, "failed to add URI from input file"),
+            Err(e) => warn!(uris = ?entry.uris, error = %e, "failed to add URI from task file"),
         }
     }
 

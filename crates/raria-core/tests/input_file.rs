@@ -96,7 +96,7 @@ https://mirror1.com/f.zip\thttps://mirror2.com/f.zip
         );
 
         let entries = raria_core::input_file::parse_input_file_entries(content)
-            .expect("parse richer input-file entries");
+            .expect("parse richer task-file entries");
         assert_eq!(entries.len(), 1);
 
         let entry = &entries[0];
