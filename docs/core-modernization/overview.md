@@ -5,10 +5,12 @@ modern Rust-native download manager. It replaces the old modernization runbook
 model. raria does not preserve aria2 public APIs, option names, configuration
 syntax, storage formats, identifiers, tests, docs, or ecosystem compatibility.
 
-The main modernization reference is the aria2-next core-modernization tracker.
-Use it for deletion discipline, library-first ownership, checkpoint sizing,
-focused verification, and stale-surface cleanup. Do not copy aria2-next's C++
-stack or retained product surfaces. raria's public contract is native.
+The main modernization reference is the aria2-next maintenance body,
+especially the core-modernization and libtorrent migration trackers. Use it
+for deletion discipline, library-first ownership, checkpoint sizing, focused
+verification, storage truth, stale-surface cleanup, and final smoke discipline.
+Do not copy aria2-next's C++ stack or retained product surfaces. raria's public
+contract is native.
 
 ## Tracker Files
 
@@ -40,7 +42,8 @@ stack or retained product surfaces. raria's public contract is native.
 | `checkpoints/CM-018-transfer-policy.csv` | Rate limits, retry classification, DNS/interface policy |
 | `checkpoints/CM-019-daemon-security-logs.csv` | Daemon lifecycle, hooks, auth, redaction, and structured logs |
 | `checkpoints/CM-020-legacy-deletion.csv` | JSON-RPC, parity tests, compatibility docs, and stale options removal |
-| `checkpoints/CM-021-final-validation.csv` | Final workspace validation and tracker closure |
+| `checkpoints/CM-021-product-docs-release.csv` | Native client contract, completion, product docs, and release closure |
+| `checkpoints/CM-022-final-validation.csv` | Final workspace validation and tracker closure |
 
 Read `overview.md` and `roadmap.csv` first after every resume or context
 compaction. During implementation, read only the active checkpoint file plus
@@ -49,16 +52,22 @@ final review or when a blocker crosses checkpoint boundaries.
 
 ## Goal Contract
 
-Finish raria as a modern Rust-native download manager. Public surfaces are
-`raria.toml`, `/api/v1` HTTP JSON resources, `/api/v1/events` WebSocket
-events, versioned native persistence schemas, native CLI names, opaque task
-identifiers, structured logs, and native documentation.
+Finish raria as a modern Rust-native download manager and daemon engine.
+Public surfaces are `raria.toml`, `/api/v1` HTTP JSON resources,
+`/api/v1/events` WebSocket events, versioned native persistence schemas,
+native CLI names, opaque task identifiers, structured logs, shell completion,
+and native documentation.
 
 The implementation must remove legacy compatibility instead of preserving it.
 Delete JSON-RPC, aria2 method names, aria2 option names, Gid-facing public
 behavior, aria2 config syntax, aria2 session/control-file compatibility,
 AriaNg/Motrix compatibility, parity tests, compatibility docs, and migration
 adapters when useful behavior has native coverage.
+
+raria may be used by a future Motrix Next adapter, but the adapter must speak
+raria's native API and event stream. raria must not shape its API, task state,
+field names, identifiers, persistence, errors, or events around aria2-next,
+Motrix legacy adapters, AriaNg, or JSON-RPC.
 
 Stop only when every checkpoint in `roadmap.csv` is verified, both ledgers
 record final ownership, stale-surface scans pass, and the full Rust validation
@@ -84,6 +93,8 @@ boundary or where no suitable maintained library exposes the needed behavior.
 | Persistence | redb | Use redb as the embedded engine, not as the schema model |
 | TLS | rustls | Prefer rustls unless a concrete dependency forces another boundary |
 | Rate limiting | governor plus raria policy | Keep small native policy layers around mature primitives |
+| CLI and completion | clap and clap_complete | Use native command names and generated completion only for retained commands |
+| Logging | tracing | Keep structured logs with native task correlation and redaction |
 
 If a target library cannot cover required modern behavior, implement the
 smallest robust raria-native layer with focused tests and record the decision
@@ -99,10 +110,14 @@ In scope:
 | Core runtime | Task lifecycle, scheduling, cancellation, mutation, and event ownership move to native tasks |
 | Persistence | Versioned native schemas replace direct `Job` rows and old `Gid` segment fallback |
 | Ordinary transfers | HTTP, HTTPS, FTP, FTPS, and SFTP use mature libraries with raria-native policy |
+| SSH-family transfers | SFTP is required; SCP must be implemented only if a mature Rust path is verified, otherwise documented as a technical limitation |
 | Multi-source transfers | Source health, failover, adaptive segments, resume, and verified completion are native |
 | Integrity and disk | Whole-file checksums, piece checksums, allocation, and conflict policy are verified |
 | Metalink | Keep only modern manifest value that feeds native task graphs |
-| BitTorrent | Finish librqbit-backed torrent, magnet, DHT, tracker, WebSeed, file selection, seeding, and fastresume behavior |
+| BitTorrent | Finish librqbit-backed torrent, magnet, metadata-only, DHT, UDP trackers, PEX where available, WebSeed, file selection, duplicate info-hash policy, seeding, and fastresume behavior |
+| Network policy | Proxy, environment proxy, DNS, IPv6, interface binding, no-progress watchdogs, and retry classification are implemented through selected libraries or recorded as technical limitations |
+| Native client integration | A stable resource API and WebSocket stream are sufficient for future Motrix Next integration after Motrix adapts to raria |
+| Product closure | README, completion, release notes, packaging metadata, examples, and validation fixtures describe only the native product |
 | Cleanup | Delete stale options, old tests, old docs, compatibility adapters, and legacy public surfaces |
 
 Out of scope:
@@ -119,6 +134,9 @@ Out of scope:
 | BitTorrent MSE or ARC4 | Delete |
 | LPD | Delete |
 | ED2K | Delete from the raria target |
+| aria2 JSON-RPC compatibility for Motrix Next | Delete; future clients must adapt to raria-native resources and events |
+| aria2-style URI parameter expansion | Delete unless replaced by an explicit native batch task format |
+| SCP | Implement only if mature Rust support is proven; otherwise document as a technical limitation and prefer SFTP |
 | Historical packaging or platform baggage | Delete unless needed by a current supported Rust build |
 | Browser-cookie import | Delete unless a later checkpoint proves modern value |
 
@@ -132,7 +150,8 @@ Expected removal targets include JSON-RPC routes and methods, aria2-shaped
 status fields, `Gid` public behavior, parity tests, compatibility docs, stale
 CLI option names, old configuration aliases, direct `Job` row persistence, old
 segment tables, legacy event projections, migration adapters, old Metalink/XML
-baggage, unsupported BT policy shims, and obsolete test fixtures.
+baggage, unsupported BT policy shims, legacy Motrix or AriaNg adapter claims,
+and obsolete test fixtures.
 
 Keep only small native helpers that protect supported behavior and do not
 duplicate mature library responsibility.
@@ -156,9 +175,9 @@ resume, confirmed regressions, stale-surface scans, and security-sensitive
 behavior.
 
 Delete tests that cover compatibility behavior, old protocol internals,
-incidental logs, broad parity, removed options, or hidden fallback paths. Do
-not add broad scaffolding when a focused unit, contract, or smoke test proves
-the behavior.
+incidental logs, broad parity, removed options, hidden fallback paths, or
+client-specific legacy adapters. Do not add broad scaffolding when a focused
+unit, contract, or smoke test proves the behavior.
 
 ## Commit Policy
 
@@ -185,6 +204,12 @@ cargo clippy --workspace --all-targets -- -D warnings
 Use maintainer-selected torrent fixtures only for targeted BitTorrent smoke
 validation. Do not commit temporary downloads, generated logs, packet captures,
 network scratch data, local caches, or raw API payloads.
+
+Final smoke evidence should cover ordinary HTTPS progress or completion,
+range resume, native API task creation and events, BitTorrent torrent-file
+ingress, BitTorrent magnet metadata where practical, and one native persistence
+restore path. Public network evidence is useful final evidence, not a unit-test
+gate.
 
 ## Update Rules
 

@@ -1,6 +1,0 @@
-id,status,checkpoint,scope,target_files,acceptance,verification,notes
-CM-021.1,pending,Run final formatting,"Workspace formatting","entire repository","cargo fmt --all --check passes.","Pending.","No formatting-only commit unless paired with checkpoint closure."
-CM-021.2,pending,Run final check,"Workspace type check","entire repository","cargo check --workspace --locked passes.","Pending.","Use locked dependencies."
-CM-021.3,pending,Run final tests,"Workspace tests","entire repository","cargo test --workspace passes with restrained high-value tests only.","Pending.","No compatibility tests."
-CM-021.4,pending,Run final clippy,"Workspace lint","entire repository","cargo clippy --workspace --all-targets -- -D warnings passes.","Pending.","Fix warnings instead of allowing them."
-CM-021.5,pending,Close tracker,"Roadmap and ledgers","docs/core-modernization","Every roadmap row is verified and every capability is covered, excluded, or documented as a technical limitation.","Pending.","Modernization complete only after this row is verified."

@@ -42,3 +42,16 @@ Verified: CSV parser validation passed for 24 files. `git diff --check`
 passed. Stale old-runbook reference scan passed.
 Remaining: Start CM-002 dependency policy verification.
 Blocked: none.
+
+2026-05-25 CM-001 alignment update
+Changed: Aligned the tracker with aria2-next core-modernization and
+libtorrent migration evidence without inheriting aria2-next compatibility
+surfaces. Added explicit coverage for future native client integration, shell
+completion, SCP decision, BitTorrent metadata-only behavior, duplicate
+info-hash policy, PEX policy, ordinary transfer stall watchdogs, environment
+proxy policy, native product docs and release closure, and final smoke
+evidence.
+Verified: CSV parser validation passed for 25 files. `git diff --check`
+passed.
+Remaining: Start CM-002 dependency policy verification.
+Blocked: none.

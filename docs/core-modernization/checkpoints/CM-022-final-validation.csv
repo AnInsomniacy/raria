@@ -1,0 +1,7 @@
+id,status,checkpoint,scope,target_files,acceptance,verification,notes
+CM-022.1,pending,Run final formatting,"Workspace formatting","entire repository","cargo fmt --all --check passes.","Pending.","No formatting-only commit unless paired with checkpoint closure."
+CM-022.2,pending,Run final check,"Workspace type check","entire repository","cargo check --workspace --locked passes.","Pending.","Use locked dependencies."
+CM-022.3,pending,Run final tests,"Workspace tests","entire repository","cargo test --workspace passes with restrained high-value tests only.","Pending.","No compatibility tests."
+CM-022.4,pending,Run final clippy,"Workspace lint","entire repository","cargo clippy --workspace --all-targets -- -D warnings passes.","Pending.","Fix warnings instead of allowing them."
+CM-022.5,pending,Run final smoke evidence,"Representative local and public smokes","native API; range resume; BitTorrent fixtures; persistence restore","Final smoke evidence covers native API creation/events, range resume, torrent-file ingress, magnet metadata where practical, and persistence restore.","Pending.","Public network evidence is useful but not a unit-test gate."
+CM-022.6,pending,Close tracker,"Roadmap and ledgers","docs/core-modernization","Every roadmap row is verified and every capability is covered, excluded, or documented as a technical limitation.","Pending.","Modernization complete only after this row is verified."
