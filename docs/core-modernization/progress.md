@@ -396,3 +396,35 @@ daemon_saves_session_when_sigusr1_is_received -- --nocapture` passed.
 matching tests.
 Remaining: Start CM-011 HTTP and HTTPS native transfer contract.
 Blocked: none.
+
+2026-05-25 CM-011 verified
+Changed: Closed the HTTP and HTTPS native transfer contract. Request headers,
+Basic auth, user agent, suggested filename, TLS/mTLS, proxy, no-proxy, cookie
+load/save, netrc, conditional GET, If-Range, and resume guard behavior are
+verified through focused local tests. Removed the legacy `.aria2` control-file
+guard from single-download and daemon HTTP conditional/resume decisions.
+Touched HTTP comments no longer describe retained behavior as aria2
+compatibility.
+Verified: `cargo test -p raria-cli --test single_download
+single_download_sends_configured_user_agent -- --nocapture` passed. `cargo
+test -p raria-cli --test single_download
+single_download_sends_basic_auth_from_cli_flags -- --nocapture` passed.
+`cargo test -p raria-cli --test single_download
+single_download_sends_custom_header_from_cli -- --nocapture` passed. `cargo
+test -p raria-cli --test single_download
+single_download_uses_suggested_filename_when_out_is_not_provided --
+--nocapture` passed. `cargo test -p raria-http --test http_config_smoke --
+--nocapture` passed with 9 tests. `cargo test -p raria-cli --test
+single_download single_download_presents_client_identity_for_mtls --
+--nocapture` passed. `cargo test -p raria-cli --test single_download
+single_download_writes_save_cookies_file -- --nocapture` passed. `cargo test
+-p raria-cli --test single_download
+single_download_uses_netrc_credentials_for_http_auth -- --nocapture` passed.
+`cargo test -p raria-cli --test single_download
+single_download_no_netrc_disables_netrc_credentials -- --nocapture` passed.
+`cargo test -p raria-cli conditional_get -- --nocapture` passed. `cargo test
+-p raria-cli --test single_download
+single_download_conditional_get_ignores_legacy_control_file -- --nocapture`
+passed. `cargo test -p raria-http --test if_range -- --nocapture` passed.
+Remaining: Start CM-012 FTP FTPS SFTP and SCP decision.
+Blocked: none.

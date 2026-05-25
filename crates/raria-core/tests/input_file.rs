@@ -68,7 +68,7 @@ https://example.com/file2.zip
 
     #[test]
     fn supports_multiple_uris_per_line_tab_separated() {
-        // aria2 supports multiple URIs per line (tab-separated) for multi-source download.
+        // Multiple URIs per line represent one native multi-source task.
         let content = "https://mirror1.com/f.zip\thttps://mirror2.com/f.zip\n";
         let uris = parse_input_file(content);
         // Tab-separated URIs should be treated as one entry (multi-source).

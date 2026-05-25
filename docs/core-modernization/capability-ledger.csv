@@ -14,7 +14,7 @@ Progress and stats,modernize,"Native projections plus old event bus","native pro
 Runtime mutation,modernize,"Native routes with mixed backend enforcement","native mutation policy",CM-008,partial,"Transfer, source, file, tracker, queue, seeding routes exist.","Finish BT enforcement and remove compatibility paths."
 Structured logs,retain,"raria logging helpers","native structured logs",CM-019,partial,"Logging contract and redaction tests exist.","Keep native task correlation only."
 Hooks,modernize,"Native hook names with legacy runtime context","native lifecycle hooks or event consumers",CM-019,partial,"Hook smoke coverage exists.","Avoid compatibility hook names."
-HTTP/HTTPS transfers,retain,"reqwest backend","reqwest with native policy",CM-011,partial,"HTTP smoke and config tests exist.","Close TLS, mTLS, proxy, cookie, netrc, metadata, resume coverage through native surfaces."
+HTTP/HTTPS transfers,retain,"reqwest backend","reqwest with native policy",CM-011,verified,"Native request metadata, TLS/mTLS, proxy, cookie, netrc, range, conditional GET, If-Range, and resume tests pass. Legacy `.aria2` control-file decisions were removed.","Protocol-specific transfer policy continues in CM-018."
 FTP/FTPS transfers,retain,"suppaftp backend","suppaftp with native policy",CM-012,partial,"FTP and FTPS smoke tests exist.","Keep focused tests only."
 SFTP transfers,retain,"russh backend","russh and russh-sftp with native policy",CM-012,partial,"SFTP smoke tests exist.","Verify known_hosts, key auth, proxy, resume, metadata."
 SCP transfers,document-or-implement,"not a committed raria surface","mature Rust implementation or documented limitation",CM-012,gap,"Pending.","Prefer SFTP unless russh ecosystem support proves a focused SCP path is worth adding."

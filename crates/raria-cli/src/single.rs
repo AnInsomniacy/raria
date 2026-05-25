@@ -143,15 +143,8 @@ pub(crate) async fn run_download(options: SingleDownloadOptions) -> Result<()> {
             .clone()
             .unwrap_or_else(|| "download".to_string()),
     );
-    let control_file_path = std::path::PathBuf::from(format!("{}.aria2", candidate_path.display()));
-
-    let probe_headers = build_conditional_get_probe_headers(
-        &config,
-        &parsed_url,
-        &candidate_path,
-        &control_file_path,
-        &headers,
-    )?;
+    let probe_headers =
+        build_conditional_get_probe_headers(&config, &parsed_url, &candidate_path, &headers)?;
 
     let probe = backend
         .probe(
@@ -228,11 +221,7 @@ pub(crate) async fn run_download(options: SingleDownloadOptions) -> Result<()> {
         job.total_size = Some(file_size);
     });
 
-    let existing_len = if options.resume
-        && probe.supports_range
-        && !control_file_path.exists()
-        && job.out_path.is_file()
-    {
+    let existing_len = if options.resume && probe.supports_range && job.out_path.is_file() {
         std::fs::metadata(&job.out_path)
             .map(|meta| meta.len().min(file_size))
             .unwrap_or(0)

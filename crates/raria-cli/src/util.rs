@@ -34,7 +34,6 @@ pub(crate) fn build_conditional_get_probe_headers(
     config: &GlobalConfig,
     uri: &url::Url,
     candidate_path: &Path,
-    control_file_path: &Path,
     base_headers: &[(String, String)],
 ) -> Result<Vec<(String, String)>> {
     let mut probe_headers = base_headers.to_vec();
@@ -43,7 +42,6 @@ pub(crate) fn build_conditional_get_probe_headers(
         && config.allow_overwrite
         && matches!(uri.scheme(), "http" | "https")
         && candidate_path.is_file()
-        && !control_file_path.exists()
     {
         let modified = std::fs::metadata(candidate_path)
             .and_then(|meta| meta.modified())
@@ -130,7 +128,6 @@ mod tests {
             &config,
             &"http://example.com/cached.bin".parse().unwrap(),
             &file,
-            &file.with_extension("bin.aria2"),
             &[],
         )
         .unwrap();

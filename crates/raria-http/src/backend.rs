@@ -28,8 +28,6 @@ use url::Url;
 type NetrcAuthMap = Arc<HashMap<String, (String, String)>>;
 
 /// Configuration for the HTTP backend.
-///
-/// Matches aria2's HTTP-related options: proxy, TLS, user-agent, cookies.
 #[derive(Debug, Clone, Default)]
 pub struct HttpBackendConfig {
     /// Proxy URL for all protocols.
@@ -50,9 +48,9 @@ pub struct HttpBackendConfig {
     pub client_private_key: Option<std::path::PathBuf>,
     /// Custom user-agent string.
     pub user_agent: Option<String>,
-    /// Path to Netscape-format cookie file (aria2: --load-cookies).
+    /// Path to a Netscape-format cookie file loaded before HTTP requests.
     pub load_cookie_file: Option<std::path::PathBuf>,
-    /// Path to Netscape-format cookie file for persistence (aria2: --save-cookies).
+    /// Path to a Netscape-format cookie file updated after HTTP requests.
     pub cookie_store_file: Option<std::path::PathBuf>,
     /// Maximum number of redirects to follow. `Some(0)` disables redirects.
     pub max_redirects: Option<usize>,

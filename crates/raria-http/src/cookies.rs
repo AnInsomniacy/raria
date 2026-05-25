@@ -1,7 +1,6 @@
 // raria-http: Netscape cookie file parser + serializer.
 //
-// Supports loading and saving cookies in Netscape/Mozilla cookie file format,
-// used by aria2's --load-cookies / --save-cookies options.
+// Supports loading and saving cookies in Netscape/Mozilla cookie file format.
 //
 // Format: domain\tflag\tpath\tsecure\texpiration\tname\tvalue
 // Lines starting with # are comments. Empty lines are skipped.
@@ -17,7 +16,7 @@ use cookie_store::{CookieDomain, CookieExpiration};
 /// Parse a Netscape cookie file and load cookies into a cookie store.
 ///
 /// Returns the store with all valid cookies loaded.
-/// Invalid lines are silently skipped (matches aria2 behavior).
+/// Invalid lines are skipped.
 pub fn load_cookie_store(path: &Path) -> std::io::Result<CookieStore> {
     let content = std::fs::read_to_string(path)?;
     Ok(parse_cookie_content(&content))

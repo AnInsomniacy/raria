@@ -773,13 +773,10 @@ async fn run_job_download(
         };
 
         let candidate_path = out_path.clone().unwrap_or_else(|| task.output_path.clone());
-        let control_file_path =
-            std::path::PathBuf::from(format!("{}.aria2", candidate_path.display()));
         let probe_headers = build_conditional_get_probe_headers(
             &engine.config,
             &parsed_url,
             &candidate_path,
-            &control_file_path,
             &ctx.request_headers,
         )?;
         let probe_ctx = ProbeContext {

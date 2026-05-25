@@ -1440,7 +1440,7 @@ async fn single_download_conditional_get_is_ignored_without_allow_overwrite() {
 }
 
 #[tokio::test]
-async fn single_download_conditional_get_is_ignored_when_control_file_exists() {
+async fn single_download_conditional_get_ignores_legacy_control_file() {
     let server = MockServer::start().await;
 
     Mock::given(method("HEAD"))
@@ -1469,7 +1469,8 @@ async fn single_download_conditional_get_is_ignored_when_control_file_exists() {
     let tmp = tempdir().expect("tempdir");
     let out = tmp.path().join("resume.bin");
     fs::write(&out, b"old!").expect("write old file");
-    fs::write(tmp.path().join("resume.bin.aria2"), b"control").expect("write control file");
+    fs::write(tmp.path().join("resume.bin.aria2"), b"legacy control")
+        .expect("write legacy control file");
 
     let output = Command::new(cargo_bin("raria"))
         .arg("download")
@@ -1487,7 +1488,7 @@ async fn single_download_conditional_get_is_ignored_when_control_file_exists() {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
-    assert_eq!(fs::read(&out).expect("read downloaded file"), b"next");
+    assert_eq!(fs::read(&out).expect("read cached file"), b"old!");
 }
 
 #[tokio::test]
