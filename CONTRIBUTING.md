@@ -1,6 +1,7 @@
 # Contributing to raria
 
-Thanks for improving raria.
+Thanks for improving raria. This guide is for contributors. User support,
+security, privacy, release, and integration guidance lives under [`docs/`](docs/README.md).
 
 ## Development Setup
 
@@ -24,6 +25,10 @@ Contributions should preserve these rules:
 4. Keep changes inside the intended area unless correctness forces a wider change.
 5. Use mature libraries for protocol ownership and keep raria policy small.
 6. Delete obsolete public surfaces after useful native coverage exists.
+
+Do not add JSON-RPC, aria2 method names, aria2 option names, Gid-facing public
+behavior, aria2 session compatibility, old config syntax, legacy client
+adapters, or compatibility-only tests.
 
 ## Dependency Policy
 
@@ -61,12 +66,44 @@ Record dependency limits or replacement decisions in `docs/core-modernization/de
 4. Run the verification commands that match the scope and report the actual result.
 5. Update docs whenever capability claims, dependency limits, or operational guidance change.
 
+Use the pull request template. PR titles should be concise Conventional Commit
+style, such as `fix: preserve task state during restart` or `docs: add native
+integration guide`.
+
+For bug fixes and features, open or reference an issue first unless the change
+is a small maintainer-directed correction. The issue templates are tuned for
+raria-native evidence and should not be bypassed for compatibility requests.
+
 ## Verification Expectations
 
 - Do not claim tests pass without fresh command output.
 - Do not claim late-stage closure from documentation alone.
 - If a path is only covered at unit or API level, say so.
 - If a gap is blocked upstream or by design, keep it explicit in the modernization tracker.
+
+Public-network downloads are not default verification. Prefer local fixtures,
+focused unit tests, native API contract tests, and protocol smoke tests that do
+not depend on external availability. Keep raw logs, generated binaries, partial
+downloads, and session stores under ignored `var/`.
+
+## Issue Reports
+
+Use the GitHub issue forms for reproducible bugs, crashes, feature requests,
+and build or packaging issues. Include the exact raria version, platform,
+command or API request, relevant `raria.toml` settings, and concise logs with
+secrets redacted.
+
+Do not upload bearer tokens, cookies, passwords, SSH keys, private downloads,
+or private session databases unless a maintainer explicitly asks for a sanitized
+artifact through a private channel.
+
+## Release Contributions
+
+`Cargo.toml` under `[workspace.package]` is the version source of truth. Use
+`./scripts/bump-version.sh <major.minor.patch>` for version changes and
+`./scripts/release.sh` for local release verification and tag creation. See
+[`docs/RELEASE.md`](docs/RELEASE.md) and
+[`docs/RELEASE_INTEGRITY.md`](docs/RELEASE_INTEGRITY.md).
 
 ## License
 

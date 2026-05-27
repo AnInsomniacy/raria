@@ -1,0 +1,100 @@
+name: Crash or Hang Report
+description: Report a crash, panic, deadlock, stuck daemon, or unrecoverable hang
+title: "[crash]: "
+labels: ["bug", "crash"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this form for crashes, panics, hangs, stuck shutdown, or daemon processes that stop responding.
+        For security-sensitive crashes, use a private security advisory instead.
+
+  - type: input
+    id: version
+    attributes:
+      label: raria version
+      description: Output from `raria --version`, or the Git commit if built from source.
+      placeholder: "raria 1.0.0"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: mode
+    attributes:
+      label: Runtime mode
+      options:
+        - CLI single download
+        - Foreground daemon
+        - Detached daemon
+        - Native API integration
+        - Release workflow or archive
+    validations:
+      required: true
+
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Platform
+      options:
+        - macOS arm64
+        - macOS x86_64
+        - Linux x86_64
+        - Linux aarch64
+        - Windows x86_64
+        - Windows aarch64
+        - Other
+    validations:
+      required: true
+
+  - type: input
+    id: os-version
+    attributes:
+      label: OS version
+      placeholder: "macOS 15.5, Ubuntu 24.04, Windows 11 24H2"
+    validations:
+      required: true
+
+  - type: textarea
+    id: command
+    attributes:
+      label: Command or API sequence
+      description: Include the command or API sequence that caused the crash or hang. Redact secrets.
+      render: shell
+    validations:
+      required: true
+
+  - type: textarea
+    id: panic
+    attributes:
+      label: Panic, backtrace, or process state
+      description: Include stderr, panic output, `RUST_BACKTRACE=1` output, process status, or shutdown behavior.
+      render: text
+    validations:
+      required: true
+
+  - type: textarea
+    id: task-state
+    attributes:
+      label: Task and session state
+      description: Include task lifecycle, active protocol, session path, and whether restore was involved. Do not upload private session databases unless requested by a maintainer.
+      render: text
+
+  - type: textarea
+    id: repeatability
+    attributes:
+      label: Repeatability
+      description: State whether the crash happens every time, intermittently, or only after long runtime.
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: validations
+    attributes:
+      label: Validations
+      options:
+        - label: I searched existing issues and did not find the same crash or hang.
+          required: true
+        - label: I included the shortest known command or API sequence that triggers the failure.
+          required: true
+        - label: I redacted bearer tokens, credentials, cookies, private keys, and private file paths where needed.
+          required: true

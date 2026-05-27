@@ -7,6 +7,19 @@
 
 The public surface is native raria: `raria.toml`, `/api/v1` JSON resources, `/api/v1/events` WebSocket events, versioned persistence schemas, and CLI names that describe raria concepts directly. Old external APIs, storage formats, option names, and client bridges are not product targets.
 
+## Documentation
+
+- [Documentation index](docs/README.md)
+- [Contributing guide](CONTRIBUTING.md)
+- [Support](docs/SUPPORT.md)
+- [Troubleshooting](docs/TROUBLESHOOTING.md)
+- [Native integration guide](docs/INTEGRATION.md)
+- [Security policy](docs/SECURITY.md)
+- [Privacy policy](docs/PRIVACY.md)
+- [Release process](docs/RELEASE.md)
+- [Release integrity](docs/RELEASE_INTEGRITY.md)
+- [Code signing status](docs/CODE_SIGNING.md)
+
 ## Current Status
 
 The current tree provides:
@@ -205,6 +218,13 @@ Repository prose should only claim behavior that is either:
 
 - backed by durable test/code anchors, or
 - backed by fresh rerun evidence for the current tree
+
+## Community
+
+Use GitHub Issues for reproducible bugs, crashes, feature proposals, and build
+or packaging failures. Use GitHub Discussions for questions and integration
+planning. The issue forms collect raria-native CLI, daemon, `/api/v1`, event,
+configuration, and release evidence.
 
 ## License
 

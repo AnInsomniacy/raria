@@ -1,6 +1,6 @@
 # AGENTS.md - raria
 
-This file defines repository rules for AI coding agents. Human contributors should start with `README.md`, `CONTRIBUTING.md`, and `docs/core-modernization/overview.md`.
+This file defines repository rules for AI coding agents. Human contributors should start with `README.md`, `CONTRIBUTING.md`, and `docs/README.md`. Durable modernization evidence lives in `docs/core-modernization/overview.md`.
 
 All changes must meet production-grade Rust quality. Find the root cause before changing behavior, keep the public contract raria-native, avoid unrelated churn, and verify the exact path affected by the change.
 
@@ -64,6 +64,8 @@ source /opt/anaconda3/etc/profile.d/conda.sh && conda activate global
 Keep documentation synchronized with behavior. If an API route, event field, CLI flag, config key, dependency limit, release artifact, validation claim, or supported platform changes, update the relevant documentation in the same change.
 
 `docs/core-modernization` is for durable audit and validation records. Do not commit raw API payloads, temporary logs, downloaded files, generated release folders, local caches, or network scratch data.
+
+User-facing documentation lives in `docs/README.md`, `docs/SUPPORT.md`, `docs/TROUBLESHOOTING.md`, `docs/INTEGRATION.md`, `docs/SECURITY.md`, `docs/PRIVACY.md`, `docs/RELEASE.md`, and `docs/RELEASE_INTEGRITY.md`. GitHub issue forms and PR templates must stay aligned with the same native product contract.
 
 `CHANGELOG.md` is historical project prose, not the release gate. GitHub Release notes are the authoritative user-facing release record. Update `CHANGELOG.md` only when a maintainer explicitly asks for it or when the repository intentionally re-adopts changelog-driven releases.
 

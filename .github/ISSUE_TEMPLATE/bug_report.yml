@@ -1,0 +1,144 @@
+name: Bug Report
+description: Report a reproducible raria runtime, CLI, daemon, or API bug
+title: "[bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this form for reproducible product bugs in raria.
+        Please search existing issues before opening a new one.
+
+  - type: input
+    id: version
+    attributes:
+      label: raria version
+      description: Output from `raria --version`, or the Git commit if built from source.
+      placeholder: "raria 1.0.0"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: surface
+    attributes:
+      label: Affected surface
+      options:
+        - CLI single download
+        - Daemon runtime
+        - Native HTTP API
+        - WebSocket event stream
+        - Configuration
+        - Persistence or restore
+        - Release archive or binary
+        - Documentation
+    validations:
+      required: true
+
+  - type: dropdown
+    id: protocol
+    attributes:
+      label: Transfer type
+      options:
+        - HTTP or HTTPS
+        - FTP or FTPS
+        - SFTP
+        - BitTorrent or magnet
+        - Metalink
+        - Multi-source or mirror failover
+        - Not transfer-specific
+    validations:
+      required: true
+
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Platform
+      options:
+        - macOS arm64
+        - macOS x86_64
+        - Linux x86_64
+        - Linux aarch64
+        - Windows x86_64
+        - Windows aarch64
+        - Other
+    validations:
+      required: true
+
+  - type: input
+    id: os-version
+    attributes:
+      label: OS version
+      placeholder: "macOS 15.5, Ubuntu 24.04, Windows 11 24H2"
+    validations:
+      required: true
+
+  - type: textarea
+    id: command
+    attributes:
+      label: Command or API request
+      description: Include the exact command, route, request body, or integration call. Redact secrets.
+      render: shell
+    validations:
+      required: true
+
+  - type: textarea
+    id: config
+    attributes:
+      label: Relevant raria.toml or runtime options
+      description: Include only the settings needed to reproduce the issue. Redact tokens, passwords, cookies, and private keys.
+      render: toml
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Write the shortest repeatable sequence that triggers the problem.
+      placeholder: |
+        1. Start `raria daemon ...`
+        2. Create a task through `/api/v1/tasks`
+        3. Pause the task through `/api/v1/tasks/{taskId}/pause`
+        4. Observe the failure
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: Describe the native raria behavior you expected.
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: Describe what happened instead. Include exact error codes or lifecycle states when available.
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs and evidence
+      description: Attach concise logs, API responses, event messages, or checksums. Redact secrets and avoid uploading private downloaded content.
+      render: text
+
+  - type: textarea
+    id: verification
+    attributes:
+      label: Local verification
+      description: Include any focused command already run, such as `cargo test -p raria-cli --test native_api_smoke`.
+      render: shell
+
+  - type: checkboxes
+    id: validations
+    attributes:
+      label: Validations
+      options:
+        - label: I searched existing issues and did not find the same bug.
+          required: true
+        - label: This report uses raria-native CLI, configuration, `/api/v1`, or `/api/v1/events` terminology.
+          required: true
+        - label: I did not include passwords, bearer tokens, cookies, private keys, or private downloaded content.
+          required: true

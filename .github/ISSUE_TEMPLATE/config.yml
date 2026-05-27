@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Questions and integration help
+    url: https://github.com/AnInsomniacy/raria/discussions
+    about: Use GitHub Discussions for usage questions, integration design, and non-reproducible troubleshooting.
+  - name: Security issue
+    url: https://github.com/AnInsomniacy/raria/security/advisories/new
+    about: Report suspected vulnerabilities privately instead of opening a public issue.
