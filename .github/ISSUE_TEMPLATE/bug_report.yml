@@ -1,5 +1,5 @@
 name: Bug Report
-description: Report a reproducible raria bug, crash, hang, or regression
+description: Report a reproducible raria bug, crash, build issue, or regression
 title: "[bug]: "
 labels: ["bug"]
 body:
@@ -22,18 +22,11 @@ body:
     attributes:
       label: Area
       options:
-        - CLI
-        - Daemon
-        - Native API
-        - WebSocket events
-        - Configuration
-        - Persistence or restore
-        - HTTP or HTTPS
-        - FTP or FTPS
-        - SFTP
-        - BitTorrent or magnet
-        - Metalink
-        - Release archive
+        - CLI or daemon
+        - Native API or events
+        - Configuration or persistence
+        - Transfer protocol
+        - Build or release archive
         - Documentation
     validations:
       required: true
@@ -50,7 +43,7 @@ body:
     id: reproduce
     attributes:
       label: Reproduction
-      description: Include the shortest command, config, API request, event sequence, or transfer input that reproduces the issue. Redact secrets.
+      description: Include the shortest command, config, API request, event sequence, transfer input, build command, or workflow step that reproduces the issue. Redact secrets.
       render: text
     validations:
       required: true
@@ -67,7 +60,7 @@ body:
     id: evidence
     attributes:
       label: Evidence
-      description: Add concise logs, backtrace, API response, event message, checksum, or focused test output. Redact secrets.
+      description: Add concise logs, backtrace, API response, event message, checksum, compiler output, or focused test output. Redact secrets.
       render: text
 
   - type: checkboxes
