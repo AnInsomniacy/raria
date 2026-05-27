@@ -1,19 +1,18 @@
 name: Feature Request
-description: Propose a native raria capability or integration improvement
+description: Propose a raria-native capability or integration improvement
 title: "[feat]: "
 labels: ["enhancement"]
 body:
   - type: markdown
     attributes:
       value: |
-        Use this form for raria-native features.
-        Compatibility requests for JSON-RPC, aria2 method names, aria2 option names, old session formats, AriaNg, or legacy Motrix adapters are out of scope.
+        raria does not accept compatibility requests for JSON-RPC, aria2 method names, old option names, old session formats, AriaNg, or legacy Motrix adapters.
 
   - type: textarea
     id: problem
     attributes:
       label: Problem
-      description: Describe the real workflow or integration gap.
+      description: Describe the workflow or integration gap.
     validations:
       required: true
 
@@ -21,28 +20,7 @@ body:
     id: proposal
     attributes:
       label: Proposed native behavior
-      description: Describe the desired raria-native CLI, configuration, API, event, persistence, or protocol behavior.
-    validations:
-      required: true
-
-  - type: dropdown
-    id: area
-    attributes:
-      label: Area
-      options:
-        - CLI
-        - Daemon
-        - Native HTTP API
-        - WebSocket events
-        - Configuration
-        - Persistence and restore
-        - HTTP or HTTPS
-        - FTP or FTPS
-        - SFTP
-        - BitTorrent or magnet
-        - Metalink
-        - Release packaging
-        - Documentation
+      description: Describe the desired CLI, config, API, event, persistence, protocol, or release behavior.
     validations:
       required: true
 
@@ -50,22 +28,16 @@ body:
     id: contract
     attributes:
       label: Public contract impact
-      description: List any new route, event field, CLI flag, config key, schema field, or documented behavior.
-
-  - type: textarea
-    id: alternatives
-    attributes:
-      label: Alternatives considered
-      description: Include mature Rust libraries, protocol standards, or simpler native approaches considered.
+      description: List any new route, event field, CLI flag, config key, schema field, or documented behavior. Write "none" if there is no public contract change.
+    validations:
+      required: true
 
   - type: checkboxes
     id: validations
     attributes:
-      label: Validations
+      label: Checks
       options:
-        - label: I searched existing issues and did not find the same request.
+        - label: I searched existing issues first.
           required: true
-        - label: This request does not require restoring aria2 compatibility, JSON-RPC, old option names, or legacy storage formats.
-          required: true
-        - label: This request describes behavior that belongs in the raria engine rather than in a future GUI client.
+        - label: This request keeps raria-native public surfaces.
           required: true

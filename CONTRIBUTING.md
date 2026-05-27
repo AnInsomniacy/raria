@@ -1,7 +1,6 @@
 # Contributing to raria
 
-Thanks for improving raria. This guide is for contributors. User support,
-security, privacy, release, and integration guidance lives under [`docs/`](docs/README.md).
+Thanks for improving raria.
 
 ## Development Setup
 
@@ -97,13 +96,32 @@ Do not upload bearer tokens, cookies, passwords, SSH keys, private downloads,
 or private session databases unless a maintainer explicitly asks for a sanitized
 artifact through a private channel.
 
+Report suspected vulnerabilities privately through GitHub Security Advisories.
+Do not open public issues for credential exposure, authentication bypass, path
+traversal, arbitrary file write, command execution, or secret leakage.
+
 ## Release Contributions
 
 `Cargo.toml` under `[workspace.package]` is the version source of truth. Use
 `./scripts/bump-version.sh <major.minor.patch>` for version changes and
-`./scripts/release.sh` for local release verification and tag creation. See
-[`docs/RELEASE.md`](docs/RELEASE.md) and
-[`docs/RELEASE_INTEGRITY.md`](docs/RELEASE_INTEGRITY.md).
+`./scripts/release.sh` for local release verification and tag creation.
+
+The local release gate is:
+
+```bash
+cargo fmt --all --check
+cargo check --workspace --locked
+cargo test --workspace
+cargo clippy --workspace --all-targets -- -D warnings
+cargo build --release --locked -p raria-cli
+target/release/raria --version
+```
+
+Release tags use `v{workspace.version}`. GitHub Release notes are the
+authoritative user-facing release record. Release archives are published with
+matching SHA-256 checksum files. Code signing, installers, package-manager
+formulas, and auto-update metadata are not part of the current release
+contract.
 
 ## License
 

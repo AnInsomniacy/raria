@@ -10,35 +10,24 @@ PR titles should use concise Conventional Commit style:
 
 ## Summary
 
-<!-- What changed, and why? Link related issues when applicable. -->
+<!-- What changed, why, and which issue does it close? -->
 
-## Scope
+## Contract impact
 
-<!-- Name the affected crate, documentation area, workflow, script, or public surface. -->
-
-## Public Contract Impact
-
-<!-- State whether this changes CLI flags, raria.toml keys, /api/v1 routes, event fields, persistence schemas, release artifacts, or user documentation. Write "none" if there is no public contract change. -->
+<!-- Note changed CLI flags, raria.toml keys, /api/v1 routes, events, persistence, release artifacts, or docs. Write "none" if unchanged. -->
 
 ## Verification
 
-<!-- Paste the exact commands run and their result. "It compiles" is not enough. -->
-
-```bash
-cargo fmt --all --check
-cargo check --workspace --locked
-cargo test --workspace
-cargo clippy --workspace --all-targets -- -D warnings
-```
+<!-- Paste exact commands and results. -->
 
 ## Checklist
 
 - [ ] The change keeps raria-native CLI, configuration, API, event, and persistence names.
-- [ ] No JSON-RPC, aria2 method name, aria2 option name, Gid-facing public behavior, old session format, or legacy client adapter was added.
-- [ ] Tests are focused on durable behavior and do not rely on public-network availability.
-- [ ] Documentation was updated for changed routes, fields, flags, config keys, release artifacts, or validation claims.
-- [ ] Temporary output, logs, session stores, downloads, and generated archives are absent or kept under ignored `var/`.
+- [ ] No JSON-RPC, aria2 method or option name, public Gid behavior, old session format, or legacy client adapter was added.
+- [ ] Tests are focused, local, and necessary.
+- [ ] Documentation changed with any public contract change.
+- [ ] Generated output is absent or kept under ignored `var/`.
 
-## Release Notes
+## Release note
 
-<!-- One concise user-facing sentence, or "none" for internal-only changes. -->
+<!-- One user-facing sentence, or "none". -->

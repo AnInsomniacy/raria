@@ -1,65 +1,28 @@
 name: Build or Packaging Issue
-description: Report a local build failure, release archive issue, or platform packaging problem
+description: Report a build, CI, release archive, or checksum problem
 title: "[build]: "
 labels: ["build"]
 body:
-  - type: markdown
-    attributes:
-      value: |
-        Use this form for Cargo builds, CI, release archives, checksums, or platform-specific binary issues.
-        Runtime download bugs belong in the bug report form.
-
   - type: input
     id: version
     attributes:
-      label: raria version or commit
+      label: Version or commit
       placeholder: "v1.0.0 or 0123456789abcdef"
     validations:
       required: true
 
-  - type: dropdown
-    id: build-path
-    attributes:
-      label: Build path
-      options:
-        - Local Cargo build
-        - GitHub Actions CI
-        - GitHub Actions release workflow
-        - Downloaded release archive
-        - Cross-compilation
-        - Other
-    validations:
-      required: true
-
-  - type: dropdown
+  - type: input
     id: platform
     attributes:
-      label: Platform
-      options:
-        - macOS arm64
-        - macOS x86_64
-        - Linux x86_64
-        - Linux aarch64
-        - Windows x86_64
-        - Windows aarch64
-        - Other
-    validations:
-      required: true
-
-  - type: input
-    id: rust-version
-    attributes:
-      label: Rust version
-      description: Output from `rustc --version`.
-      placeholder: "rustc 1.85.0"
+      label: Platform and Rust version
+      placeholder: "Ubuntu 24.04 x86_64, rustc 1.85.0"
     validations:
       required: true
 
   - type: textarea
     id: command
     attributes:
-      label: Command
-      description: Include the exact command or workflow step that failed.
+      label: Command or workflow step
       render: shell
     validations:
       required: true
@@ -73,20 +36,12 @@ body:
     validations:
       required: true
 
-  - type: textarea
-    id: environment
-    attributes:
-      label: Environment details
-      description: Include target triple, linker, OS image, shell, and any non-default Cargo or Rust flags.
-
   - type: checkboxes
     id: validations
     attributes:
-      label: Validations
+      label: Checks
       options:
-        - label: I searched existing issues and did not find the same build or packaging problem.
+        - label: I searched existing issues first.
           required: true
         - label: I included the exact command or workflow step that failed.
-          required: true
-        - label: I did not include local secrets, private paths that matter, or credential-bearing logs.
           required: true

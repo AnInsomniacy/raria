@@ -7,18 +7,11 @@
 
 The public surface is native raria: `raria.toml`, `/api/v1` JSON resources, `/api/v1/events` WebSocket events, versioned persistence schemas, and CLI names that describe raria concepts directly. Old external APIs, storage formats, option names, and client bridges are not product targets.
 
-## Documentation
+## Project Docs
 
-- [Documentation index](docs/README.md)
-- [Contributing guide](CONTRIBUTING.md)
-- [Support](docs/SUPPORT.md)
-- [Troubleshooting](docs/TROUBLESHOOTING.md)
-- [Native integration guide](docs/INTEGRATION.md)
-- [Security policy](docs/SECURITY.md)
-- [Privacy policy](docs/PRIVACY.md)
-- [Release process](docs/RELEASE.md)
-- [Release integrity](docs/RELEASE_INTEGRITY.md)
-- [Code signing status](docs/CODE_SIGNING.md)
+Use [CONTRIBUTING.md](CONTRIBUTING.md) for development, issue reporting,
+security reporting, and release rules. The modernization evidence tracker lives
+in [docs/core-modernization](docs/core-modernization/overview.md).
 
 ## Current Status
 
@@ -225,6 +218,12 @@ Use GitHub Issues for reproducible bugs, crashes, feature proposals, and build
 or packaging failures. Use GitHub Discussions for questions and integration
 planning. The issue forms collect raria-native CLI, daemon, `/api/v1`, event,
 configuration, and release evidence.
+
+Report suspected vulnerabilities privately through GitHub Security Advisories.
+raria does not include telemetry, analytics, account sync, crash upload, or
+automatic usage reporting. Release archives are distributed as standalone CLI
+archives with matching SHA-256 checksum files; code signing and installers are
+not part of the current release contract.
 
 ## License
 
