@@ -1,0 +1,4 @@
+id,status,task,scope,acceptance,validation,evidence,notes
+ED2K-004.1,pending,Implement file link parser,ed2k:// file links,"Name, size, root hash, AICH, source, and option metadata parse into native structs.","cargo test -p raria-ed2k link","pending","Normalize unsafe path separators."
+ED2K-004.2,pending,Implement metadata links,server serverlist nodeslist search links,"Non-file ED2K links become native bootstrap or search models.","Focused parser tests","pending","Do not create legacy command aliases."
+ED2K-004.3,pending,Wire task creation,core and RPC,"ED2K file links create native ED2K task summaries.","Focused native API test","pending","Task IDs remain opaque."

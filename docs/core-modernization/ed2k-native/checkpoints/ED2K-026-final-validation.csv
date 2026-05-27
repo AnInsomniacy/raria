@@ -1,0 +1,4 @@
+id,status,task,scope,acceptance,validation,evidence,notes
+ED2K-026.1,pending,Close all tracker rows,ed2k-native docs,"Every capability is implemented, pruned, or documented as a proven technical limitation.","CSV validation and ledger scan","pending","No undocumented gaps."
+ED2K-026.2,pending,Run final Rust validation,workspace,"fmt, check, test, and clippy all pass.","cargo fmt --all --check; cargo check --workspace --locked; cargo test --workspace; cargo clippy --workspace --all-targets -- -D warnings","pending","No ignored placeholders."
+ED2K-026.3,pending,Record manual smoke evidence,var and concise docs,"Public ED2K smoke records exact operational evidence without becoming an automated gate.","Manual smoke report","pending","Do not commit raw logs or downloads."

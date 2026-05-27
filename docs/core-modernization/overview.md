@@ -46,6 +46,7 @@ contract is native.
 | `checkpoints/CM-020-legacy-deletion.csv` | JSON-RPC, parity tests, compatibility docs, and stale options removal |
 | `checkpoints/CM-021-product-docs-release.csv` | Native client contract, completion, product docs, and release closure |
 | `checkpoints/CM-022-final-validation.csv` | Final workspace validation and tracker closure |
+| `ed2k-native/overview.md` | Native ED2K/eMule workstream, delegated from this completed core tracker |
 
 Read `overview.md` and `roadmap.csv` first after every resume or context
 compaction. During implementation, read only the active checkpoint file plus
@@ -117,6 +118,7 @@ In scope:
 | Integrity and disk | Whole-file checksums, piece checksums, allocation, and conflict policy are verified |
 | Metalink | Keep only modern manifest value that feeds native task graphs |
 | BitTorrent | Finish librqbit-backed torrent, magnet, metadata-only, DHT, UDP trackers, PEX where available, WebSeed, file selection, duplicate info-hash policy, seeding, and fastresume behavior |
+| ED2K/eMule | Planned native Rust workstream under `ed2k-native`; not part of the completed CM-001 through CM-022 baseline |
 | Network policy | Proxy, environment proxy, DNS, IPv6, interface binding, no-progress watchdogs, and retry classification are implemented through selected libraries or recorded as technical limitations |
 | Native client integration | A stable resource API and WebSocket stream are sufficient for future Motrix Next integration after Motrix adapts to raria |
 | Product closure | README, completion, release notes, packaging metadata, examples, and validation fixtures describe only the native product |
@@ -135,7 +137,7 @@ Out of scope:
 | HTTP pipelining | Delete |
 | BitTorrent MSE or ARC4 | Delete |
 | LPD | Delete |
-| ED2K | Delete from the raria target |
+| aria2/aMule ED2K compatibility formats | Delete; native ED2K/eMule work is tracked separately in `ed2k-native` |
 | aria2 JSON-RPC compatibility for Motrix Next | Delete; future clients must adapt to raria-native resources and events |
 | aria2-style URI parameter expansion | Delete unless replaced by an explicit native batch task format |
 | SCP | Implement only if mature Rust support is proven; otherwise document as a technical limitation and prefer SFTP |

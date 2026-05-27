@@ -10,6 +10,13 @@ raria workspace: `/Users/sekiro/Projects/personal/raria`
 aria2-next modernization reference:
 `/Users/sekiro/Projects/personal/aria2-next/docs/maintenance/core-modernization`
 
+Native ED2K/eMule behavior reference:
+`/Users/sekiro/Projects/oss/amule`
+
+Native ED2K/eMule engineering references:
+`/Users/sekiro/Projects/personal/aria2-next/docs/maintenance/ed2k-refactor`
+`/Users/sekiro/Projects/personal/aria2-next/docs/maintenance/ed2k-download-hardening`
+
 Included raria inputs are workspace manifests, crate manifests, `Cargo.lock`,
 all workspace Rust source, all workspace tests, repository Markdown docs,
 toolchain and formatting configuration, Git status, and current diff.
@@ -26,9 +33,13 @@ scan expectations, and library-first ownership rules.
 
 raria is not required to preserve aria2-next public surfaces. aria2-next keeps
 some product choices that raria rejects, including JSON-RPC as a supported
-surface, Motrix integration, ED2K, C++ packaging concerns, and libcurl/OpenSSL
-ownership. raria replaces those with Rust-native public surfaces and Rust
-library ownership.
+surface, Motrix integration, aria2-shaped ED2K surfaces, C++ packaging
+concerns, and libcurl/OpenSSL ownership. raria replaces those with Rust-native
+public surfaces and Rust library ownership.
+
+For native ED2K/eMule work, aMule is the primary behavior authority.
+aria2-next ED2K trackers are engineering references for checkpoint sizing,
+capability grouping, and validation discipline. Do not copy GPL reference code.
 
 ## Old raria Documents
 

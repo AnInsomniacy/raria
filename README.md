@@ -12,6 +12,8 @@ The public surface is native raria: `raria.toml`, `/api/v1` JSON resources, `/ap
 Use [CONTRIBUTING.md](CONTRIBUTING.md) for development, issue reporting,
 security reporting, and release rules. The modernization evidence tracker lives
 in [docs/core-modernization](docs/core-modernization/overview.md).
+Native ED2K/eMule work is tracked separately in
+[docs/core-modernization/ed2k-native](docs/core-modernization/ed2k-native/overview.md).
 
 ## Current Status
 
@@ -23,6 +25,9 @@ The current tree provides:
 - checksum enforcement, conditional GET, mirror failover, and daemon-path Metalink execution
 - shell completion for retained native CLI commands
 - structured JSON file logging for high-value runtime surfaces
+
+Native ED2K/eMule support is planned in the engineering tracker. It is not part
+of the implemented runtime listed above until the ED2K checkpoints close.
 
 ## Implemented Capabilities
 

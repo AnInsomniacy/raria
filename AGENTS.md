@@ -10,7 +10,9 @@ raria is a Rust-native download manager and daemon. It is not an aria2 compatibi
 
 Supported public surfaces are `raria.toml`, the `/api/v1` HTTP JSON API, the `/api/v1/events` WebSocket stream, opaque raria task identifiers, versioned native persistence schemas, native CLI names, structured logs, generated shell completion, release binaries, and native documentation.
 
-Do not add JSON-RPC, XML-RPC, aria2 method names, aria2 option names, Gid-facing public behavior, aria2 config syntax, aria2 session or control-file compatibility, AriaNg or Motrix legacy adapters, HTTP pipelining, BitTorrent MSE or ARC4, LPD, ED2K, browser-cookie import, or historical platform baggage.
+Do not add JSON-RPC, XML-RPC, aria2 method names, aria2 option names, Gid-facing public behavior, aria2 config syntax, aria2 session or control-file compatibility, AriaNg or Motrix legacy adapters, HTTP pipelining, BitTorrent MSE or ARC4, LPD, browser-cookie import, or historical platform baggage.
+
+Native ED2K/eMule work is allowed only through `docs/core-modernization/ed2k-native`. It must use raria-native API, event, CLI, configuration, persistence, and logging surfaces. Do not copy GPL reference code or add aria2, aMule, AriaNg, or legacy Motrix compatibility.
 
 Future GUI clients may integrate with raria, but they must adapt to raria's native API and event model.
 
@@ -25,6 +27,7 @@ Future GUI clients may integrate with raria, but they must adapt to raria's nati
 | SFTP | `crates/raria-sftp` uses russh and russh-sftp |
 | Metalink | `crates/raria-metalink` owns retained Metalink 4 parsing and normalization |
 | BitTorrent | `crates/raria-bt` uses librqbit for torrent, magnet, DHT, tracker, peer, piece, and fastresume behavior where public APIs support it |
+| ED2K/eMule | `docs/core-modernization/ed2k-native` owns the planned native Rust workstream until `crates/raria-ed2k` is introduced |
 | Native API | `crates/raria-rpc` owns `/api/v1` resources and WebSocket events |
 | CLI and daemon | `crates/raria-cli` owns command parsing, daemon wiring, hooks, and release binary entry points |
 | Modernization evidence | `docs/core-modernization` owns durable capability, dependency, and validation records |

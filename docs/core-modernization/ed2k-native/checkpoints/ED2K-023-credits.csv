@@ -1,0 +1,4 @@
+id,status,task,scope,acceptance,validation,evidence,notes
+ED2K-023.1,pending,Implement credit counters,credit module,"Uploaded and downloaded counters persist per remote identity.","Focused credit tests","pending","Use native schema."
+ED2K-023.2,pending,Apply credit score,upload queue,"Credit score influences waiting queue order within bounded fair limits.","Focused queue tests","pending","Do not overfit UI policy."
+ED2K-023.3,pending,Keep secure-ident truthful,capability model,"Secure identification remains unadvertised unless public-key and signature flow is fully implemented.","Capability tests","pending","No false trust claim."

@@ -1,0 +1,5 @@
+id,status,task,scope,acceptance,validation,evidence,notes
+ED2K-003.1,pending,Create raria-ed2k crate,Cargo workspace,"Crate compiles with empty protocol modules and no runtime behavior claims.","cargo check -p raria-ed2k --locked","pending","Keep modules small by ownership."
+ED2K-003.2,pending,Add native model hooks,raria-core,"JobKind::Ed2k and SourceProtocol::Ed2k exist with native projections.","Focused core tests","pending","Do not expose Gid."
+ED2K-003.3,pending,Add config skeleton,raria.toml native config,"[ed2k] parses strict native fields and rejects unknown legacy keys.","cargo test -p raria-core native_config","pending","No aria2 option names."
+ED2K-003.4,pending,Add persistence row plan,redb schema docs and code,"ED2K row names and versioning are defined before runtime state writes.","Focused persistence tests","pending","Do not reuse aMule database formats."

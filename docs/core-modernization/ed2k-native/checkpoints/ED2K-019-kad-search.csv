@@ -1,0 +1,4 @@
+id,status,task,scope,acceptance,validation,evidence,notes
+ED2K-019.1,pending,Implement Kad source search,Kad search state,"File source lookups traverse routing state and merge results through source policy.","Focused search tests","pending","Bounded cadence."
+ED2K-019.2,pending,Implement Kad source publish,Kad publish state,"Completed or shared files publish source metadata when sharing policy allows it.","Focused publish tests","pending","Respect privacy defaults."
+ED2K-019.3,pending,Implement keyword search,Kad search API,"Keyword query packets and result parsing feed native search resources.","Focused parser and API tests","pending","Deduplicate results."

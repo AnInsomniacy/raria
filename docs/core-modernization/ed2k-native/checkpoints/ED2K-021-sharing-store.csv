@@ -1,0 +1,4 @@
+id,status,task,scope,acceptance,validation,evidence,notes
+ED2K-021.1,pending,Create shared store,sharing module,"Verified completed or imported files enter native shared metadata with path, name, size, hashset, and AICH fields.","Focused sharing tests","pending","No known.met import."
+ED2K-021.2,pending,Implement publish metadata,server and Kad integration,"Shared files produce server and Kad publish records only when sharing is enabled.","Focused publish tests","pending","Respect config."
+ED2K-021.3,pending,Implement shared reads,disk serving,"Upload responder reads verified ranges safely from shared files.","Focused disk tests","pending","No preview or browsing UI."

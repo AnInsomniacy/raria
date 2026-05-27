@@ -1,0 +1,4 @@
+id,status,task,scope,acceptance,validation,evidence,notes
+ED2K-018.1,pending,Implement Kad IDs and contacts,Kad model,"Kad IDs, contact endpoints, versions, UDP keys, and validation rules are represented.","Focused Kad model tests","pending","Filter unusable contacts."
+ED2K-018.2,pending,Implement routing table,Kad routing,"Buckets, replacement contacts, refresh, bootstrap, and transaction expiry behave deterministically.","Focused routing tests","pending","Generic Kademlia crates are not the owner."
+ED2K-018.3,pending,Persist Kad state,redb rows,"Routing state and maintenance timestamps restore without legacy nodes.dat dependence.","Persistence tests","pending","nodes.dat remains bootstrap input."

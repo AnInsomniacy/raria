@@ -1,0 +1,4 @@
+id,status,task,scope,acceptance,validation,evidence,notes
+ED2K-006.1,pending,Parse server.met,bootstrap parser,"Useful server endpoint and capability metadata parse and merge safely.","cargo test -p raria-ed2k server_met","pending","Use as bootstrap only."
+ED2K-006.2,pending,Parse nodes.dat,Kad bootstrap parser,"Usable Kad contacts parse and obsolete contacts are filtered.","Focused nodes.dat tests","pending","No Kad1 or unusable port preservation."
+ED2K-006.3,pending,Persist bootstrap state,redb rows,"Server and Kad bootstrap metadata survive restart through native schemas.","Focused persistence tests","pending","No legacy file-format compatibility storage."

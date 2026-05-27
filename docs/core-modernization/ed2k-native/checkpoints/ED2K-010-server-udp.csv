@@ -1,0 +1,4 @@
+id,status,task,scope,acceptance,validation,evidence,notes
+ED2K-010.1,pending,Implement UDP status,server UDP session,"UDP status replies update server load, users, files, flags, and challenge state.","Focused UDP tests","pending","Accept useful extension tails safely."
+ED2K-010.2,pending,Implement UDP source requests,server UDP discovery,"Global source requests and packed replies merge valid sources without corrupting unrelated files.","Focused packet tests","pending","Ignore bogus tail bytes safely."
+ED2K-010.3,pending,Implement bounded cadence,server scheduler,"TCP and UDP server requests follow bounded aMule-style scheduling.","Policy tests","pending","Avoid steady-state polling noise."

@@ -1,0 +1,4 @@
+id,status,task,scope,acceptance,validation,evidence,notes
+ED2K-020.1,pending,Implement firewall checks,Kad reachability,"TCP and UDP firewalled state is represented and influences Kad scheduling.","Focused state tests","pending","Do not hide LowID limits."
+ED2K-020.2,pending,Define buddy and direct callback limits,capability truth,"Unsupported Kad buddy and direct UDP callback flows remain unadvertised until full ownership exists.","Capability scan","pending","Truth over compatibility."
+ED2K-020.3,pending,Document listen policy,docs and config,"Explicit listen and firewall configuration replaces router helper stacks.","Doc and config tests","pending","No UPnP/NAT helper dependency."

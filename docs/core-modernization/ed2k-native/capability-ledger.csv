@@ -1,0 +1,34 @@
+capability,decision,current_owner,target_owner,checkpoint,status,verification,notes
+Reference authority,adapt,core tracker excluded ED2K,ed2k-native tracker with aMule authority,ED2K-001,verified,Tracker activation records aMule as behavior authority and aria2-next as engineering reference only.,Do not copy GPL code.
+Native public surface,add,not present,"raria.toml, /api/v1, /api/v1/events, native CLI",ED2K-024,pending,pending,No JSON-RPC or aria2-shaped method names.
+ED2K task kind,add,JobKind has Range and Bt,JobKind::Ed2k with native projections,ED2K-003,pending,pending,Keep public IDs opaque TaskId values.
+ED2K source protocol,add,SourceProtocol lacks Ed2k,SourceProtocol::Ed2k,ED2K-003,pending,pending,Detect ed2k:// links without compatibility aliases.
+ED2K links,add,not present,raria-ed2k link parser,ED2K-004,pending,pending,Include safe filenames and link metadata.
+ED2K root hash,add,not present,md4-backed ED2K hash implementation,ED2K-005,pending,pending,Use mature hash primitive with native ED2K rules.
+MD4 hashsets,add,not present,native theoretical part-hash model,ED2K-005,pending,pending,Cover exact part-size boundaries.
+AICH,add,not present,native SHA-1 tree and recovery metadata,ED2K-005,pending,pending,Do not claim unsupported recovery flows.
+server.met,add,not present,native bootstrap metadata parser,ED2K-006,pending,pending,Use only as bootstrap data.
+nodes.dat,add,not present,native Kad bootstrap parser,ED2K-006,pending,pending,Filter obsolete unusable contacts.
+Stable ED2K identity,add,not present,native redb identity row,ED2K-007,pending,pending,Required for queues and credits.
+Server TCP,add,not present,raria-ed2k server session,ED2K-009,pending,pending,Login status and source discovery.
+Server UDP,add,not present,raria-ed2k UDP session,ED2K-010,pending,pending,Status and source requests with bounded cadence.
+HighID LowID callback,add,not present,native reachability state,ED2K-011,pending,pending,Keep unsupported callback modes unadvertised.
+Peer handshake,add,not present,raria-ed2k peer session,ED2K-012,pending,pending,Capability truth gates packet flows.
+Peer request state,add,not present,native peer state machine,ED2K-013,pending,pending,Queue and no-file states must be explicit.
+Source Exchange,add,not present,native source exchange parser and policy,ED2K-014,pending,pending,Safe dedupe and source quality rules.
+Source lifecycle,add,not present,native source policy,ED2K-014,pending,pending,Dead-source expiry and retry cadence.
+Part transfer,add,not present,native ED2K transfer planner,ED2K-015,pending,pending,Normal and I64 offsets.
+Compressed parts,add,not present,flate2-backed compressed payload handling,ED2K-016,pending,pending,Validate before disk writes.
+Resume and completion truth,add,not present,native verified byte state,ED2K-017,pending,pending,Completion requires disk and integrity truth.
+Kad routing,add,not present,native eMule Kad routing,ED2K-018,pending,pending,Generic Kademlia crates are not a direct owner.
+Kad source and keyword search,add,not present,native Kad search state,ED2K-019,pending,pending,Bounded scheduling and dedupe.
+Kad firewall state,add,not present,native Kad reachability state,ED2K-020,pending,pending,Unsupported buddy/direct callback remains unadvertised.
+Sharing store,add,not present,native ED2K shared metadata,ED2K-021,pending,pending,No known.met import.
+Upload queue,add,not present,native cooperative upload queue,ED2K-022,pending,pending,Slots ranks and UDP reask response.
+Credits,add,not present,native practical credit counters,ED2K-023,pending,pending,No false secure-ident claim.
+Server and Kad search API,add,not present,native search resources,ED2K-025,pending,pending,Expose search as native resources.
+Manual ED2K smoke,add,not present,var smoke evidence plus concise docs,ED2K-026,pending,pending,Not an automated gate.
+aMule GUI web and text clients,prune,not present,deleted,ED2K-001,verified,Tracker prune rules exclude application shells.,Do not add.
+Chat friends comments ratings preview collections captcha,prune,not present,deleted,ED2K-001,verified,Tracker prune rules exclude non-download application features.,Do not add.
+Legacy aMule databases,prune,not present,deleted,ED2K-001,verified,Tracker rejects part.met known.met known2.met clients.met imports unless a future migration goal is approved.,Native schemas only.
+Router helper stacks,prune,not present,deleted,ED2K-001,verified,Tracker replaces UPnP/NAT helper stacks with explicit listen and firewall configuration.,No router-control dependency.

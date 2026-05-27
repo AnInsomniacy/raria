@@ -1,0 +1,4 @@
+id,status,task,scope,acceptance,validation,evidence,notes
+ED2K-017.1,pending,Verify disk writes,disk integration,"Completed ED2K parts are flushed and recorded as verified only after integrity checks pass.","Focused disk tests","pending","Completion truth is verified bytes."
+ED2K-017.2,pending,Implement resume rows,persistence,"Partial ED2K progress, verified parts, hashsets, AICH state, and source state restore safely.","Persistence tests","pending","Version every row."
+ED2K-017.3,pending,Handle corrupt data,integrity path,"MD4/AICH mismatch rejects corrupt data and requeues affected ranges without leaving bad output.","Regression tests","pending","Do not mark completion early."

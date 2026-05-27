@@ -1,0 +1,5 @@
+id,status,task,scope,acceptance,validation,evidence,notes
+ED2K-002.1,pending,Audit aMule authority,aMule ED2K and Kad source,"Relevant behavior owners are mapped to capability-ledger rows.","Focused local source inspection","pending","Do not copy source code."
+ED2K-002.2,pending,Audit aria2-next trackers,aria2-next ED2K refactor and hardening docs,"Engineering lessons and prune decisions are mapped without inheriting public surfaces.","Focused tracker inspection","pending","Use trackers as compressed history only."
+ED2K-002.3,pending,Finalize Rust dependency decisions,dependency-ledger.csv,"Selected primitives and rejected engine candidates are recorded with current evidence.","cargo info or primary docs","pending","No complete Rust ED2K engine is assumed."
+ED2K-002.4,pending,Record license boundary,overview and progress,"GPL behavior references are separated from Apache-2.0 implementation work.","Doc scan","pending","No code-level porting."

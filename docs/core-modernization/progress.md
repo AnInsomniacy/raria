@@ -655,3 +655,16 @@ Changed: Deleted duplicate daemon BitTorrent smoke coverage and a public-network
 Verified: cargo fmt --all --check passed. cargo check --workspace --locked passed. cargo test --workspace passed with 0 ignored tests. cargo clippy --workspace --all-targets -- -D warnings passed.
 Remaining: Run scripts/release.sh for the v1.0.0 release boundary.
 Blocked: none.
+
+2026-05-28 native ED2K workstream delegated
+Changed: Created `docs/core-modernization/ed2k-native` as the active tracker
+for native Rust ED2K/eMule work. Updated the core capability and dependency
+ledgers so ED2K is no longer treated as a deleted product target. Legacy ED2K
+compatibility formats, JSON-RPC, aria2 method names, aMule database imports,
+and legacy Motrix or AriaNg adapters remain out of scope.
+Verified: CSV validation passed for 54 tracker files. Stale ED2K exclusion
+phrase scan passed. `git diff --check` passed. `cargo check --workspace
+--locked` passed.
+Remaining: Start ED2K-002 authority, license, and dependency audit in the
+native ED2K tracker.
+Blocked: none.

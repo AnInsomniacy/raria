@@ -1,0 +1,4 @@
+id,status,task,scope,acceptance,validation,evidence,notes
+ED2K-001.1,verified,Create tracker structure,docs/core-modernization/ed2k-native,"Overview, roadmap, ledgers, progress log, and checkpoint files exist.","CSV validation for 54 files and git diff --check","Tracker files created and parsed successfully.","Keep this directory as the only active ED2K workstream."
+ED2K-001.2,verified,Reset ED2K scope,core modernization docs,"Native ED2K is delegated to this tracker instead of excluded from raria.","Stale exclusion scan","No active docs contain the old ED2K exclusion phrases.","Compatibility surfaces remain excluded."
+ED2K-001.3,verified,Record prune rules,overview and capability ledger,"Application-shell and legacy storage features are pruned without deleting downloader behavior.","Doc review","Prune rows recorded in capability-ledger.csv.","Do not use pruning to skip core protocol behavior."

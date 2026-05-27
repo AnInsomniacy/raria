@@ -1,0 +1,4 @@
+id,status,task,scope,acceptance,validation,evidence,notes
+ED2K-007.1,pending,Create stable identity,identity module,"Client hash is generated once and persists through restart.","Focused identity tests","pending","Required for queue and credits."
+ED2K-007.2,pending,Add ED2K config,raria.toml,"Listen ports, server, Kad, sharing, and limits use native field names.","native_config tests","pending","Strict unknown-key rejection."
+ED2K-007.3,pending,Project config through API,/api/v1/config,"ED2K config projection is native and redacted where needed.","raria-rpc native API test","pending","No legacy option names."

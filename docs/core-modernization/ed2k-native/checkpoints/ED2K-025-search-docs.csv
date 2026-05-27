@@ -1,0 +1,4 @@
+id,status,task,scope,acceptance,validation,evidence,notes
+ED2K-025.1,pending,Expose search resources,/api/v1/ed2k/searches,"Server and Kad searches create native resources with startable result links and pagination or cursor policy.","Native API tests","pending","No legacy RPC search methods."
+ED2K-025.2,pending,Close status docs,README and tracker docs,"User-facing docs describe implemented ED2K behavior and limits without compatibility claims.","Doc scan","pending","Keep public docs concise."
+ED2K-025.3,pending,Run stale-surface scans,workspace docs and source,"No JSON-RPC, aria2 method, legacy Motrix, old DB import, or false capability claim is introduced.","rg scans","pending","Historical tracker mentions are allowed only as evidence."

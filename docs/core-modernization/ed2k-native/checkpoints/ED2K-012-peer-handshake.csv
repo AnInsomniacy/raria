@@ -1,0 +1,4 @@
+id,status,task,scope,acceptance,validation,evidence,notes
+ED2K-012.1,pending,Implement peer hello,peer TCP session,"Hello and HelloAnswer carry native identity and retained useful capability tags.","Focused peer tests","pending","No false feature bits."
+ED2K-012.2,pending,Implement capability truth,peer info model,"AICH, compression, Unicode, large files, SX, crypt, secure-ident, Kad, and file identifier claims match implemented flows.","Capability tests","pending","Unimplemented flows stay disabled."
+ED2K-012.3,pending,Handle malformed handshake,peer error path,"Bad packets fail the peer without poisoning task state.","Focused error tests","pending","Keep errors typed."

@@ -1,0 +1,4 @@
+id,status,task,scope,acceptance,validation,evidence,notes
+ED2K-011.1,pending,Model reachability,source state,"HighID, LowID, firewalled, callback waiting, failed, timed out, and impossible states are explicit.","Focused state tests","pending","Direct scheduling only for reachable peers."
+ED2K-011.2,pending,Implement server callback,server TCP callback,"LowID server-mediated callback can make a peer schedulable or mark a bounded failure.","Focused callback tests","pending","Do not claim unsupported modes."
+ED2K-011.3,pending,Document callback limits,capability ledger,"Buddy, direct UDP callback, crypt-required callback, and firewall limits are truthful.","Doc scan","pending","Unsupported flows remain unadvertised."

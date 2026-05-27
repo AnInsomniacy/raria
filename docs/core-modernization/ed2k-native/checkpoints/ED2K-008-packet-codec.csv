@@ -1,0 +1,4 @@
+id,status,task,scope,acceptance,validation,evidence,notes
+ED2K-008.1,pending,Implement frame codec,packet module,"TCP and UDP frames enforce size, protocol, and malformed input boundaries.","cargo test -p raria-ed2k packet","pending","Reject oversized packets deterministically."
+ED2K-008.2,pending,Implement tag codec,tag module,"Integer, string, hash, bool, and binary tags round-trip with reference-compatible widths.","Focused tag tests","pending","Use typed errors."
+ED2K-008.3,pending,Implement opcode map,protocol constants,"Retained ED2K, eMule, and Kad opcodes are named and unsupported flows are unadvertised.","Doc and test scan","pending","No dead compatibility enums."

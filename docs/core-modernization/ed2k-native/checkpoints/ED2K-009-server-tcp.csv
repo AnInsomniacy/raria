@@ -1,0 +1,4 @@
+id,status,task,scope,acceptance,validation,evidence,notes
+ED2K-009.1,pending,Implement server login,server TCP session,"Login, IDChange, HighID/LowID, server ident, and status update native state.","Focused server TCP tests","pending","No public legacy server state."
+ED2K-009.2,pending,Implement source requests,server TCP source discovery,"Hash and hash-size source requests parse useful found-source replies.","Focused source tests","pending","Preserve capability metadata."
+ED2K-009.3,pending,Implement server retry policy,server scheduler,"Failures, backoff, and useful metadata retention avoid noisy reconnect loops.","Policy tests","pending","Cadence continues in ED2K-010."

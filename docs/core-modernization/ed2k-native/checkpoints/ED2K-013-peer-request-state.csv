@@ -1,0 +1,4 @@
+id,status,task,scope,acceptance,validation,evidence,notes
+ED2K-013.1,pending,Implement file request flow,peer TCP session,"Filename, set-request-file-id, file status, and hashset request flows update native state.","Focused peer tests","pending","Plain fallback first."
+ED2K-013.2,pending,Implement queue state,peer state machine,"Start-upload, accept-upload, queue rank, no-file, queue-full, and out-of-parts states are explicit.","State tests","pending","Queue rank drives scheduling."
+ED2K-013.3,pending,Implement request failure cleanup,peer state and scheduler,"Disconnect, no-file, bad packet, and cancelled paths release peer-owned ranges.","Focused cleanup tests","pending","Prevent stale range ownership."
