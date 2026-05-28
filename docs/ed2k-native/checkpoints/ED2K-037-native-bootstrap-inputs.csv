@@ -1,0 +1,5 @@
+id,status,target,area,acceptance,validation,evidence,notes
+ED2K-037.1,pending,Add native server bootstrap config,raria.toml,"[ed2k] accepts native fields for explicit ED2K server endpoints and rejects aria2-style option names.","Focused native config test","Not started.","Use raria-native field names."
+ED2K-037.2,pending,Add metadata file config,raria.toml,"[ed2k] accepts native server.met and nodes.dat path lists and preserves strict unknown-field rejection.","Focused native config test","Not started.","Treat files as bootstrap data only."
+ED2K-037.3,pending,Define default bootstrap policy,config,"raria has a documented native default server bootstrap policy and useful local aMule nodes.dat path discovery where present.","Focused unit or config test plus doc review","Not started.","No bundled server.met or nodes.dat."
+ED2K-037.4,pending,Expose config truth,API,"/api/v1/config reports the native ED2K bootstrap inputs without secrets or legacy names.","Focused native API test","Not started.","Keep response shape stable."

@@ -102,18 +102,24 @@ expose ED2K as typed native resources, not as a compatibility method set.
 CLI output. It should route ED2K tasks to the ED2K backend and keep local
 generated smoke output under `var/`.
 
-Current completion boundary: ED2K protocol primitives, native task projection,
-events, search resources, persistence rows, runtime context, bounded scheduler
-status ticks, local-socket server TCP/UDP exchange ownership, bounded
-local-socket Kad UDP source, keyword, publish, firewall, and timeout handling,
-bounded local-socket peer TCP handshake, queue, source exchange, part request,
-payload validation, timeout handling, local file disk completion, native resume
-snapshot restore, sharing-on-completion, verified upload serving, UDP reask
-handling, daemon inline peer transfer to verified disk completion, daemon
-server and Kad discovery scheduling, native search execution, daemon upload
-listeners, credit persistence, local smoke evidence, and final validation are
-verified. Public ED2K network smoke remains manual evidence, not an automated
-gate.
+Current local completion boundary: ED2K protocol primitives, native task
+projection, events, search resources, persistence rows, runtime context,
+bounded scheduler status ticks, local-socket server TCP/UDP exchange
+ownership, bounded local-socket Kad UDP source, keyword, publish, firewall,
+and timeout handling, bounded local-socket peer TCP handshake, queue, source
+exchange, part request, payload validation, timeout handling, local file disk
+completion, native resume snapshot restore, sharing-on-completion, verified
+upload serving, UDP reask handling, daemon inline peer transfer to verified
+disk completion, daemon server and Kad discovery scheduling, native search
+execution, daemon upload listeners, credit persistence, local smoke evidence,
+and local final validation are verified through ED2K-035.
+
+Public usability is still open. A fresh raria daemon must be able to bootstrap
+useful public ED2K contacts, run server and Kad search through
+`/api/v1/ed2k/searches`, return non-empty results for query `test` within 60
+seconds during manual public smoke, and turn useful search or discovery
+results into download-capable native ED2K tasks. ED2K-036 through ED2K-043 own
+that public-readiness closeout.
 
 ## Capability Scope
 
@@ -133,8 +139,9 @@ In scope:
 | Kad | Bootstrap, routing, source search, source publish, keyword search, refresh, and firewall state are implemented |
 | Sharing | Completed or imported files can be shared through native metadata where enabled |
 | Upload and credits | Upload queue, UDP reask responses, ranks, slots, and practical credit counters are implemented truthfully |
-| Search | Server and Kad search expose native search resources and startable ED2K links |
+| Search | Server and Kad search expose native search resources, merge results, and return startable ED2K links from a fresh daemon |
 | Integration | API, events, CLI, config, docs, persistence, logs, and final validation match raria-native contracts |
+| Public readiness | Release binary, daemon API, bootstrap, search, source loop, and manual public smoke produce durable evidence under `/Users/sekiro/Desktop/raria-test` |
 
 Prune:
 
@@ -165,7 +172,7 @@ Use the smallest relevant command for each checkpoint and record it in the
 active checkpoint file and `progress.md`. Run `cargo check --workspace --locked`
 after meaningful integration slices.
 
-Final validation requires:
+Final local validation requires:
 
 ```bash
 cargo fmt --all --check
@@ -174,9 +181,12 @@ cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 ```
 
-Manual public ED2K smoke should record exact inputs, observed source discovery,
-queue state, transfer progress, limitations, and cleanup under `var/` with
-only concise conclusions committed.
+Manual public ED2K smoke is a separate e2e validation, not a Rust test. Build
+the release binary to `/Users/sekiro/Desktop/raria-test/bin/raria`, store raw
+run evidence under `/Users/sekiro/Desktop/raria-test/runs/<batch>`, and commit
+only concise tracker conclusions. Final public acceptance requires native
+`/api/v1/ed2k/searches` for query `test` to return `resultCount > 0` within 60
+seconds and the daemon to shut down cleanly.
 
 ## Update Rules
 

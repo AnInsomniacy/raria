@@ -1,0 +1,5 @@
+id,status,target,area,acceptance,validation,evidence,notes
+ED2K-042.1,pending,Create tasks from search results,API daemon,"A native search result ed2kUri can create an ED2K task with correct file identity and no legacy fields.","Focused native API or daemon test","Not started.","Search results remain startable task inputs."
+ED2K-042.2,pending,Attach discovered sources,daemon,"Server and Kad discovered sources merge into the task source pool rather than only incrementing counters.","Focused local socket daemon test","Not started.","Preserve source caps and dedupe."
+ED2K-042.3,pending,Drive peer scheduling,daemon,"Discovered sources can enter peer scheduling with backoff cancellation LowID limits and rate policy intact.","Focused local socket daemon test","Not started.","Split this checkpoint only if context grows too large."
+ED2K-042.4,pending,Preserve disk truth,transfer,"Peer bytes from discovered sources pass through verified ED2K disk completion and resume paths.","Focused local socket daemon test","Not started.","No unverified completion."

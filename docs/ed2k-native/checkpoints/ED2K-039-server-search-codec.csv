@@ -1,0 +1,5 @@
+id,status,target,area,acceptance,validation,evidence,notes
+ED2K-039.1,pending,Build server search requests,raria-ed2k,"Server keyword search request payloads support retained keyword, file type, size, source count, complete source count, and extension filters.","Focused raria-ed2k test","Not started.","No GUI-only search baggage."
+ED2K-039.2,pending,Parse server search results,raria-ed2k,"Server TCP and UDP search results parse file hash, name, size, source counts, complete counts, type, extension, and source network metadata.","Focused raria-ed2k test","Not started.","Cover large-file size tags."
+ED2K-039.3,pending,Generate native result links,raria-ed2k,"Parsed server search results produce startable ed2kUri values with safe names and truthful size/hash fields.","Focused raria-ed2k test","Not started.","Do not add aria2 RPC field names."
+ED2K-039.4,pending,Reject malformed search data,raria-ed2k,"Malformed or unrelated search payloads fail safely without partial native result state.","Focused raria-ed2k test","Not started.","Keep tests compact."

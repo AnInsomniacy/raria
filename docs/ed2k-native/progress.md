@@ -761,7 +761,7 @@ Verified: `cargo fmt --all --check`, `cargo check --workspace --locked`,
 ED2K CSV validation for 38 files, and `git diff --check` passed.
 `cargo test --workspace` completed with zero failed and zero ignored tests.
 
-Remaining: Native ED2K workstream complete.
+Remaining: Start ED2K public-readiness closeout.
 
 Blocked: none.
 
@@ -776,6 +776,27 @@ Verified: Stale-current-doc scans no longer find active README, AGENTS, core
 overview, ED2K overview, or capability-ledger claims that ED2K is still
 planned or incomplete. Historical checkpoint evidence remains unchanged.
 
-Remaining: none for the native ED2K workstream.
+Remaining: Public ED2K usability remains open. ED2K-036 through ED2K-043 own
+fresh-daemon bootstrap, real server search, merged server/Kad native search,
+manual public search evidence, search-result source scheduling, and final
+public-readiness validation.
+
+Blocked: none.
+
+## 2026-05-28 ED2K-036 verified
+
+Changed: Reopened the ED2K tracker for public usability without invalidating
+the ED2K-001 through ED2K-035 local validation evidence. The next closeout
+uses eight checkpoints: ED2K-036 public-readiness reset, ED2K-037 native
+bootstrap inputs, ED2K-038 bootstrap loading and persistence, ED2K-039 server
+search codec, ED2K-040 native server and Kad search execution, ED2K-041 public
+search e2e, ED2K-042 search result source loop, and ED2K-043 final
+public-readiness validation.
+
+Verified: CSV validation passed for 46 files. `git diff --check` passed.
+Stale completion scan leaves only historical local-gate wording and the
+current policy that public ED2K e2e is manual evidence, not a Rust test.
+
+Remaining: Start ED2K-037 native bootstrap inputs.
 
 Blocked: none.

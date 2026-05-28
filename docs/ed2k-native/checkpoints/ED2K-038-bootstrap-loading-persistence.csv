@@ -1,0 +1,5 @@
+id,status,target,area,acceptance,validation,evidence,notes
+ED2K-038.1,pending,Load default servers,daemon,"A fresh daemon seeds native ED2K server bootstrap rows when ED2K server support is enabled and no better configured source exists.","Focused daemon or persistence test","Not started.","Use bounded deterministic inputs."
+ED2K-038.2,pending,Load configured server inputs,daemon,"Explicit servers and server.met files merge into native server bootstrap rows without erasing useful existing metadata.","Focused daemon or persistence test","Not started.","Reuse existing parser and merge policy."
+ED2K-038.3,pending,Load Kad bootstrap inputs,daemon,"Configured nodes.dat and useful local aMule nodes.dat paths merge into native Kad bootstrap rows with obsolete contacts filtered.","Focused daemon or persistence test","Not started.","No aMule database import."
+ED2K-038.4,pending,Expose bootstrap status,status,"Daemon status or events make empty bootstrap states and loaded counts observable for debugging public search failures.","Focused native API or daemon test","Not started.","Do not silently report success for empty bootstrap."

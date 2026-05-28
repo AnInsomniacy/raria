@@ -1,0 +1,5 @@
+id,status,target,area,acceptance,validation,evidence,notes
+ED2K-043.1,pending,Close tracker rows,docs,"ED2K-036 through ED2K-043 are verified or documented as proven technical limitations.","CSV validation and doc review","Not started.","No undocumented public-readiness gap."
+ED2K-043.2,pending,Run Rust gates,workspace,"cargo fmt, cargo check, cargo test, and cargo clippy all pass for the workspace.","cargo fmt --all --check; cargo check --workspace --locked; cargo test --workspace; cargo clippy --workspace --all-targets -- -D warnings","Not started.","No ignored tests for this goal."
+ED2K-043.3,pending,Run final public e2e,e2e,"The desktop release binary returns non-empty query test search results within 60 seconds and shuts down cleanly.","Manual e2e report under /Users/sekiro/Desktop/raria-test/runs/<batch>","Not started.","Public network evidence remains manual."
+ED2K-043.4,pending,Finalize docs,docs,"README, AGENTS, and docs/ed2k-native accurately describe ED2K public readiness and remaining limits.","Doc scan and git diff --check","Not started.","Keep user docs concise."

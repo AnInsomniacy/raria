@@ -1,0 +1,5 @@
+id,status,target,area,acceptance,validation,evidence,notes
+ED2K-041.1,pending,Build desktop binary,e2e,"A release raria binary is built at /Users/sekiro/Desktop/raria-test/bin/raria.","cargo build --release --locked -p raria-cli and binary version check","Not started.","Do not commit the binary."
+ED2K-041.2,pending,Run daemon evidence,e2e,"A fresh daemon starts from /Users/sekiro/Desktop/raria-test/runs/<batch> and health config search and shutdown API calls are recorded.","Manual API evidence under desktop run directory","Not started.","Use native /api/v1 only."
+ED2K-041.3,pending,Verify public search,e2e,"POST /api/v1/ed2k/searches with query test returns resultCount greater than zero within 60 seconds.","Manual public e2e report","Not started.","This may use the public ED2K network."
+ED2K-041.4,pending,Record concise conclusion,docs,"Tracker records the batch path, result count, duration, daemon port, binary path, and cleanup result without raw logs.","Doc review","Not started.","Raw evidence stays outside the repository."
