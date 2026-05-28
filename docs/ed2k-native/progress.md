@@ -851,3 +851,21 @@ warnings`, ED2K CSV validation for 46 files, and `git diff --check` passed.
 Remaining: Start ED2K-040 native server and Kad search execution.
 
 Blocked: none.
+
+## 2026-05-28 ED2K-040 verified
+
+Changed: Added bounded native ED2K server search execution to the daemon search
+worker. `/api/v1/ed2k/searches` now runs enabled server search against native
+bootstrap rows before Kad, records native search results, dedupes duplicate
+ED2K file links across networks, and reports empty server bootstrap through a
+native `task.ed2k.search.updated` event.
+
+Verified: `cargo fmt --all --check`, `cargo test -p raria-cli ed2k_search
+--locked`, `cargo test -p raria-ed2k --test server_search --locked`, `cargo
+clippy -p raria-cli --all-targets --locked -- -D warnings`, ED2K CSV
+validation for 46 files, and `git diff --check` passed.
+
+Remaining: Start ED2K-041 public search e2e under
+`/Users/sekiro/Desktop/raria-test`.
+
+Blocked: none.

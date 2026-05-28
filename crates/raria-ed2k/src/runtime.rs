@@ -31,6 +31,10 @@ use crate::peer::{
     build_peer_hello, build_start_upload_request, parse_emule_info, parse_file_status,
     parse_hashset_answer, parse_peer_hello, parse_queue_rank,
 };
+use crate::search::{
+    Ed2kServerSearchQuery, Ed2kServerSearchResult, build_server_search_request,
+    parse_server_search_results,
+};
 use crate::server::{
     FoundSource, ServerTcpState, ServerUdpState, ServerUdpStatus, build_get_sources_request,
     build_global_get_sources_request, build_login_request, build_udp_status_request,
@@ -477,6 +481,60 @@ impl Ed2kServerRuntime {
         Ok(Ed2kTcpServerReport { state, sources })
     }
 
+    /// Run one TCP server keyword-search exchange.
+    pub async fn query_tcp_search(
+        &self,
+        endpoint: Ed2kServerEndpoint,
+        query: Ed2kServerSearchQuery,
+    ) -> anyhow::Result<Ed2kServerSearchReport> {
+        let mut stream = tokio::time::timeout(
+            self.config.io_timeout,
+            TcpStream::connect((endpoint.host.as_str(), endpoint.tcp_port)),
+        )
+        .await
+        .context("ED2K server TCP connect timed out")?
+        .context("ED2K server TCP connect failed")?;
+        let login = build_login_request(
+            self.config.client_hash,
+            self.config.client_id,
+            self.config.listen_tcp_port,
+            &self.config.nickname,
+            self.config.client_version,
+            self.config.emule_version,
+        )?;
+        write_tcp_frame(&mut stream, &login, self.config.max_packet_size).await?;
+        let search = PacketFrame {
+            protocol: Protocol::Edonkey,
+            opcode: ServerOpcode::SearchRequest.into(),
+            payload: build_server_search_request(&query)?,
+        };
+        write_tcp_frame(&mut stream, &search, self.config.max_packet_size).await?;
+
+        let mut results = Vec::new();
+        let mut more_results = false;
+        for _ in 0..8 {
+            let Some(frame) = read_tcp_frame_optional(
+                &mut stream,
+                self.config.max_packet_size,
+                self.config.io_timeout,
+            )
+            .await?
+            else {
+                break;
+            };
+            if ServerOpcode::from_byte(frame.opcode) == Some(ServerOpcode::SearchResult) {
+                let parsed = parse_server_search_results(&frame.payload, "server")?;
+                more_results = parsed.more_results;
+                results.extend(parsed.entries);
+                break;
+            }
+        }
+        Ok(Ed2kServerSearchReport {
+            results,
+            more_results,
+        })
+    }
+
     /// Run one UDP server status and source-discovery exchange.
     pub async fn query_udp_sources(
         &self,
@@ -549,6 +607,15 @@ pub struct Ed2kUdpServerReport {
     pub status: Option<ServerUdpStatus>,
     /// Sources discovered for the requested file.
     pub sources: Vec<FoundSource>,
+}
+
+/// Result of one ED2K server search exchange.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Ed2kServerSearchReport {
+    /// Parsed native server search results.
+    pub results: Vec<Ed2kServerSearchResult>,
+    /// Whether the server advertised more results.
+    pub more_results: bool,
 }
 
 /// Live peer TCP runtime configuration.

@@ -121,6 +121,12 @@ seconds during manual public smoke, and turn useful search or discovery
 results into download-capable native ED2K tasks. ED2K-036 through ED2K-043 own
 that public-readiness closeout.
 
+Current public-readiness boundary: native bootstrap inputs, bootstrap loading,
+server search codecs, and daemon server/Kad search execution are verified
+through ED2K-040 with deterministic local fixtures. Public-network search
+evidence, search-result source scheduling, and final public-readiness
+validation remain open in ED2K-041 through ED2K-043.
+
 ED2K bootstrap policy is native configuration, not legacy import. The `[ed2k]`
 section owns `use_default_servers`, `servers`, `server_met_paths`,
 `nodes_dat_paths`, and `use_local_nodes_dat`. These inputs seed runtime

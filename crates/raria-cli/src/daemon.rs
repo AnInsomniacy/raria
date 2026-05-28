@@ -30,6 +30,7 @@ use raria_ed2k::runtime::{
     Ed2kRuntimeStatus, Ed2kServerEndpoint, Ed2kServerRuntime, Ed2kServerRuntimeConfig,
     Ed2kSourceQuery,
 };
+use raria_ed2k::search::{Ed2kServerSearchQuery, Ed2kServerSearchResult};
 use raria_ed2k::server::{Ed2kServerBootstrap, merge_server_bootstrap, parse_server_met};
 use raria_ed2k::sharing::{
     SharedFileInput, SharedFileOrigin, SharedFileStore, SharedUploadRequest, UploadQueue,
@@ -2088,8 +2089,75 @@ async fn run_ed2k_search(
     networks: &[NativeEd2kSearchNetwork],
 ) -> Result<Vec<NativeEd2kSearchResult>> {
     let mut results = Vec::new();
+    if networks.contains(&NativeEd2kSearchNetwork::Server) && engine.config.ed2k_enable_servers {
+        results.extend(run_ed2k_server_keyword_search(engine, query).await?);
+    }
     if networks.contains(&NativeEd2kSearchNetwork::Kad) && engine.config.ed2k_enable_kad {
         results.extend(run_ed2k_kad_keyword_search(engine, query).await?);
+    }
+    Ok(results)
+}
+
+async fn run_ed2k_server_keyword_search(
+    engine: &Engine,
+    query: &str,
+) -> Result<Vec<NativeEd2kSearchResult>> {
+    let Some(row) = engine.native_ed2k_server_bootstrap("default")? else {
+        publish_ed2k_search_status(
+            engine,
+            "empty-bootstrap",
+            Some("ED2K server search has no server bootstrap entries"),
+            BTreeMap::from([("serverBootstrapCount".to_string(), 0)]),
+        );
+        return Ok(Vec::new());
+    };
+    if row.servers.is_empty() {
+        publish_ed2k_search_status(
+            engine,
+            "empty-bootstrap",
+            Some("ED2K server search has no server bootstrap entries"),
+            BTreeMap::from([("serverBootstrapCount".to_string(), 0)]),
+        );
+        return Ok(Vec::new());
+    }
+    let runtime = Ed2kServerRuntime::new(Ed2kServerRuntimeConfig {
+        client_hash: [0x11; 16],
+        listen_tcp_port: engine.config.ed2k_listen_tcp_port,
+        io_timeout: Duration::from_secs(2),
+        ..Default::default()
+    });
+    let mut results = Vec::new();
+    for server in row.servers.iter().take(3) {
+        let report = runtime
+            .query_tcp_search(
+                Ed2kServerEndpoint::new(&server.host, server.port, server.port),
+                Ed2kServerSearchQuery {
+                    keyword: query.to_string(),
+                    ..Default::default()
+                },
+            )
+            .await;
+        match report {
+            Ok(report) => {
+                results.extend(
+                    report
+                        .results
+                        .into_iter()
+                        .map(native_search_result_from_server),
+                );
+                if !results.is_empty() {
+                    break;
+                }
+            }
+            Err(error) => {
+                tracing::debug!(
+                    server = %server.host,
+                    port = server.port,
+                    error = %error,
+                    "ED2K server search failed"
+                );
+            }
+        }
     }
     Ok(results)
 }
@@ -2127,6 +2195,10 @@ async fn run_ed2k_kad_keyword_search(
         .into_iter()
         .filter_map(native_search_result_from_kad_entry)
         .collect())
+}
+
+fn native_search_result_from_server(result: Ed2kServerSearchResult) -> NativeEd2kSearchResult {
+    NativeEd2kSearchResult::new(result.name, result.size, result.ed2k_uri)
 }
 
 fn kad_contacts_from_bootstrap(
@@ -3470,6 +3542,196 @@ mod tests {
                 .ed2k_uri
                 .starts_with("ed2k://|file|file.iso|1024|")
         );
+    }
+
+    #[tokio::test]
+    async fn ed2k_search_worker_records_server_keyword_results() {
+        use raria_core::native::{
+            NativeEd2kSearchLifecycle, NativeEd2kSearchNetwork, NativeEd2kServerBootstrapEntry,
+            NativeEd2kServerBootstrapRow,
+        };
+        use raria_ed2k::hash::ed2k_root_hash;
+        use raria_ed2k::opcode::ServerOpcode;
+        use raria_ed2k::packet::{PacketFrame, Protocol, decode_tcp_frame, encode_tcp_frame};
+        use raria_ed2k::search::{
+            Ed2kServerSearchResult, SearchResultSource, build_server_search_result_payload,
+        };
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::{TcpListener, TcpStream};
+
+        const MAX_PACKET: usize = 16 * 1024;
+
+        async fn read_frame(stream: &mut TcpStream) -> PacketFrame {
+            let mut header = [0_u8; 6];
+            stream.read_exact(&mut header).await.expect("header");
+            let len = u32::from_le_bytes(header[1..5].try_into().expect("len")) as usize;
+            let mut payload = vec![0_u8; len - 1];
+            stream.read_exact(&mut payload).await.expect("payload");
+            let mut raw = header.to_vec();
+            raw.extend_from_slice(&payload);
+            decode_tcp_frame(&raw, MAX_PACKET).expect("frame")
+        }
+
+        async fn write_frame(stream: &mut TcpStream, frame: PacketFrame) {
+            let bytes = encode_tcp_frame(&frame, MAX_PACKET).expect("encode");
+            stream.write_all(&bytes).await.expect("write");
+        }
+
+        let file_hash = ed2k_root_hash(b"server-result");
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("listener");
+        let addr = listener.local_addr().expect("addr");
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.expect("accept");
+            assert_eq!(
+                read_frame(&mut stream).await.opcode,
+                u8::from(ServerOpcode::LoginRequest)
+            );
+            assert_eq!(
+                read_frame(&mut stream).await.opcode,
+                u8::from(ServerOpcode::SearchRequest)
+            );
+            write_frame(
+                &mut stream,
+                PacketFrame {
+                    protocol: Protocol::Edonkey,
+                    opcode: u8::from(ServerOpcode::SearchResult),
+                    payload: build_server_search_result_payload(&[Ed2kServerSearchResult {
+                        hash: file_hash,
+                        name: "server.iso".to_string(),
+                        size: 4096,
+                        source_count: 5,
+                        complete_source_count: 2,
+                        file_type: Some("Pro".to_string()),
+                        extension: Some("iso".to_string()),
+                        source_network: "server".to_string(),
+                        sources: vec![SearchResultSource {
+                            host: "1.2.3.4".to_string(),
+                            port: 4662,
+                        }],
+                        ed2k_uri: String::new(),
+                    }])
+                    .expect("search result"),
+                },
+            )
+            .await;
+        });
+
+        let dir = tempdir().expect("tempdir");
+        let store = Arc::new(Store::open(&dir.path().join("session.redb")).expect("store"));
+        store
+            .put_ed2k_server_bootstrap(&NativeEd2kServerBootstrapRow::new(
+                "default",
+                vec![NativeEd2kServerBootstrapEntry {
+                    host: "127.0.0.1".to_string(),
+                    port: addr.port(),
+                    name: None,
+                    description: None,
+                    users: None,
+                    files: None,
+                    max_users: None,
+                    soft_files: None,
+                    hard_files: None,
+                    udp_flags: None,
+                    low_id_users: None,
+                    udp_key: None,
+                    tcp_obfuscation_port: None,
+                    udp_obfuscation_port: None,
+                }],
+            ))
+            .expect("server bootstrap");
+        let engine = Arc::new(Engine::with_store(
+            GlobalConfig {
+                ed2k_enabled: true,
+                ed2k_enable_servers: true,
+                ed2k_enable_kad: false,
+                ..Default::default()
+            },
+            store,
+        ));
+        let search = engine
+            .create_native_ed2k_search("server iso", vec![NativeEd2kSearchNetwork::Server])
+            .expect("search");
+
+        let executed = run_ed2k_search_once(&engine).await.expect("search worker");
+
+        server.await.expect("server");
+        assert_eq!(executed, 1);
+        let summary = engine
+            .native_ed2k_search_summary(&search.search_id, 0, 10)
+            .expect("summary");
+        assert_eq!(summary.lifecycle, NativeEd2kSearchLifecycle::Completed);
+        assert_eq!(summary.result_count, 1);
+        assert_eq!(summary.results[0].name, "server.iso");
+        assert_eq!(summary.results[0].size, 4096);
+        assert!(summary.results[0].ed2k_uri.contains("sources,1.2.3.4:4662"));
+    }
+
+    #[tokio::test]
+    async fn ed2k_search_worker_reports_empty_bootstrap_without_results() {
+        use raria_core::native::{NativeEd2kSearchLifecycle, NativeEd2kSearchNetwork};
+
+        let engine = Arc::new(Engine::new(GlobalConfig {
+            ed2k_enabled: true,
+            ed2k_enable_servers: true,
+            ed2k_enable_kad: false,
+            ..Default::default()
+        }));
+        let search = engine
+            .create_native_ed2k_search("missing", vec![NativeEd2kSearchNetwork::Server])
+            .expect("search");
+        let mut events = engine.native_event_bus.subscribe();
+
+        let executed = run_ed2k_search_once(&engine).await.expect("search worker");
+
+        assert_eq!(executed, 1);
+        let summary = engine
+            .native_ed2k_search_summary(&search.search_id, 0, 10)
+            .expect("summary");
+        assert_eq!(summary.lifecycle, NativeEd2kSearchLifecycle::Completed);
+        assert_eq!(summary.result_count, 0);
+        let empty = tokio::time::timeout(Duration::from_millis(250), async {
+            loop {
+                let event = events.recv().await.expect("event");
+                if event.event_type == raria_core::native::NativeEventType::TaskEd2kSearchUpdated {
+                    if let NativeEventData::Ed2kStatus { state, metrics, .. } = event.data {
+                        if state == "empty-bootstrap" {
+                            break metrics;
+                        }
+                    }
+                }
+            }
+        })
+        .await
+        .expect("empty bootstrap event");
+        assert_eq!(empty.get("serverBootstrapCount"), Some(&0));
+    }
+
+    #[test]
+    fn ed2k_search_results_dedupe_by_file_link_across_networks() {
+        let engine = Engine::new(GlobalConfig::default());
+        let search = engine
+            .create_native_ed2k_search(
+                "duplicate",
+                vec![
+                    NativeEd2kSearchNetwork::Server,
+                    NativeEd2kSearchNetwork::Kad,
+                ],
+            )
+            .expect("search");
+        let uri = "ed2k://|file|duplicate.iso|1024|aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa|/";
+
+        let summary = engine
+            .record_native_ed2k_search_results(
+                &search.search_id,
+                vec![
+                    NativeEd2kSearchResult::new("duplicate.iso", 1024, uri),
+                    NativeEd2kSearchResult::new("duplicate.iso", 1024, uri),
+                ],
+            )
+            .expect("record results");
+
+        assert_eq!(summary.result_count, 1);
+        assert_eq!(summary.results[0].ed2k_uri, uri);
     }
 
     #[tokio::test]
