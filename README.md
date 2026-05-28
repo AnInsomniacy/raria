@@ -13,7 +13,7 @@ Use [CONTRIBUTING.md](CONTRIBUTING.md) for development, issue reporting,
 security reporting, and release rules. The modernization evidence tracker lives
 in [docs/core-modernization](docs/core-modernization/overview.md).
 Native ED2K/eMule work is tracked separately in
-[docs/core-modernization/ed2k-native](docs/core-modernization/ed2k-native/overview.md).
+[docs/ed2k-native](docs/ed2k-native/overview.md).
 
 ## Current Status
 

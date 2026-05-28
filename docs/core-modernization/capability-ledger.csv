@@ -54,4 +54,4 @@ aria2 storage compatibility,remove,old migration-style rows only,deleted,CM-009,
 HTTP pipelining,remove,none active,deleted,CM-020,excluded,Out of scope.,Do not implement.
 BitTorrent MSE ARC4,remove,removed public controls,deleted,CM-020,excluded,Out of scope.,Do not reintroduce.
 LPD,remove,none active,deleted,CM-020,excluded,Out of scope.,Do not implement.
-Native ED2K/eMule,delegate,previously excluded from raria target,docs/core-modernization/ed2k-native,ED2K-001,planned,Native ED2K/eMule has a dedicated tracker with aMule behavior authority and raria-native public surface rules.,Do not add aria2 JSON-RPC aMule database import or legacy Motrix compatibility.
+Native ED2K/eMule,delegate,previously excluded from raria target,docs/ed2k-native,ED2K-001,planned,Native ED2K/eMule has a dedicated tracker with aMule behavior authority and raria-native public surface rules.,Do not add aria2 JSON-RPC aMule database import or legacy Motrix compatibility.
