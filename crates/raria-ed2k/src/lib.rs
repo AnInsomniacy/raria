@@ -26,3 +26,5 @@ pub mod server;
 pub mod sharing;
 /// Transfer planning and part payload ownership.
 pub mod transfer;
+
+mod wire;

@@ -96,3 +96,26 @@ warnings`, and `cargo check --workspace --locked` passed.
 Remaining: Start ED2K-006 bootstrap files.
 
 Blocked: none.
+
+## 2026-05-28 ED2K-006 verified
+
+Changed: Added native bootstrap metadata parsing and persistence. `raria-ed2k`
+now parses useful `server.met` server endpoint metadata, preserves dynip hosts,
+and merges bootstrap rows without erasing existing non-empty fields. It also
+parses useful `nodes.dat` Kad contacts from count-first, versioned, and
+bootstrap-edition files while filtering unusable endpoints, Kad1 contacts, and
+old UDP port 53 contacts. `raria-core` now has versioned native redb rows for
+ED2K server and Kad bootstrap state.
+
+Verified: The RED checks failed before implementation because no server.met
+parser, nodes.dat parser, or bootstrap redb store methods existed. After
+implementation, `cargo test -p raria-ed2k server_met --locked`, `cargo test -p
+raria-ed2k nodes_dat --locked`, `cargo test -p raria-ed2k --locked`, `cargo
+test -p raria-core ed2k_bootstrap_rows_roundtrip_by_profile --locked`, `cargo
+clippy -p raria-ed2k --locked --all-targets -- -D warnings`, `cargo clippy -p
+raria-core --locked --all-targets -- -D warnings`, `cargo fmt --all --check`,
+and `cargo check --workspace --locked` passed.
+
+Remaining: Start ED2K-007 stable identity and config.
+
+Blocked: none.

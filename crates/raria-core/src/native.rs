@@ -542,6 +542,90 @@ pub struct NativeEd2kIdentityRow {
     pub updated_at: DateTime<Utc>,
 }
 
+/// Versioned native ED2K server bootstrap persistence row.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeEd2kServerBootstrapRow {
+    /// Row schema version.
+    pub row_version: u32,
+    /// Native ED2K profile id.
+    pub profile_id: String,
+    /// Server bootstrap entries.
+    pub servers: Vec<NativeEd2kServerBootstrapEntry>,
+    /// Creation timestamp.
+    pub created_at: DateTime<Utc>,
+    /// Last update timestamp.
+    pub updated_at: DateTime<Utc>,
+}
+
+/// Native ED2K server bootstrap entry.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeEd2kServerBootstrapEntry {
+    /// Server host or DNS name.
+    pub host: String,
+    /// Server TCP port.
+    pub port: u16,
+    /// Optional server name.
+    pub name: Option<String>,
+    /// Optional server description.
+    pub description: Option<String>,
+    /// Last known user count.
+    pub users: Option<u32>,
+    /// Last known file count.
+    pub files: Option<u32>,
+    /// Last known maximum users.
+    pub max_users: Option<u32>,
+    /// Last known soft file limit.
+    pub soft_files: Option<u32>,
+    /// Last known hard file limit.
+    pub hard_files: Option<u32>,
+    /// Last known UDP capability flags.
+    pub udp_flags: Option<u32>,
+    /// Last known LowID user count.
+    pub low_id_users: Option<u32>,
+    /// Last known UDP key.
+    pub udp_key: Option<u32>,
+    /// Optional TCP obfuscation port.
+    pub tcp_obfuscation_port: Option<u16>,
+    /// Optional UDP obfuscation port.
+    pub udp_obfuscation_port: Option<u16>,
+}
+
+/// Versioned native ED2K Kad bootstrap persistence row.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeEd2kKadBootstrapRow {
+    /// Row schema version.
+    pub row_version: u32,
+    /// Native ED2K profile id.
+    pub profile_id: String,
+    /// Kad bootstrap contacts.
+    pub contacts: Vec<NativeEd2kKadBootstrapContact>,
+    /// Creation timestamp.
+    pub created_at: DateTime<Utc>,
+    /// Last update timestamp.
+    pub updated_at: DateTime<Utc>,
+}
+
+/// Native ED2K Kad bootstrap contact.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeEd2kKadBootstrapContact {
+    /// Kad node id.
+    pub id: [u8; ED2K_CLIENT_IDENTITY_BYTES],
+    /// Contact host.
+    pub host: String,
+    /// Contact UDP port.
+    pub udp_port: u16,
+    /// Contact TCP port.
+    pub tcp_port: u16,
+    /// Kad protocol version.
+    pub version: u8,
+    /// Whether the endpoint was verified by the source file or bootstrap policy.
+    pub verified: bool,
+}
+
 impl NativeEd2kIdentityRow {
     /// Current native ED2K identity row schema version.
     pub const CURRENT_ROW_VERSION: u32 = 1;
@@ -565,6 +649,62 @@ impl NativeEd2kIdentityRow {
     pub fn validate_version(&self) -> Result<(), NativeModelError> {
         if self.row_version > Self::CURRENT_ROW_VERSION {
             return Err(NativeModelError::UnsupportedEd2kIdentityRowVersion);
+        }
+        Ok(())
+    }
+}
+
+impl NativeEd2kServerBootstrapRow {
+    /// Current native ED2K server bootstrap row schema version.
+    pub const CURRENT_ROW_VERSION: u32 = 1;
+
+    /// Create a native ED2K server bootstrap row.
+    pub fn new(
+        profile_id: impl Into<String>,
+        servers: Vec<NativeEd2kServerBootstrapEntry>,
+    ) -> Self {
+        let now = Utc::now();
+        Self {
+            row_version: Self::CURRENT_ROW_VERSION,
+            profile_id: profile_id.into(),
+            servers,
+            created_at: now,
+            updated_at: now,
+        }
+    }
+
+    /// Validate that this row can be read by the current binary.
+    pub fn validate_version(&self) -> Result<(), NativeModelError> {
+        if self.row_version > Self::CURRENT_ROW_VERSION {
+            return Err(NativeModelError::UnsupportedEd2kServerBootstrapRowVersion);
+        }
+        Ok(())
+    }
+}
+
+impl NativeEd2kKadBootstrapRow {
+    /// Current native ED2K Kad bootstrap row schema version.
+    pub const CURRENT_ROW_VERSION: u32 = 1;
+
+    /// Create a native ED2K Kad bootstrap row.
+    pub fn new(
+        profile_id: impl Into<String>,
+        contacts: Vec<NativeEd2kKadBootstrapContact>,
+    ) -> Self {
+        let now = Utc::now();
+        Self {
+            row_version: Self::CURRENT_ROW_VERSION,
+            profile_id: profile_id.into(),
+            contacts,
+            created_at: now,
+            updated_at: now,
+        }
+    }
+
+    /// Validate that this row can be read by the current binary.
+    pub fn validate_version(&self) -> Result<(), NativeModelError> {
+        if self.row_version > Self::CURRENT_ROW_VERSION {
+            return Err(NativeModelError::UnsupportedEd2kKadBootstrapRowVersion);
         }
         Ok(())
     }
@@ -1038,6 +1178,12 @@ pub enum NativeModelError {
     /// Native ED2K identity row version is newer than this binary understands.
     #[error("unsupported native ED2K identity row version")]
     UnsupportedEd2kIdentityRowVersion,
+    /// Native ED2K server bootstrap row version is newer than this binary understands.
+    #[error("unsupported native ED2K server bootstrap row version")]
+    UnsupportedEd2kServerBootstrapRowVersion,
+    /// Native ED2K Kad bootstrap row version is newer than this binary understands.
+    #[error("unsupported native ED2K Kad bootstrap row version")]
+    UnsupportedEd2kKadBootstrapRowVersion,
     /// Native task id is malformed.
     #[error("invalid native task id")]
     InvalidTaskId,

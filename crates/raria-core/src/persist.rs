@@ -1,7 +1,8 @@
 // raria-core: Native persistence layer using redb.
 
 use crate::native::{
-    NativeEd2kIdentityRow, NativeSegmentRow, NativeStoreMetadata, NativeTaskRow, TaskId,
+    NativeEd2kIdentityRow, NativeEd2kKadBootstrapRow, NativeEd2kServerBootstrapRow,
+    NativeSegmentRow, NativeStoreMetadata, NativeTaskRow, TaskId,
 };
 use crate::segment::SegmentState;
 use anyhow::{Context, Result};
@@ -24,6 +25,14 @@ const NATIVE_SEGMENTS_TABLE: TableDefinition<(&str, u32), &str> =
 
 /// Table: ed2k_identities — stores versioned native ED2K identity rows.
 const ED2K_IDENTITIES_TABLE: TableDefinition<&str, &str> = TableDefinition::new("ed2k_identities");
+
+/// Table: ed2k_server_bootstrap — stores versioned native ED2K server bootstrap rows.
+const ED2K_SERVER_BOOTSTRAP_TABLE: TableDefinition<&str, &str> =
+    TableDefinition::new("ed2k_server_bootstrap");
+
+/// Table: ed2k_kad_bootstrap — stores versioned native ED2K Kad bootstrap rows.
+const ED2K_KAD_BOOTSTRAP_TABLE: TableDefinition<&str, &str> =
+    TableDefinition::new("ed2k_kad_bootstrap");
 
 /// Persistent storage for raria state.
 #[derive(Clone)]
@@ -49,6 +58,8 @@ impl Store {
             let _ = write_txn.open_table(NATIVE_TASKS_TABLE)?;
             let _ = write_txn.open_table(NATIVE_SEGMENTS_TABLE)?;
             let _ = write_txn.open_table(ED2K_IDENTITIES_TABLE)?;
+            let _ = write_txn.open_table(ED2K_SERVER_BOOTSTRAP_TABLE)?;
+            let _ = write_txn.open_table(ED2K_KAD_BOOTSTRAP_TABLE)?;
         }
         write_txn.commit()?;
 
@@ -248,6 +259,70 @@ impl Store {
             None => Ok(None),
         }
     }
+
+    /// Insert or update native ED2K server bootstrap state.
+    pub fn put_ed2k_server_bootstrap(&self, row: &NativeEd2kServerBootstrapRow) -> Result<()> {
+        row.validate_version()
+            .context("unsupported native ED2K server bootstrap row version")?;
+        let json = serde_json::to_string(row)?;
+        let write_txn = self.db.begin_write()?;
+        {
+            let mut table = write_txn.open_table(ED2K_SERVER_BOOTSTRAP_TABLE)?;
+            table.insert(row.profile_id.as_str(), json.as_str())?;
+        }
+        write_txn.commit()?;
+        Ok(())
+    }
+
+    /// Retrieve native ED2K server bootstrap state by profile id.
+    pub fn get_ed2k_server_bootstrap(
+        &self,
+        profile_id: &str,
+    ) -> Result<Option<NativeEd2kServerBootstrapRow>> {
+        let read_txn = self.db.begin_read()?;
+        let table = read_txn.open_table(ED2K_SERVER_BOOTSTRAP_TABLE)?;
+        match table.get(profile_id)? {
+            Some(guard) => {
+                let row: NativeEd2kServerBootstrapRow = serde_json::from_str(guard.value())?;
+                row.validate_version()
+                    .context("unsupported native ED2K server bootstrap row version")?;
+                Ok(Some(row))
+            }
+            None => Ok(None),
+        }
+    }
+
+    /// Insert or update native ED2K Kad bootstrap state.
+    pub fn put_ed2k_kad_bootstrap(&self, row: &NativeEd2kKadBootstrapRow) -> Result<()> {
+        row.validate_version()
+            .context("unsupported native ED2K Kad bootstrap row version")?;
+        let json = serde_json::to_string(row)?;
+        let write_txn = self.db.begin_write()?;
+        {
+            let mut table = write_txn.open_table(ED2K_KAD_BOOTSTRAP_TABLE)?;
+            table.insert(row.profile_id.as_str(), json.as_str())?;
+        }
+        write_txn.commit()?;
+        Ok(())
+    }
+
+    /// Retrieve native ED2K Kad bootstrap state by profile id.
+    pub fn get_ed2k_kad_bootstrap(
+        &self,
+        profile_id: &str,
+    ) -> Result<Option<NativeEd2kKadBootstrapRow>> {
+        let read_txn = self.db.begin_read()?;
+        let table = read_txn.open_table(ED2K_KAD_BOOTSTRAP_TABLE)?;
+        match table.get(profile_id)? {
+            Some(guard) => {
+                let row: NativeEd2kKadBootstrapRow = serde_json::from_str(guard.value())?;
+                row.validate_version()
+                    .context("unsupported native ED2K Kad bootstrap row version")?;
+                Ok(Some(row))
+            }
+            None => Ok(None),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -393,6 +468,56 @@ mod tests {
             recovered.client_hash,
             [0x11; crate::native::ED2K_CLIENT_IDENTITY_BYTES]
         );
+    }
+
+    #[test]
+    fn ed2k_bootstrap_rows_roundtrip_by_profile() {
+        let (store, _dir) = temp_store();
+        let server_row = crate::native::NativeEd2kServerBootstrapRow::new(
+            "default",
+            vec![crate::native::NativeEd2kServerBootstrapEntry {
+                host: "1.2.3.4".into(),
+                port: 4661,
+                name: Some("Peer Server".into()),
+                description: None,
+                users: Some(10),
+                files: Some(20),
+                max_users: None,
+                soft_files: None,
+                hard_files: None,
+                udp_flags: Some(7),
+                low_id_users: None,
+                udp_key: Some(0x11223344),
+                tcp_obfuscation_port: None,
+                udp_obfuscation_port: None,
+            }],
+        );
+        let kad_row = crate::native::NativeEd2kKadBootstrapRow::new(
+            "default",
+            vec![crate::native::NativeEd2kKadBootstrapContact {
+                id: [0x55; crate::native::ED2K_CLIENT_IDENTITY_BYTES],
+                host: "203.0.113.1".into(),
+                udp_port: 4672,
+                tcp_port: 4662,
+                version: 8,
+                verified: true,
+            }],
+        );
+
+        store.put_ed2k_server_bootstrap(&server_row).unwrap();
+        store.put_ed2k_kad_bootstrap(&kad_row).unwrap();
+
+        let recovered_servers = store
+            .get_ed2k_server_bootstrap("default")
+            .unwrap()
+            .expect("server bootstrap row");
+        let recovered_kad = store
+            .get_ed2k_kad_bootstrap("default")
+            .unwrap()
+            .expect("Kad bootstrap row");
+
+        assert_eq!(recovered_servers, server_row);
+        assert_eq!(recovered_kad, kad_row);
     }
 
     #[test]

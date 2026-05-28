@@ -14,8 +14,8 @@ ED2K links,add,not present,raria-ed2k link parser,ED2K-004,verified,"cargo test 
 ED2K root hash,add,not present,md4-backed ED2K hash implementation,ED2K-005,verified,"cargo test -p raria-ed2k hash --locked covers MD4 vectors, small files, exact part-size trailing empty hashes, and multi-part roots.",Use mature hash primitive with native ED2K rules.
 MD4 hashsets,add,not present,native theoretical part-hash model,ED2K-005,verified,"cargo test -p raria-ed2k hash --locked covers theoretical part-hash counts for ED2K boundary sizes and rejects mismatched provided hashsets.",Cover exact part-size boundaries.
 AICH,add,not present,native SHA-1 tree and recovery metadata,ED2K-005,verified,"cargo test -p raria-ed2k hash --locked covers AICH Base32 root parse/format, root tree boundaries, recovery metadata parse, and local recovery verification.",Do not claim unsupported peer recovery flows.
-server.met,add,not present,native bootstrap metadata parser,ED2K-006,pending,pending,Use only as bootstrap data.
-nodes.dat,add,not present,native Kad bootstrap parser,ED2K-006,pending,pending,Filter obsolete unusable contacts.
+server.met,add,not present,native bootstrap metadata parser,ED2K-006,verified,"cargo test -p raria-ed2k server_met --locked covers endpoint parsing, dynip fallback, useful server metadata, and merge behavior that does not erase existing fields.",Use only as bootstrap data.
+nodes.dat,add,not present,native Kad bootstrap parser,ED2K-006,verified,"cargo test -p raria-ed2k nodes_dat --locked covers count-first, versioned, bootstrap-edition, verified fallback, and obsolete contact filtering.",Filter obsolete unusable contacts.
 Stable ED2K identity,add,not present,native redb identity row,ED2K-007,pending,pending,Required for queues and credits.
 Server TCP,add,not present,raria-ed2k server session,ED2K-009,pending,pending,Login status and source discovery.
 Server UDP,add,not present,raria-ed2k UDP session,ED2K-010,pending,pending,Status and source requests with bounded cadence.
