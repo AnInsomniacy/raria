@@ -316,3 +316,24 @@ fixing those root causes, `cargo test -p raria-ed2k --test part_planning
 Remaining: Start ED2K-016 compressed parts, cancellation, timeout, and retry.
 
 Blocked: none.
+
+## 2026-05-28 ED2K-016 verified
+
+Changed: Added native ED2K part payload validation and transfer failure
+handling in `raria-ed2k`. The transfer module now decodes normal and I64 part
+payloads only after validating file hash, declared range, payload length, file
+size, and peer-owned range. It also owns streaming compressed-part inflation
+with `flate2`, compressed length checks, output bounds, cancel-frame
+construction, timeout expiry, requested-range cleanup, and bounded retry
+classification.
+
+Verified: The RED check failed before implementation because part payload
+decoding, compressed chunk inflation, cancel-frame construction, and transfer
+failure state did not exist. After implementation, `cargo test -p raria-ed2k
+--test part_transfer --locked`, `cargo test -p raria-ed2k --locked`, `cargo
+fmt --all --check`, focused raria-ed2k clippy with `-D warnings`, and `cargo
+check --workspace --locked` passed.
+
+Remaining: Start ED2K-017 integrity, disk resume, and completion truth.
+
+Blocked: none.
