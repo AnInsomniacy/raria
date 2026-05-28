@@ -71,4 +71,10 @@ fn runtime_scheduler_ticks_without_placeholder_completion_claims() {
             && status.state == "discovering"
             && status.metrics.get("schedulerTicks") == Some(&1)
     }));
+
+    let source_status = context.record_server_sources(3);
+    assert_eq!(source_status.event_kind, Ed2kRuntimeEventKind::Source);
+    assert_eq!(source_status.state, "discovered");
+    assert_eq!(source_status.metrics.get("knownSources"), Some(&3));
+    assert_eq!(context.state().source.known_sources, 3);
 }

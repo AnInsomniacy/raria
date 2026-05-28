@@ -567,3 +567,23 @@ ed2k_runtime_waits_for_cancellation_without_failing_task --locked`, `cargo test
 Remaining: Start ED2K-028 server TCP UDP runtime source discovery.
 
 Blocked: none.
+
+## 2026-05-28 ED2K-028 verified
+
+Changed: Added live ED2K server TCP and UDP exchange ownership inside
+`raria-ed2k`. `Ed2kServerRuntime` can contact a server endpoint over TCP,
+send native login and source requests, apply ID and status responses, and
+return matching sources. It can also send UDP status and source requests,
+accept challenge-bound status, and return matching UDP source records. The
+runtime context now has a source-recording hook for server-discovered source
+counts.
+
+Verified: RED checks failed before the server runtime types existed. After
+implementation, local socket tests covered TCP and UDP exchanges without public
+network access. `cargo test -p raria-ed2k --test server_runtime --locked`,
+`cargo test -p raria-ed2k --test runtime --locked`, and `cargo test -p
+raria-ed2k --locked` passed.
+
+Remaining: Start ED2K-029 Kad UDP runtime source discovery and publish.
+
+Blocked: none.

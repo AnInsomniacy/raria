@@ -103,9 +103,10 @@ CLI output. It should route ED2K tasks to the ED2K backend and keep local
 generated smoke output under `var/`.
 
 Current completion boundary: ED2K protocol primitives, native task projection,
-events, search resources, persistence rows, runtime context, and bounded
-scheduler status ticks are present. Live ED2K network runtime remains open
-until the daemon owns real server, Kad, peer, disk, sharing, and upload loops.
+events, search resources, persistence rows, runtime context, bounded scheduler
+status ticks, and local-socket server TCP/UDP exchange ownership are present.
+Live ED2K network runtime remains open until the daemon owns Kad, peer, disk,
+sharing, upload, and full server-list scheduling loops.
 
 ## Capability Scope
 
