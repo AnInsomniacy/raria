@@ -312,6 +312,321 @@ pub fn parse_emule_info(frame: &PacketFrame) -> Result<ParsedEmuleInfo, PeerHand
     })
 }
 
+/// Peer request payload parse or encode error.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum PeerRequestError {
+    /// The payload is malformed or truncated.
+    #[error("truncated ED2K peer request payload")]
+    Truncated,
+    /// The payload file hash does not match the expected file.
+    #[error("ED2K peer request hash mismatch")]
+    HashMismatch,
+    /// The encoded value exceeds retained wire limits.
+    #[error("ED2K peer request value is too large")]
+    ValueTooLarge,
+}
+
+/// Native peer request state phase.
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum PeerRequestPhase {
+    /// Peer is connected and ready for the next request.
+    Connected,
+    /// Peer file status is known and hashset is being requested.
+    RequestingHashset,
+    /// Peer is queued remotely.
+    OnQueue,
+    /// Peer accepted the upload request and can receive part requests.
+    Downloading,
+    /// Peer has no needed parts for this task.
+    NoNeededParts,
+    /// Peer does not have the requested file.
+    NoFile,
+    /// Peer currently has no requested parts.
+    OutOfParts,
+    /// Transfer was cancelled.
+    Cancelled,
+    /// Peer failed because of a bad packet or disconnect.
+    Failed,
+}
+
+/// Next action selected after a peer request-state transition.
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum PeerRequestAction {
+    /// No immediate request should be sent.
+    None,
+    /// Request the remote ED2K hashset.
+    RequestHashset,
+    /// Request an upload slot.
+    StartUpload,
+}
+
+/// Peer-owned requested byte range.
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub struct PeerRequestedRange {
+    /// Inclusive range start offset.
+    pub begin: u64,
+    /// Exclusive range end offset.
+    pub end: u64,
+}
+
+/// Failure reason that terminates or backs off a peer request flow.
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum PeerFailureKind {
+    /// Remote peer does not have the requested file.
+    NoFile,
+    /// Remote peer has no useful parts now.
+    OutOfParts,
+    /// Remote or local side cancelled the transfer.
+    Cancelled,
+    /// Remote packet was malformed.
+    BadPacket,
+    /// Peer disconnected during the request flow.
+    Disconnected,
+}
+
+/// Native ED2K peer file-request state.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PeerRequestState {
+    /// Requested file hash.
+    pub file_hash: Ed2kHash,
+    /// Last remote part availability bitfield.
+    pub part_status: Vec<bool>,
+    /// Verified or pending remote piece hashes.
+    pub piece_hashes: Vec<Ed2kHash>,
+    /// Last remote queue rank.
+    pub queue_rank: Option<u16>,
+    /// Peer-owned requested ranges that must be released on failures.
+    pub requested_ranges: Vec<PeerRequestedRange>,
+    /// Current request phase.
+    pub phase: PeerRequestPhase,
+}
+
+impl PeerRequestState {
+    /// Create request state for one peer and file.
+    pub fn new(file_hash: Ed2kHash) -> Self {
+        Self {
+            file_hash,
+            part_status: Vec::new(),
+            piece_hashes: Vec::new(),
+            queue_rank: None,
+            requested_ranges: Vec::new(),
+            phase: PeerRequestPhase::Connected,
+        }
+    }
+
+    /// Apply a remote file-status bitfield and choose the next request.
+    pub fn apply_file_status(
+        &mut self,
+        part_status: Vec<bool>,
+        hashset_required: bool,
+    ) -> PeerRequestAction {
+        let has_needed_part = part_status.iter().any(|available| *available);
+        self.part_status = part_status;
+        self.queue_rank = None;
+        if !has_needed_part {
+            self.phase = PeerRequestPhase::NoNeededParts;
+            return PeerRequestAction::None;
+        }
+        if hashset_required {
+            self.phase = PeerRequestPhase::RequestingHashset;
+            return PeerRequestAction::RequestHashset;
+        }
+        self.phase = PeerRequestPhase::Connected;
+        PeerRequestAction::StartUpload
+    }
+
+    /// Apply a remote hashset answer and choose the next request.
+    pub fn apply_hashset_answer(&mut self, piece_hashes: Vec<Ed2kHash>) -> PeerRequestAction {
+        self.piece_hashes = piece_hashes;
+        self.phase = PeerRequestPhase::Connected;
+        self.queue_rank = None;
+        PeerRequestAction::StartUpload
+    }
+
+    /// Mark the peer as queued with a remote rank.
+    pub fn mark_queued(&mut self, rank: u16) {
+        self.queue_rank = Some(rank);
+        self.phase = PeerRequestPhase::OnQueue;
+        self.requested_ranges.clear();
+    }
+
+    /// Mark that the remote accepted the upload request.
+    pub fn accept_upload(&mut self) {
+        self.queue_rank = None;
+        self.phase = PeerRequestPhase::Downloading;
+    }
+
+    /// Replace peer-owned requested ranges.
+    pub fn record_requested_ranges(&mut self, ranges: Vec<PeerRequestedRange>) {
+        self.requested_ranges = ranges;
+    }
+
+    /// Apply a terminal peer failure and release peer-owned ranges.
+    pub fn fail(&mut self, kind: PeerFailureKind) {
+        self.requested_ranges.clear();
+        self.queue_rank = None;
+        self.phase = match kind {
+            PeerFailureKind::NoFile => PeerRequestPhase::NoFile,
+            PeerFailureKind::OutOfParts => PeerRequestPhase::OutOfParts,
+            PeerFailureKind::Cancelled => PeerRequestPhase::Cancelled,
+            PeerFailureKind::BadPacket | PeerFailureKind::Disconnected => PeerRequestPhase::Failed,
+        };
+    }
+}
+
+/// Build an ED2K file-name request frame.
+pub fn build_file_name_request(
+    file_hash: Ed2kHash,
+    local_part_status: &[bool],
+    extended_requests_version: u8,
+) -> Result<PacketFrame, PeerRequestError> {
+    let mut payload = file_hash.to_vec();
+    if extended_requests_version > 0 {
+        write_bitfield(&mut payload, local_part_status)?;
+        if extended_requests_version > 1 {
+            payload.extend_from_slice(&0_u16.to_le_bytes());
+        }
+    }
+    Ok(peer_frame(PeerOpcode::RequestFileName, payload))
+}
+
+/// Build an ED2K file-status request frame.
+pub fn build_file_status_request(file_hash: Ed2kHash) -> PacketFrame {
+    peer_frame(PeerOpcode::SetRequestedFileId, file_hash.to_vec())
+}
+
+/// Build an ED2K hashset request frame.
+pub fn build_hashset_request(file_hash: Ed2kHash) -> PacketFrame {
+    peer_frame(PeerOpcode::HashsetRequest, file_hash.to_vec())
+}
+
+/// Build an ED2K upload-slot request frame.
+pub fn build_start_upload_request(file_hash: Ed2kHash) -> PacketFrame {
+    peer_frame(PeerOpcode::StartUploadRequest, file_hash.to_vec())
+}
+
+/// Build an ED2K file-status answer frame.
+pub fn build_file_status_answer(
+    file_hash: Ed2kHash,
+    part_status: &[bool],
+) -> Result<PacketFrame, PeerRequestError> {
+    let mut payload = file_hash.to_vec();
+    write_bitfield(&mut payload, part_status)?;
+    Ok(peer_frame(PeerOpcode::FileStatus, payload))
+}
+
+/// Parse an ED2K file-status payload.
+pub fn parse_file_status(
+    payload: &[u8],
+    expected_file_hash: Ed2kHash,
+) -> Result<Vec<bool>, PeerRequestError> {
+    let mut cursor = Cursor::new(payload);
+    read_expected_hash(&mut cursor, expected_file_hash)?;
+    let bit_count = cursor.read_u16().ok_or(PeerRequestError::Truncated)? as usize;
+    let byte_count = bit_count.div_ceil(8);
+    let raw = cursor
+        .read_exact(byte_count)
+        .ok_or(PeerRequestError::Truncated)?;
+    if !cursor.is_done() {
+        return Err(PeerRequestError::Truncated);
+    }
+    Ok(read_bitfield(raw, bit_count))
+}
+
+/// Build an ED2K hashset answer frame.
+pub fn build_hashset_answer(
+    file_hash: Ed2kHash,
+    piece_hashes: &[Ed2kHash],
+) -> Result<PacketFrame, PeerRequestError> {
+    if piece_hashes.len() > usize::from(u16::MAX) {
+        return Err(PeerRequestError::ValueTooLarge);
+    }
+    let mut payload = file_hash.to_vec();
+    payload.extend_from_slice(
+        &u16::try_from(piece_hashes.len())
+            .map_err(|_| PeerRequestError::ValueTooLarge)?
+            .to_le_bytes(),
+    );
+    for hash in piece_hashes {
+        payload.extend_from_slice(hash);
+    }
+    Ok(peer_frame(PeerOpcode::HashsetAnswer, payload))
+}
+
+/// Parse an ED2K hashset answer payload.
+pub fn parse_hashset_answer(
+    payload: &[u8],
+    expected_file_hash: Ed2kHash,
+) -> Result<Vec<Ed2kHash>, PeerRequestError> {
+    let mut cursor = Cursor::new(payload);
+    read_expected_hash(&mut cursor, expected_file_hash)?;
+    let count = cursor.read_u16().ok_or(PeerRequestError::Truncated)? as usize;
+    let mut hashes = Vec::with_capacity(count);
+    for _ in 0..count {
+        hashes.push(cursor.read_hash16().ok_or(PeerRequestError::Truncated)?);
+    }
+    if !cursor.is_done() {
+        return Err(PeerRequestError::Truncated);
+    }
+    Ok(hashes)
+}
+
+/// Parse an ED2K queue-rank payload.
+pub fn parse_queue_rank(payload: &[u8]) -> Result<u16, PeerRequestError> {
+    match payload.len() {
+        2 => Ok(u16::from_le_bytes([payload[0], payload[1]])),
+        4 => {
+            let value = u32::from_le_bytes([payload[0], payload[1], payload[2], payload[3]]);
+            u16::try_from(value).map_err(|_| PeerRequestError::ValueTooLarge)
+        }
+        _ => Err(PeerRequestError::Truncated),
+    }
+}
+
+fn peer_frame(opcode: PeerOpcode, payload: Vec<u8>) -> PacketFrame {
+    PacketFrame {
+        protocol: Protocol::Edonkey,
+        opcode: opcode.into(),
+        payload,
+    }
+}
+
+fn write_bitfield(out: &mut Vec<u8>, bitfield: &[bool]) -> Result<(), PeerRequestError> {
+    if bitfield.len() > usize::from(u16::MAX) {
+        return Err(PeerRequestError::ValueTooLarge);
+    }
+    out.extend_from_slice(
+        &u16::try_from(bitfield.len())
+            .map_err(|_| PeerRequestError::ValueTooLarge)?
+            .to_le_bytes(),
+    );
+    let start = out.len();
+    out.resize(start + bitfield.len().div_ceil(8), 0);
+    for (index, available) in bitfield.iter().enumerate() {
+        if *available {
+            out[start + index / 8] |= 1 << (index & 7);
+        }
+    }
+    Ok(())
+}
+
+fn read_bitfield(raw: &[u8], bit_count: usize) -> Vec<bool> {
+    (0..bit_count)
+        .map(|index| raw[index / 8] & (1 << (index & 7)) != 0)
+        .collect()
+}
+
+fn read_expected_hash(
+    cursor: &mut Cursor<'_>,
+    expected_file_hash: Ed2kHash,
+) -> Result<(), PeerRequestError> {
+    let file_hash = cursor.read_hash16().ok_or(PeerRequestError::Truncated)?;
+    if file_hash != expected_file_hash {
+        return Err(PeerRequestError::HashMismatch);
+    }
+    Ok(())
+}
+
 fn encode_peer_hello_payload(
     identity: &PeerIdentity,
     include_hash_size: bool,

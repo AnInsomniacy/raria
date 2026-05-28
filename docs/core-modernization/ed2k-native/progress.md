@@ -249,3 +249,25 @@ raria-ed2k --test peer_handshake --locked`, `cargo test -p raria-ed2k
 Remaining: Start ED2K-013 peer file status, hashset, queue, and request state.
 
 Blocked: none.
+
+## 2026-05-28 ED2K-013 verified
+
+Changed: Added native ED2K peer request-state ownership in `raria-ed2k`.
+The peer module now builds plain fallback RequestFileName,
+SetRequestedFileId, HashsetRequest, StartUploadRequest, FileStatus, and
+HashsetAnswer frames. It parses file-status bitfields, hashset answers, and
+two-byte or four-byte queue-rank payloads with typed errors. `PeerRequestState`
+now records part status, piece hashes, queue rank, peer-owned requested
+ranges, upload acceptance, and explicit no-needed-parts, no-file, out-of-parts,
+cancelled, and failed phases.
+
+Verified: The RED check failed before implementation because request payload
+builders, parsers, request phases, and failure cleanup state did not exist.
+After implementation, `cargo test -p raria-ed2k --test peer_request_state
+--locked`, `cargo test -p raria-ed2k --locked`, `cargo fmt --all --check`,
+and `cargo clippy -p raria-ed2k --locked --all-targets -- -D warnings`
+passed.
+
+Remaining: Start ED2K-014 Source Exchange and source lifecycle.
+
+Blocked: none.
