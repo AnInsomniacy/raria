@@ -77,6 +77,7 @@ impl RariaConfig {
             ed2k_enable_kad: self.ed2k.enable_kad,
             ed2k_listen_tcp_port: self.ed2k.listen_tcp_port,
             ed2k_listen_udp_port: self.ed2k.listen_udp_port,
+            ed2k_assume_firewalled: self.ed2k.assume_firewalled,
             ed2k_max_sources_per_task: self.ed2k.max_sources_per_task,
             ed2k_max_upload_slots: self.ed2k.max_upload_slots,
             ed2k_share_completed: self.ed2k.share_completed,
@@ -231,6 +232,8 @@ pub struct Ed2kConfig {
     pub listen_tcp_port: u16,
     /// UDP listen port for ED2K server UDP and Kad traffic.
     pub listen_udp_port: u16,
+    /// Treat ED2K/Kad listen ports as firewalled until runtime evidence proves otherwise.
+    pub assume_firewalled: bool,
     /// Maximum retained sources per ED2K task.
     pub max_sources_per_task: u32,
     /// Maximum local upload slots for shared ED2K files.
@@ -247,6 +250,7 @@ impl Default for Ed2kConfig {
             enable_kad: true,
             listen_tcp_port: 4662,
             listen_udp_port: 4672,
+            assume_firewalled: false,
             max_sources_per_task: 400,
             max_upload_slots: 3,
             share_completed: false,

@@ -157,6 +157,8 @@ pub struct GlobalConfig {
     pub ed2k_listen_tcp_port: u16,
     /// UDP listen port for ED2K server UDP and Kad traffic.
     pub ed2k_listen_udp_port: u16,
+    /// Treat local ED2K/Kad listen ports as firewalled until runtime evidence proves otherwise.
+    pub ed2k_assume_firewalled: bool,
     /// Maximum retained sources per ED2K task.
     pub ed2k_max_sources_per_task: u32,
     /// Maximum local upload slots for shared ED2K files.
@@ -233,6 +235,7 @@ impl Default for GlobalConfig {
             ed2k_enable_kad: true,
             ed2k_listen_tcp_port: 4662,
             ed2k_listen_udp_port: 4672,
+            ed2k_assume_firewalled: false,
             ed2k_max_sources_per_task: 400,
             ed2k_max_upload_slots: 3,
             ed2k_share_completed: false,

@@ -2109,6 +2109,7 @@ mod tests {
             ed2k_enable_kad: true,
             ed2k_listen_tcp_port: 14662,
             ed2k_listen_udp_port: 14672,
+            ed2k_assume_firewalled: true,
             ed2k_max_sources_per_task: 250,
             ed2k_max_upload_slots: 5,
             ed2k_share_completed: true,
@@ -2145,6 +2146,7 @@ mod tests {
         assert_eq!(body["ed2k"]["enableKad"], true);
         assert_eq!(body["ed2k"]["listenTcpPort"], 14662);
         assert_eq!(body["ed2k"]["listenUdpPort"], 14672);
+        assert_eq!(body["ed2k"]["assumeFirewalled"], true);
         assert_eq!(body["ed2k"]["maxSourcesPerTask"], 250);
         assert_eq!(body["ed2k"]["maxUploadSlots"], 5);
         assert_eq!(body["ed2k"]["shareCompleted"], true);

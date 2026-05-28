@@ -20,6 +20,111 @@ pub const KAD_REFRESH_INTERVAL_SECONDS: u64 = 45;
 pub const KAD_BUCKET_STALE_SECONDS: u64 = 900;
 /// Confirmed contact failures tolerated before removal when no replacement exists.
 pub const KAD_MAX_CONTACT_FAILURES: u8 = 20;
+/// Minimum seconds between Kad firewall checks.
+pub const KAD_FIREWALL_CHECK_INTERVAL_SECONDS: u64 = 1_200;
+
+/// Observed Kad firewall status.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum KadFirewallStatus {
+    /// Reachability has not been checked.
+    Unknown,
+    /// Endpoint appears reachable.
+    Open,
+    /// Endpoint appears firewalled.
+    Firewalled,
+}
+
+/// Kad firewall observation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KadFirewallObservation {
+    /// TCP listen endpoint appears reachable.
+    TcpOpen,
+    /// TCP listen endpoint appears firewalled.
+    TcpFirewalled,
+    /// UDP listen endpoint appears reachable.
+    UdpOpen,
+    /// UDP listen endpoint appears firewalled.
+    UdpFirewalled,
+}
+
+/// Native Kad firewall state used by scheduling policy.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KadFirewallState {
+    tcp_status: KadFirewallStatus,
+    udp_status: KadFirewallStatus,
+    last_check_started_seconds: Option<u64>,
+    last_observed_seconds: Option<u64>,
+}
+
+impl KadFirewallState {
+    /// Create a firewall state, optionally starting from a manual firewalled assumption.
+    pub fn new(assume_firewalled: bool) -> Self {
+        let status = if assume_firewalled {
+            KadFirewallStatus::Firewalled
+        } else {
+            KadFirewallStatus::Unknown
+        };
+        Self {
+            tcp_status: status,
+            udp_status: status,
+            last_check_started_seconds: None,
+            last_observed_seconds: None,
+        }
+    }
+
+    /// Return TCP reachability status.
+    pub fn tcp_status(&self) -> KadFirewallStatus {
+        self.tcp_status
+    }
+
+    /// Return UDP reachability status.
+    pub fn udp_status(&self) -> KadFirewallStatus {
+        self.udp_status
+    }
+
+    /// Return whether a Kad firewall check should be scheduled.
+    pub fn should_check(&self, now_seconds: u64, kad_enabled: bool, routing_useful: bool) -> bool {
+        kad_enabled
+            && routing_useful
+            && elapsed_at_least(
+                self.last_check_started_seconds,
+                now_seconds,
+                KAD_FIREWALL_CHECK_INTERVAL_SECONDS,
+            )
+    }
+
+    /// Record that a firewall check has started.
+    pub fn record_check_started(&mut self, now_seconds: u64) {
+        self.last_check_started_seconds = Some(now_seconds);
+    }
+
+    /// Record a firewall observation.
+    pub fn record_observation(&mut self, observation: KadFirewallObservation, now_seconds: u64) {
+        match observation {
+            KadFirewallObservation::TcpOpen => self.tcp_status = KadFirewallStatus::Open,
+            KadFirewallObservation::TcpFirewalled => {
+                self.tcp_status = KadFirewallStatus::Firewalled;
+            }
+            KadFirewallObservation::UdpOpen => self.udp_status = KadFirewallStatus::Open,
+            KadFirewallObservation::UdpFirewalled => {
+                self.udp_status = KadFirewallStatus::Firewalled;
+            }
+        }
+        self.last_observed_seconds = Some(now_seconds);
+    }
+
+    /// Return whether direct source publish should advertise this node as a TCP source.
+    pub fn allows_direct_source_publish(&self) -> bool {
+        self.tcp_status != KadFirewallStatus::Firewalled
+    }
+
+    /// Return whether UDP Kad traffic is currently considered reachable.
+    pub fn udp_reachable(&self) -> bool {
+        self.udp_status == KadFirewallStatus::Open
+    }
+}
 
 /// Parsed Kad nodes.dat bootstrap state.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

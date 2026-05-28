@@ -402,3 +402,24 @@ entry dedupe did not exist. After implementation, `cargo test -p raria-ed2k
 Remaining: Start ED2K-020 Kad firewall state, buddy limits, and scheduling.
 
 Blocked: none.
+
+## 2026-05-28 ED2K-020 verified
+
+Changed: Added native Kad firewall state and explicit listen policy. `raria-ed2k`
+now has `KadFirewallState` for TCP and UDP reachability status, manual
+firewalled assumptions, bounded check cadence, UDP reachability, and direct
+source-publish gating. `raria.toml` `[ed2k]` now carries
+`assume_firewalled`, and `/api/v1/config` exposes it through the native config
+projection. Router helper options remain rejected.
+
+Verified: The RED checks failed before implementation because Kad firewall
+state and `assume_firewalled` did not exist. After implementation, `cargo test
+-p raria-ed2k --test kad_firewall --locked`, `cargo test -p raria-core --test
+native_config --locked`, `cargo test -p raria-rpc --test native_api
+config_endpoint_returns_native_runtime_projection --locked`, `cargo test -p
+raria-ed2k --locked`, `cargo fmt --all --check`, focused clippy for touched
+crates with `-D warnings`, and `cargo check --workspace --locked` passed.
+
+Remaining: Start ED2K-021 shared file store and publishing.
+
+Blocked: none.

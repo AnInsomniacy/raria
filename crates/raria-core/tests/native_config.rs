@@ -288,6 +288,7 @@ mod tests {
             enable_kad = false
             listen_tcp_port = 14662
             listen_udp_port = 14672
+            assume_firewalled = true
             max_sources_per_task = 250
             max_upload_slots = 5
             share_completed = true
@@ -302,8 +303,22 @@ mod tests {
         assert!(!global.ed2k_enable_kad);
         assert_eq!(global.ed2k_listen_tcp_port, 14662);
         assert_eq!(global.ed2k_listen_udp_port, 14672);
+        assert!(global.ed2k_assume_firewalled);
         assert_eq!(global.ed2k_max_sources_per_task, 250);
         assert_eq!(global.ed2k_max_upload_slots, 5);
         assert!(global.ed2k_share_completed);
+    }
+
+    #[test]
+    fn raria_toml_rejects_ed2k_router_helper_options() {
+        let err = RariaConfig::from_toml_str(
+            r#"
+            [ed2k]
+            enable_upnp = true
+            "#,
+        )
+        .expect_err("router helper options must stay unsupported");
+
+        assert!(err.to_string().contains("unknown field"));
     }
 }
