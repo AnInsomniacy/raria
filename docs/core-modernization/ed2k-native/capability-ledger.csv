@@ -20,7 +20,7 @@ Stable ED2K identity,add,not present,native redb identity row,ED2K-007,verified,
 Packet framing,add,not present,raria-ed2k packet codec,ED2K-008,verified,"cargo test -p raria-ed2k --locked covers TCP frame roundtrip, UDP datagram roundtrip, truncation, invalid length, unsupported protocols, and deterministic payload limits.",Compression wrappers are packet-level only until transfer handling lands.
 Typed tags,add,not present,raria-ed2k tag codec,ED2K-008,verified,"cargo test -p raria-ed2k --locked covers compact IDs, text names, string and short-string values, UInt8/16/32/64, bool, HASH16, BSOB, and blob payloads.",No legacy tag-only compatibility layer.
 Retained opcodes,add,not present,raria-ed2k opcode map,ED2K-008,verified,"cargo test -p raria-ed2k --locked covers retained server, peer, and Kad opcode naming and verifies legacy chat opcode 0x1e is not advertised.",Keep deprecated and pruned flows unnamed.
-Server TCP,add,not present,raria-ed2k server session,ED2K-009,pending,pending,Login status and source discovery.
+Server TCP,add,not present,raria-ed2k server session,ED2K-009,verified,"cargo test -p raria-ed2k --test server_tcp --locked covers login frame construction, IDChange, HighID/LowID derivation, TCP capability capture, status, identity tags, messages, GetSources, obfuscated FoundSources, and bounded retry policy.",Socket loop wiring remains for native integration.
 Server UDP,add,not present,raria-ed2k UDP session,ED2K-010,pending,pending,Status and source requests with bounded cadence.
 HighID LowID callback,add,not present,native reachability state,ED2K-011,pending,pending,Keep unsupported callback modes unadvertised.
 Peer handshake,add,not present,raria-ed2k peer session,ED2K-012,pending,pending,Capability truth gates packet flows.

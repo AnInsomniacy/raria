@@ -18,6 +18,10 @@ impl<'a> Cursor<'a> {
         self.offset == self.payload.len()
     }
 
+    pub(crate) fn position(&self) -> usize {
+        self.offset
+    }
+
     pub(crate) fn read_u8(&mut self) -> Option<u8> {
         self.read_exact(1).map(|bytes| bytes[0])
     }

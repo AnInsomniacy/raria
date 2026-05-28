@@ -161,3 +161,26 @@ passed.
 Remaining: Start ED2K-009 server TCP.
 
 Blocked: none.
+
+## 2026-05-28 ED2K-009 verified
+
+Changed: Added native server TCP payload and state handling in `raria-ed2k`.
+The server module now builds login frames from the native client identity,
+captures server TCP capabilities from IDChange, derives HighID or LowID state,
+parses server status and identity tags, records server messages, builds small
+and large file GetSources requests, parses normal and obfuscation-aware
+FoundSources replies, and exposes a bounded retry policy. This checkpoint owns
+the local parser/state layer; socket-loop scheduling remains for later runtime
+integration.
+
+Verified: The RED check failed before implementation because the server TCP
+state, login builder, source request builder, FoundSources parser, LowID helper,
+and retry policy did not exist. After implementation, `cargo test -p
+raria-ed2k --test server_tcp --locked`, `cargo test -p raria-ed2k --locked`,
+`cargo fmt --all --check`, `cargo clippy -p raria-ed2k --locked --all-targets
+-- -D warnings`, `git diff --check`, and `cargo check --workspace --locked`
+passed.
+
+Remaining: Start ED2K-010 server UDP.
+
+Blocked: none.

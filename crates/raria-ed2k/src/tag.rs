@@ -92,15 +92,21 @@ pub fn encode_tag(tag: &Tag) -> Result<Vec<u8>, TagError> {
 
 /// Decode a single typed ED2K tag.
 pub fn decode_tag(input: &[u8]) -> Result<Tag, TagError> {
+    let (tag, consumed) = decode_tag_prefix(input)?;
+    if consumed != input.len() {
+        return Err(TagError::ValueTooLarge);
+    }
+    Ok(tag)
+}
+
+/// Decode a typed ED2K tag from the front of a larger payload.
+pub fn decode_tag_prefix(input: &[u8]) -> Result<(Tag, usize), TagError> {
     let mut cursor = Cursor::new(input);
     let raw_type = cursor.read_u8().ok_or(TagError::Truncated)?;
     let tag_type = raw_type & 0x7f;
     let name = read_name(&mut cursor, raw_type)?;
     let value = read_value(&mut cursor, tag_type)?;
-    if !cursor.is_done() {
-        return Err(TagError::ValueTooLarge);
-    }
-    Ok(Tag { name, value })
+    Ok((Tag { name, value }, cursor.position()))
 }
 
 fn tag_type_for_value(value: &TagValue) -> u8 {
