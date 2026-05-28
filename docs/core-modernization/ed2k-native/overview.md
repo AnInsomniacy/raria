@@ -1,9 +1,9 @@
 # Native ED2K/eMule Workstream
 
-This tracker is the active execution system for adding native ED2K/eMule
-support to raria. It replaces the earlier core-modernization exclusion for
-ED2K. The target is a Rust-native protocol backend with raria-native public
-surfaces, not aria2 compatibility and not a translated GPL code port.
+This tracker is the active evidence system for native ED2K/eMule support in
+raria. It replaces the earlier core-modernization exclusion for ED2K. The
+target is a Rust-native protocol backend with raria-native public surfaces,
+not aria2 compatibility and not a translated GPL code port.
 
 ## Tracker Files
 
@@ -106,13 +106,14 @@ Current completion boundary: ED2K protocol primitives, native task projection,
 events, search resources, persistence rows, runtime context, bounded scheduler
 status ticks, local-socket server TCP/UDP exchange ownership, bounded
 local-socket Kad UDP source, keyword, publish, firewall, and timeout handling,
-and bounded local-socket peer TCP handshake, queue, source exchange, part
-request, payload validation, timeout handling, local file disk completion,
-native resume snapshot restore, sharing-on-completion, verified upload serving,
-UDP reask handling, and daemon inline peer transfer to verified disk completion
-are present. Daemon server/Kad discovery scheduling, native search execution,
-daemon upload listeners, final validation, and manual smoke evidence remain
-open.
+bounded local-socket peer TCP handshake, queue, source exchange, part request,
+payload validation, timeout handling, local file disk completion, native resume
+snapshot restore, sharing-on-completion, verified upload serving, UDP reask
+handling, daemon inline peer transfer to verified disk completion, daemon
+server and Kad discovery scheduling, native search execution, daemon upload
+listeners, credit persistence, local smoke evidence, and final validation are
+verified. Public ED2K network smoke remains manual evidence, not an automated
+gate.
 
 ## Capability Scope
 

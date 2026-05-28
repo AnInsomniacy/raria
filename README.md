@@ -19,17 +19,17 @@ Native ED2K/eMule work is tracked separately in
 
 The current tree provides:
 
-- multi-protocol downloads across HTTP, HTTPS, FTP, FTPS, SFTP, BitTorrent, and Metalink
+- multi-protocol downloads across HTTP, HTTPS, FTP, FTPS, SFTP, BitTorrent, Metalink, and ED2K/eMule
 - segmented range downloads, restart and resume, session persistence, and restore
 - native HTTP JSON daemon routes with a WebSocket event stream
 - checksum enforcement, conditional GET, mirror failover, and daemon-path Metalink execution
 - shell completion for retained native CLI commands
 - structured JSON file logging for high-value runtime surfaces
 
-Native ED2K/eMule support is in progress. Current ED2K work includes native
-link parsing, protocol primitives, persistence rows, task creation, status
-projection, events, and search resources. Full ED2K network transfer runtime is
-not complete until the ED2K tracker closes.
+Native ED2K/eMule support is implemented through raria-native task creation,
+status projection, events, search resources, protocol runtime, persistence,
+sharing, upload service, and local transfer validation. Public ED2K network
+smoke is kept as manual evidence rather than an automated test gate.
 
 ## Implemented Capabilities
 
@@ -39,6 +39,7 @@ not complete until the ED2K tracker closes.
 | FTP/FTPS              | Download, probe, resume, proxy support, explicit FTPS with custom CA                                                                                                                   |
 | SFTP                  | Password and key auth, strict known-host verification, proxy support                                                                                                                   |
 | BitTorrent            | Magnet and torrent ingestion, file selection intent, metadata projection, tracker override support, peer projection, `Active -> Seeding -> Complete`, one-shot BT completion semantics |
+| ED2K/eMule            | Native ED2K links, hashsets, AICH, server and Kad discovery, search, peer transfer, verified disk completion, resume, sharing, upload queue, UDP reask, and credits                    |
 | Metalink              | XML parsing, normalization, mirror priority handling, checksum and piece-checksum wiring, relation projection, daemon-path mirror failover                                             |
 | Daemon control plane  | Native `/api/v1` health, config, task, transfer, stats, session, daemon-control, and event routes                                                                                       |
 | Runtime observability | Structured JSON file logs, session correlation, daemon lifecycle events, mirror/source failure events, BT lifecycle events, restore events, native control events, and WS emission logs |

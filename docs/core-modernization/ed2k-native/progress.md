@@ -764,3 +764,18 @@ ED2K CSV validation for 38 files, and `git diff --check` passed.
 Remaining: Native ED2K workstream complete.
 
 Blocked: none.
+
+## 2026-05-28 ED2K completion doc alignment verified
+
+Changed: Aligned README, AGENTS, the core modernization overview, and the
+ED2K overview with the closed ED2K-035 tracker state. Current public and agent
+docs now describe ED2K as implemented native support with public-network smoke
+kept outside automated gates.
+
+Verified: Stale-current-doc scans no longer find active README, AGENTS, core
+overview, ED2K overview, or capability-ledger claims that ED2K is still
+planned or incomplete. Historical checkpoint evidence remains unchanged.
+
+Remaining: none for the native ED2K workstream.
+
+Blocked: none.
