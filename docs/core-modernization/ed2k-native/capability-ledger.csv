@@ -10,7 +10,7 @@ ED2K task kind,add,JobKind has Range and Bt,JobKind::Ed2k with native projection
 ED2K source protocol,add,SourceProtocol lacks Ed2k,SourceProtocol::Ed2k,ED2K-003,verified,"Focused native model tests cover ed2k:// source detection into TaskSource.",Detect ed2k:// links without compatibility aliases.
 ED2K config skeleton,add,not present,raria.toml [ed2k],ED2K-003,verified,"native_config tests cover strict [ed2k] parsing and rejection of legacy ED2K option names.",Runtime use starts in later checkpoints.
 ED2K persistence row names,add,not present,ed2k_identities redb table and NativeEd2kIdentityRow,ED2K-003,verified,"Focused persistence test covers ED2K identity row roundtrip and row versioning.",Runtime identity generation starts in ED2K-007.
-ED2K links,add,not present,raria-ed2k link parser,ED2K-004,pending,pending,Include safe filenames and link metadata.
+ED2K links,add,not present,raria-ed2k link parser,ED2K-004,verified,"cargo test -p raria-ed2k link --locked covers file, server, serverlist, nodeslist, search, safe names, root hashes, part hashes, AICH roots, inline sources, crypt options, and malformed inputs.",Include safe filenames and link metadata.
 ED2K root hash,add,not present,md4-backed ED2K hash implementation,ED2K-005,pending,pending,Use mature hash primitive with native ED2K rules.
 MD4 hashsets,add,not present,native theoretical part-hash model,ED2K-005,pending,pending,Cover exact part-size boundaries.
 AICH,add,not present,native SHA-1 tree and recovery metadata,ED2K-005,pending,pending,Do not claim unsupported recovery flows.

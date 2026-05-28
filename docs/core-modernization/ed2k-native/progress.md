@@ -60,3 +60,20 @@ native_config --locked`, and the ED2K identity persistence roundtrip passed.
 Remaining: Start ED2K-004 link parser and file identity.
 
 Blocked: none.
+
+## 2026-05-28 ED2K-004 verified
+
+Changed: Added native ED2K link parsing in `raria-ed2k`. File links now parse
+safe names, sizes, root hashes, part hashes, AICH roots, inline sources, crypt
+options, and source client hashes into native Rust structs. Server, serverlist,
+nodeslist, and search links parse as typed metadata models. Native task
+creation through `/api/v1/tasks` now classifies ED2K file links as ED2K jobs
+with opaque task IDs.
+
+Verified: `cargo test -p raria-ed2k link --locked` passed for file metadata,
+metadata links, safe names, and malformed inputs. `cargo test -p raria-rpc
+--test native_api task_creation_ed2k_source_uses_ed2k_backend --locked` passed.
+
+Remaining: Start ED2K-005 hashset and AICH primitives.
+
+Blocked: none.

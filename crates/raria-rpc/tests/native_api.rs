@@ -590,6 +590,46 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn task_creation_ed2k_source_uses_ed2k_backend() {
+        let engine = Arc::new(Engine::new(GlobalConfig::default()));
+        let cancel = CancellationToken::new();
+        let addrs = start_native_api_server(
+            Arc::clone(&engine),
+            &NativeApiConfig {
+                listen_addr: SocketAddr::from(([127, 0, 0, 1], 0)),
+                ..NativeApiConfig::default()
+            },
+            cancel.clone(),
+        )
+        .await
+        .expect("start native api");
+        let client = reqwest::Client::new();
+
+        let created: serde_json::Value = client
+            .post(format!("http://{}/api/v1/tasks", addrs.http))
+            .json(&serde_json::json!({
+                "sources": ["ed2k://|file|sample.iso|1234|0123456789abcdef0123456789abcdef|/"],
+                "downloadDir": "/tmp",
+                "filename": "sample.iso"
+            }))
+            .send()
+            .await
+            .expect("create request")
+            .json()
+            .await
+            .expect("create json");
+
+        assert_eq!(created["sources"][0]["protocol"], "ed2k");
+        let task_id =
+            TaskId::parse(created["taskId"].as_str().expect("task id")).expect("valid task id");
+        let gid = engine.gid_for_task_id(&task_id).expect("runtime gid");
+        let job = engine.registry.get(gid).expect("job");
+        assert_eq!(job.kind, raria_core::job::JobKind::Ed2k);
+
+        cancel.cancel();
+    }
+
+    #[tokio::test]
     async fn task_creation_metalink_bytes_creates_native_tasks() {
         let engine = Arc::new(Engine::new(GlobalConfig {
             metalink_preferred_locations: vec!["us".into()],
