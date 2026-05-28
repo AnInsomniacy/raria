@@ -432,16 +432,20 @@ async fn run_native_foreground_download(options: SingleDownloadOptions) -> Resul
     })?;
     let activation = engine.activate_native_task(&created.task_id)?;
     let task_id = activation.task_id.clone();
+    let foreground_cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
 
     let signal_token = activation.cancel.clone();
+    let signal_seen = Arc::clone(&foreground_cancel);
     tokio::spawn(async move {
         tokio::signal::ctrl_c().await.ok();
+        signal_seen.store(true, std::sync::atomic::Ordering::SeqCst);
         signal_token.cancel();
     });
 
     #[cfg(unix)]
     {
         let signal_token = activation.cancel.clone();
+        let signal_seen = Arc::clone(&foreground_cancel);
         tokio::spawn(async move {
             use tokio::signal::unix::{SignalKind, signal};
 
@@ -449,6 +453,7 @@ async fn run_native_foreground_download(options: SingleDownloadOptions) -> Resul
                 return;
             };
             sigterm.recv().await;
+            signal_seen.store(true, std::sync::atomic::Ordering::SeqCst);
             signal_token.cancel();
         });
     }
@@ -475,7 +480,12 @@ async fn run_native_foreground_download(options: SingleDownloadOptions) -> Resul
         JobKind::Range | JobKind::Bt => unreachable!("only ED2K uses the native foreground path"),
     }
 
-    finish_native_foreground_download(&engine, &task_id, options.quiet)
+    finish_native_foreground_download(
+        &engine,
+        &task_id,
+        options.quiet,
+        foreground_cancel.load(std::sync::atomic::Ordering::SeqCst),
+    )
 }
 
 async fn wait_for_native_foreground_task(
@@ -610,8 +620,27 @@ fn native_foreground_filename(options: &SingleDownloadOptions) -> Option<String>
     })
 }
 
-fn finish_native_foreground_download(engine: &Engine, task_id: &TaskId, quiet: bool) -> Result<()> {
+fn finish_native_foreground_download(
+    engine: &Engine,
+    task_id: &TaskId,
+    quiet: bool,
+    cancelled: bool,
+) -> Result<()> {
     let summary = engine.native_task_summary(task_id)?;
+    if cancelled {
+        if !quiet {
+            println!(
+                "Download cancelled: {} ({}/{})",
+                summary.task_id,
+                format_bytes(summary.completed_bytes),
+                summary
+                    .total_bytes
+                    .map(format_bytes)
+                    .unwrap_or_else(|| "unknown".to_string())
+            );
+        }
+        anyhow::bail!("download cancelled");
+    }
     match summary.lifecycle {
         TaskLifecycle::Completed => {
             if !quiet {

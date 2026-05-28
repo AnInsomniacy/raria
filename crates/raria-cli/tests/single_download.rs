@@ -1856,6 +1856,48 @@ async fn single_download_supports_ed2k_inline_peer() {
 
 #[cfg(unix)]
 #[tokio::test]
+async fn single_download_ed2k_sigterm_reports_cancelled() {
+    let tmp = tempdir().expect("tempdir");
+    let child = Command::new(cargo_bin("raria"))
+        .arg("download")
+        .arg("ed2k://|file|sample.bin|4|0123456789abcdef0123456789abcdef|/")
+        .arg("--download-dir")
+        .arg(tmp.path())
+        .arg("--log-level")
+        .arg("warn")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn ED2K foreground download");
+
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    nix::sys::signal::kill(
+        nix::unistd::Pid::from_raw(child.id() as i32),
+        nix::sys::signal::Signal::SIGTERM,
+    )
+    .expect("send SIGTERM");
+
+    let output = tokio::task::spawn_blocking(move || child.wait_with_output())
+        .await
+        .expect("join wait")
+        .expect("wait output");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        !output.status.success(),
+        "cancelled ED2K foreground download should fail: {stdout}"
+    );
+    assert!(
+        stdout.contains("Download cancelled:"),
+        "stdout did not report cancellation:\n{stdout}"
+    );
+    assert!(
+        !stdout.contains("Download still running:"),
+        "stdout still used stale running message:\n{stdout}"
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
 async fn single_download_sigterm_shuts_down_gracefully_while_throttled() {
     let server = MockServer::start().await;
 
