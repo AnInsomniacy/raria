@@ -728,3 +728,22 @@ passed with local socket fixtures.
 Remaining: Start ED2K-034 daemon sharing and upload service.
 
 Blocked: none.
+
+## 2026-05-28 ED2K-034 verified
+
+Changed: Added daemon-owned native ED2K sharing state and upload services.
+Completed verified ED2K downloads now enter the daemon shared store when
+sharing is enabled, publish `task.ed2k.sharing.updated`, serve verified ranges
+through the native TCP upload queue, answer UDP reask packets from current queue
+state, and persist uploaded-byte peer credits in versioned native rows.
+
+Verified: RED checks failed before daemon sharing state, TCP upload service,
+UDP reask handling, and credit persistence existed. After implementation,
+`cargo test -p raria-cli
+ed2k_runtime_publishes_shared_file_after_inline_completion --locked --
+--nocapture` and `cargo test -p raria-cli ed2k --locked -- --nocapture` passed
+with local TCP and UDP fixtures.
+
+Remaining: Start ED2K-035 final validation and smoke evidence.
+
+Blocked: none.

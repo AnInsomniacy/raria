@@ -13,8 +13,8 @@ use raria_core::engine::{
 use raria_core::input_file::InputFileEntry;
 use raria_core::job::Gid;
 use raria_core::native::{
-    NativeEd2kSearchLifecycle, NativeEd2kSearchNetwork, NativeEd2kSearchResult, NativeEvent,
-    NativeEventData, NativeEventType, TaskId,
+    NativeEd2kCreditEntry, NativeEd2kCreditRow, NativeEd2kSearchLifecycle, NativeEd2kSearchNetwork,
+    NativeEd2kSearchResult, NativeEvent, NativeEventData, NativeEventType, TaskId,
 };
 use raria_core::persist::Store;
 use raria_core::segment::SegmentStatus;
@@ -27,6 +27,10 @@ use raria_ed2k::runtime::{
     Ed2kPeerRuntimeConfig, Ed2kRuntimeConfig, Ed2kRuntimeContext, Ed2kRuntimeEventKind,
     Ed2kRuntimeStatus, Ed2kServerEndpoint, Ed2kServerRuntime, Ed2kServerRuntimeConfig,
     Ed2kSourceQuery,
+};
+use raria_ed2k::sharing::{
+    SharedFileInput, SharedFileOrigin, SharedFileStore, SharedUploadRequest, UploadQueue,
+    build_shared_part_frame, build_udp_reask_frame, build_upload_response_frame,
 };
 use raria_ed2k::source::SourceRecord;
 use raria_ed2k::tag::{TagName, TagValue};
@@ -210,6 +214,27 @@ pub(crate) async fn run_daemon_with_config(
     }
 
     let api_cancel = CancellationToken::new();
+    let ed2k_sharing = Ed2kDaemonSharingService::with_store(&config, Some(Arc::clone(&store)));
+    if config.ed2k_enabled && config.ed2k_share_completed && config.ed2k_listen_tcp_port > 0 {
+        let service = ed2k_sharing.clone();
+        let cancel = shutdown_token.clone();
+        let addr = std::net::SocketAddr::from(([0, 0, 0, 0], config.ed2k_listen_tcp_port));
+        tokio::spawn(async move {
+            if let Err(error) = run_ed2k_tcp_upload_listener(service, addr, cancel).await {
+                warn!(error = %error, "ED2K TCP upload listener stopped");
+            }
+        });
+    }
+    if config.ed2k_enabled && config.ed2k_share_completed && config.ed2k_listen_udp_port > 0 {
+        let service = ed2k_sharing.clone();
+        let cancel = shutdown_token.clone();
+        let addr = std::net::SocketAddr::from(([0, 0, 0, 0], config.ed2k_listen_udp_port));
+        tokio::spawn(async move {
+            if let Err(error) = run_ed2k_udp_reask_listener(service, addr, cancel).await {
+                warn!(error = %error, "ED2K UDP reask listener stopped");
+            }
+        });
+    }
     spawn_hook_runner(
         Arc::clone(&engine),
         HookConfig {
@@ -295,8 +320,15 @@ pub(crate) async fn run_daemon_with_config(
                     });
                 }
                 raria_core::job::JobKind::Ed2k => {
+                    let sharing = ed2k_sharing.clone();
                     tokio::spawn(async move {
-                        if let Err(e) = run_ed2k_download(engine_ref, task_id.clone(), token).await
+                        if let Err(e) = run_ed2k_download_with_sharing(
+                            engine_ref,
+                            task_id.clone(),
+                            token,
+                            Some(sharing),
+                        )
+                        .await
                         {
                             error!(%task_id, error = %e, "ED2K runtime task failed");
                         }
@@ -1109,10 +1141,293 @@ async fn run_job_download(
     Ok(())
 }
 
+#[derive(Clone)]
+struct Ed2kDaemonSharingService {
+    inner: Arc<tokio::sync::Mutex<Ed2kDaemonSharingState>>,
+    store: Option<Arc<Store>>,
+    local_identity: PeerIdentity,
+}
+
+struct Ed2kDaemonSharingState {
+    shared_store: SharedFileStore,
+    upload_queue: UploadQueue,
+}
+
+impl Ed2kDaemonSharingService {
+    fn with_store(config: &GlobalConfig, store: Option<Arc<Store>>) -> Self {
+        Self {
+            inner: Arc::new(tokio::sync::Mutex::new(Ed2kDaemonSharingState {
+                shared_store: SharedFileStore::default(),
+                upload_queue: UploadQueue::new(
+                    config.ed2k_max_upload_slots as usize,
+                    usize::from(config.ed2k_max_upload_slots).saturating_mul(16),
+                ),
+            })),
+            store,
+            local_identity: ed2k_local_peer_identity(config),
+        }
+    }
+
+    async fn add_shared_file(&self, input: SharedFileInput) -> Result<usize> {
+        let mut state = self.inner.lock().await;
+        state.shared_store.add_or_replace(input)?;
+        Ok(state.shared_store.list().len())
+    }
+
+    #[cfg(test)]
+    async fn shared_file_count(&self) -> usize {
+        self.inner.lock().await.shared_store.list().len()
+    }
+
+    async fn handle_tcp_upload_connection(
+        &self,
+        mut stream: tokio::net::TcpStream,
+        peer_addr: std::net::SocketAddr,
+    ) -> Result<()> {
+        let endpoint = peer_endpoint_from_socket_addr(peer_addr)?;
+        let mut request =
+            read_ed2k_tcp_frame(&mut stream, 16 * 1024, Duration::from_secs(5)).await?;
+        let mut user_hash = None;
+        if raria_ed2k::opcode::PeerOpcode::from_byte(request.opcode)
+            == Some(raria_ed2k::opcode::PeerOpcode::Hello)
+        {
+            let hello = raria_ed2k::peer::parse_peer_hello(&request)?;
+            user_hash = Some(hello.identity.user_hash);
+            let answer = raria_ed2k::peer::build_peer_hello_answer(&self.local_identity)?;
+            write_ed2k_tcp_frame(&mut stream, &answer, 16 * 1024).await?;
+            request = read_ed2k_tcp_frame(&mut stream, 16 * 1024, Duration::from_secs(5)).await?;
+        }
+        anyhow::ensure!(
+            raria_ed2k::opcode::PeerOpcode::from_byte(request.opcode)
+                == Some(raria_ed2k::opcode::PeerOpcode::StartUploadRequest),
+            "ED2K upload connection expected StartUploadRequest"
+        );
+        anyhow::ensure!(
+            request.payload.len() == 16,
+            "ED2K upload request has invalid file hash"
+        );
+        let mut file_hash = [0_u8; 16];
+        file_hash.copy_from_slice(&request.payload);
+        let response = {
+            let mut state = self.inner.lock().await;
+            let Ed2kDaemonSharingState {
+                shared_store,
+                upload_queue,
+            } = &mut *state;
+            build_upload_response_frame(upload_queue.request_upload(
+                shared_store,
+                SharedUploadRequest {
+                    endpoint,
+                    user_hash,
+                    file_hash,
+                    now_seconds: chrono::Utc::now().timestamp().max(0) as u64,
+                },
+            ))
+        };
+        let accepted = raria_ed2k::opcode::PeerOpcode::from_byte(response.opcode)
+            == Some(raria_ed2k::opcode::PeerOpcode::AcceptUploadRequest);
+        write_ed2k_tcp_frame(&mut stream, &response, 16 * 1024).await?;
+        if !accepted {
+            return Ok(());
+        }
+
+        let request = read_ed2k_tcp_frame(&mut stream, 16 * 1024, Duration::from_secs(5)).await?;
+        let opcode = raria_ed2k::opcode::PeerOpcode::from_byte(request.opcode)
+            .context("unsupported ED2K upload request opcode")?;
+        let use_i64_offsets = match opcode {
+            raria_ed2k::opcode::PeerOpcode::RequestParts => false,
+            raria_ed2k::opcode::PeerOpcode::RequestPartsI64 => true,
+            _ => return Ok(()),
+        };
+        let ranges =
+            raria_ed2k::transfer::parse_part_request(&request.payload, file_hash, use_i64_offsets)?;
+        let Some(range) = ranges.first().copied() else {
+            return Ok(());
+        };
+        let part = {
+            let state = self.inner.lock().await;
+            build_shared_part_frame(&state.shared_store, file_hash, range, use_i64_offsets)?
+        };
+        write_ed2k_tcp_frame(&mut stream, &part, 16 * 1024).await?;
+        self.note_uploaded(endpoint, range.end.saturating_sub(range.begin))
+            .await?;
+        Ok(())
+    }
+
+    async fn note_uploaded(
+        &self,
+        endpoint: raria_ed2k::peer::PeerEndpoint,
+        bytes: u64,
+    ) -> Result<()> {
+        let entries = {
+            let mut state = self.inner.lock().await;
+            state.upload_queue.note_uploaded(endpoint, bytes);
+            state
+                .upload_queue
+                .credits()
+                .snapshot()
+                .into_iter()
+                .map(|credit| NativeEd2kCreditEntry {
+                    user_hash: credit.user_hash,
+                    uploaded_bytes: credit.uploaded_bytes,
+                    downloaded_bytes: credit.downloaded_bytes,
+                })
+                .collect::<Vec<_>>()
+        };
+        if !entries.is_empty() {
+            if let Some(store) = &self.store {
+                store.put_ed2k_credits(&NativeEd2kCreditRow::new("default", entries))?;
+            }
+        }
+        Ok(())
+    }
+
+    async fn handle_udp_reask_datagram(
+        &self,
+        socket: &tokio::net::UdpSocket,
+        bytes: &[u8],
+        peer_addr: std::net::SocketAddr,
+    ) -> Result<()> {
+        let endpoint = peer_endpoint_from_socket_addr(peer_addr)?;
+        let frame = raria_ed2k::packet::decode_udp_datagram(bytes, 16 * 1024)?;
+        anyhow::ensure!(
+            raria_ed2k::opcode::PeerOpcode::from_byte(frame.opcode)
+                == Some(raria_ed2k::opcode::PeerOpcode::ReaskFilePing),
+            "ED2K UDP reask expected ReaskFilePing"
+        );
+        anyhow::ensure!(
+            frame.payload.len() >= 16,
+            "ED2K UDP reask missing file hash"
+        );
+        let mut file_hash = [0_u8; 16];
+        file_hash.copy_from_slice(&frame.payload[..16]);
+        let response = {
+            let state = self.inner.lock().await;
+            build_udp_reask_frame(state.upload_queue.handle_udp_reask(
+                &state.shared_store,
+                endpoint,
+                file_hash,
+            ))
+        };
+        let encoded = raria_ed2k::packet::encode_udp_datagram(&response, 16 * 1024)?;
+        socket
+            .send_to(&encoded, peer_addr)
+            .await
+            .context("ED2K UDP reask response failed")?;
+        Ok(())
+    }
+}
+
+async fn run_ed2k_tcp_upload_listener(
+    service: Ed2kDaemonSharingService,
+    addr: std::net::SocketAddr,
+    cancel: CancellationToken,
+) -> Result<()> {
+    let listener = tokio::net::TcpListener::bind(addr)
+        .await
+        .context("failed to bind ED2K TCP upload listener")?;
+    loop {
+        tokio::select! {
+            _ = cancel.cancelled() => return Ok(()),
+            accepted = listener.accept() => {
+                let (stream, peer) = accepted.context("failed to accept ED2K TCP upload peer")?;
+                let service = service.clone();
+                tokio::spawn(async move {
+                    if let Err(error) = service.handle_tcp_upload_connection(stream, peer).await {
+                        tracing::debug!(error = %error, "ED2K TCP upload connection failed");
+                    }
+                });
+            }
+        }
+    }
+}
+
+async fn run_ed2k_udp_reask_listener(
+    service: Ed2kDaemonSharingService,
+    addr: std::net::SocketAddr,
+    cancel: CancellationToken,
+) -> Result<()> {
+    let socket = tokio::net::UdpSocket::bind(addr)
+        .await
+        .context("failed to bind ED2K UDP reask listener")?;
+    let mut buffer = vec![0_u8; 16 * 1024];
+    loop {
+        tokio::select! {
+            _ = cancel.cancelled() => return Ok(()),
+            received = socket.recv_from(&mut buffer) => {
+                let (len, peer) = received.context("failed to receive ED2K UDP reask")?;
+                if let Err(error) = service.handle_udp_reask_datagram(&socket, &buffer[..len], peer).await {
+                    tracing::debug!(error = %error, "ED2K UDP reask failed");
+                }
+            }
+        }
+    }
+}
+
+fn peer_endpoint_from_socket_addr(
+    addr: std::net::SocketAddr,
+) -> Result<raria_ed2k::peer::PeerEndpoint> {
+    let std::net::IpAddr::V4(ip) = addr.ip() else {
+        anyhow::bail!("ED2K upload peer must use IPv4");
+    };
+    Ok(raria_ed2k::peer::PeerEndpoint {
+        ip: u32::from_le_bytes(ip.octets()),
+        port: addr.port(),
+    })
+}
+
+async fn read_ed2k_tcp_frame(
+    stream: &mut tokio::net::TcpStream,
+    max_packet_size: usize,
+    timeout: Duration,
+) -> Result<raria_ed2k::packet::PacketFrame> {
+    use tokio::io::AsyncReadExt;
+
+    let mut header = [0_u8; 6];
+    tokio::time::timeout(timeout, stream.read_exact(&mut header))
+        .await
+        .context("ED2K TCP read timed out")?
+        .context("ED2K TCP header read failed")?;
+    let length = u32::from_le_bytes(header[1..5].try_into()?) as usize;
+    anyhow::ensure!(length > 0, "invalid ED2K TCP packet length");
+    let mut payload = vec![0_u8; length - 1];
+    tokio::time::timeout(timeout, stream.read_exact(&mut payload))
+        .await
+        .context("ED2K TCP read timed out")?
+        .context("ED2K TCP payload read failed")?;
+    let mut raw = header.to_vec();
+    raw.extend_from_slice(&payload);
+    Ok(raria_ed2k::packet::decode_tcp_frame(&raw, max_packet_size)?)
+}
+
+async fn write_ed2k_tcp_frame(
+    stream: &mut tokio::net::TcpStream,
+    frame: &raria_ed2k::packet::PacketFrame,
+    max_packet_size: usize,
+) -> Result<()> {
+    use tokio::io::AsyncWriteExt;
+
+    let bytes = raria_ed2k::packet::encode_tcp_frame(frame, max_packet_size)?;
+    stream
+        .write_all(&bytes)
+        .await
+        .context("ED2K TCP write failed")
+}
+
+#[cfg(test)]
 async fn run_ed2k_download(
     engine: Arc<Engine>,
     task_id: TaskId,
     cancel: CancellationToken,
+) -> Result<()> {
+    run_ed2k_download_with_sharing(engine, task_id, cancel, None).await
+}
+
+async fn run_ed2k_download_with_sharing(
+    engine: Arc<Engine>,
+    task_id: TaskId,
+    cancel: CancellationToken,
+    sharing: Option<Ed2kDaemonSharingService>,
 ) -> Result<()> {
     let mut context = Ed2kRuntimeContext::new(
         task_id.clone(),
@@ -1128,7 +1443,8 @@ async fn run_ed2k_download(
     if let Some(file) = ed2k_file_from_task(&engine, &task_id)? {
         engine.set_native_segment_plan_metadata(&task_id, Some(file.size), 1)?;
         if !file.sources.is_empty() {
-            run_ed2k_inline_peer_download(&engine, &task_id, &file, &cancel).await?;
+            run_ed2k_inline_peer_download(&engine, &task_id, &file, &cancel, sharing.clone())
+                .await?;
             if engine.native_task_summary(&task_id)?.lifecycle.as_str() == "completed" {
                 return Ok(());
             }
@@ -1193,6 +1509,7 @@ async fn run_ed2k_inline_peer_download(
     task_id: &TaskId,
     file: &Ed2kFileLink,
     cancel: &CancellationToken,
+    sharing: Option<Ed2kDaemonSharingService>,
 ) -> Result<()> {
     let gid = engine
         .gid_for_task_id(task_id)
@@ -1263,6 +1580,34 @@ async fn run_ed2k_inline_peer_download(
             engine.update_native_progress(task_id, bytes)?;
             completed_ranges = disk_report.verified_ranges;
             if disk_report.completed {
+                if engine.config.ed2k_share_completed {
+                    let shared_files = if let Some(sharing) = &sharing {
+                        sharing
+                            .add_shared_file(SharedFileInput {
+                                path: job.out_path.clone(),
+                                name: file.name.clone(),
+                                size: file.size,
+                                root_hash: file.root_hash,
+                                part_hashes: file.part_hashes.clone(),
+                                aich_root,
+                                origin: SharedFileOrigin::CompletedDownload,
+                                verified_ranges: completed_ranges.clone(),
+                                now_seconds: chrono::Utc::now().timestamp().max(0) as u64,
+                            })
+                            .await?
+                    } else {
+                        disk.shared_store().list().len()
+                    };
+                    publish_ed2k_status(
+                        engine,
+                        task_id,
+                        NativeEventType::TaskEd2kSharingUpdated,
+                        "sharing",
+                        "shared",
+                        Some("ED2K completed file entered native sharing"),
+                        BTreeMap::from([("sharedFiles".to_string(), shared_files as u64)]),
+                    );
+                }
                 engine.complete_native_task(task_id, file.size)?;
                 engine.set_native_runtime_connections(task_id, 0)?;
                 publish_ed2k_status(
@@ -2043,14 +2388,21 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn ed2k_runtime_downloads_inline_peer_and_completes_task() {
+    async fn ed2k_runtime_publishes_shared_file_after_inline_completion() {
         use raria_ed2k::hash::ed2k_root_hash;
         use raria_ed2k::opcode::PeerOpcode;
-        use raria_ed2k::packet::{PacketFrame, Protocol, decode_tcp_frame, encode_tcp_frame};
-        use raria_ed2k::peer::{
-            PeerIdentity, build_emule_info, build_file_status_answer, build_peer_hello_answer,
+        use raria_ed2k::packet::{
+            PacketFrame, Protocol, decode_tcp_frame, decode_udp_datagram, encode_tcp_frame,
+            encode_udp_datagram,
         };
-        use raria_ed2k::transfer::{PartRange, parse_part_request};
+        use raria_ed2k::peer::{
+            PeerIdentity, build_emule_info, build_file_status_answer, build_peer_hello,
+            build_peer_hello_answer, build_start_upload_request,
+        };
+        use raria_ed2k::transfer::{
+            CompressedPartInflater, PartRange, build_part_request, parse_part_payload,
+            parse_part_request,
+        };
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         use tokio::net::{TcpListener, TcpStream};
 
@@ -2170,12 +2522,18 @@ mod tests {
         });
 
         let dir = tempdir().expect("tempdir");
-        let engine = Arc::new(Engine::new(GlobalConfig {
-            ed2k_enabled: true,
-            ed2k_enable_servers: false,
-            ed2k_enable_kad: false,
-            ..Default::default()
-        }));
+        let store_path = dir.path().join("session.redb");
+        let store = Arc::new(Store::open(&store_path).expect("store"));
+        let engine = Arc::new(Engine::with_store(
+            GlobalConfig {
+                ed2k_enabled: true,
+                ed2k_enable_servers: false,
+                ed2k_enable_kad: false,
+                ed2k_share_completed: true,
+                ..Default::default()
+            },
+            Arc::clone(&store),
+        ));
         let link = format!(
             "ed2k://|file|sample.bin|4|{}|sources,{}:{}|/",
             hex_hash(file_hash),
@@ -2195,6 +2553,9 @@ mod tests {
             })
             .expect("add ED2K task");
         let task_id = engine.task_id_for_gid(handle.gid).expect("task id");
+        let mut events = engine.native_event_bus.subscribe();
+        let sharing =
+            Ed2kDaemonSharingService::with_store(&engine.config, Some(Arc::clone(&store)));
         let token = engine
             .activate_native_task(&task_id)
             .expect("activate")
@@ -2202,7 +2563,12 @@ mod tests {
 
         tokio::time::timeout(
             Duration::from_secs(2),
-            run_ed2k_download(Arc::clone(&engine), task_id, token),
+            run_ed2k_download_with_sharing(
+                Arc::clone(&engine),
+                task_id,
+                token,
+                Some(sharing.clone()),
+            ),
         )
         .await
         .expect("runtime should complete")
@@ -2216,6 +2582,123 @@ mod tests {
             std::fs::read(dir.path().join("sample.bin")).expect("download"),
             payload
         );
+        assert_eq!(sharing.shared_file_count().await, 1);
+        let shared = tokio::time::timeout(Duration::from_millis(250), async {
+            loop {
+                let event = events.recv().await.expect("event");
+                if event.event_type == raria_core::native::NativeEventType::TaskEd2kSharingUpdated
+                    && matches!(
+                        &event.data,
+                        NativeEventData::Ed2kStatus { state, .. } if state == "shared"
+                    )
+                {
+                    break event;
+                }
+            }
+        })
+        .await
+        .expect("sharing event");
+        match shared.data {
+            NativeEventData::Ed2kStatus { state, metrics, .. } => {
+                assert_eq!(state, "shared");
+                assert_eq!(metrics.get("sharedFiles"), Some(&1));
+            }
+            other => panic!("unexpected ED2K sharing payload: {other:?}"),
+        }
+
+        let upload_listener = TcpListener::bind("127.0.0.1:0").await.expect("upload");
+        let upload_addr = upload_listener.local_addr().expect("upload addr");
+        let upload_service = sharing.clone();
+        let upload = tokio::spawn(async move {
+            let (stream, peer) = upload_listener.accept().await.expect("accept upload");
+            upload_service
+                .handle_tcp_upload_connection(stream, peer)
+                .await
+                .expect("upload connection");
+        });
+        let mut client = TcpStream::connect(upload_addr).await.expect("client");
+        let client_udp_port = client.local_addr().expect("client addr").port();
+        let upload_identity = PeerIdentity {
+            user_hash: [0x77; 16],
+            client_id: 0x0102_0304,
+            tcp_port: client_udp_port,
+            udp_port: client_udp_port,
+            kad_udp_port: client_udp_port,
+            server: None,
+            name: "credit-peer".to_string(),
+        };
+        write_frame(
+            &mut client,
+            &build_peer_hello(&upload_identity).expect("hello"),
+        )
+        .await;
+        assert_eq!(
+            read_frame(&mut client).await.opcode,
+            u8::from(PeerOpcode::HelloAnswer)
+        );
+        write_frame(&mut client, &build_start_upload_request(file_hash)).await;
+        let accepted = read_frame(&mut client).await;
+        assert_eq!(accepted.opcode, u8::from(PeerOpcode::AcceptUploadRequest));
+        write_frame(
+            &mut client,
+            &build_part_request(file_hash, &[PartRange { begin: 0, end: 4 }], false)
+                .expect("part request"),
+        )
+        .await;
+        let part = read_frame(&mut client).await;
+        let parsed = parse_part_payload(
+            &part,
+            file_hash,
+            &[PartRange { begin: 0, end: 4 }],
+            4,
+            &mut CompressedPartInflater::default(),
+            1024,
+        )
+        .expect("shared part");
+        assert_eq!(parsed.data, payload);
+        upload.await.expect("upload task");
+        let credits = store
+            .get_ed2k_credits("default")
+            .expect("credits")
+            .expect("credit row");
+        assert_eq!(credits.entries.len(), 1);
+        assert_eq!(credits.entries[0].user_hash, upload_identity.user_hash);
+        assert_eq!(credits.entries[0].uploaded_bytes, 4);
+
+        let server_udp = tokio::net::UdpSocket::bind("127.0.0.1:0")
+            .await
+            .expect("server udp");
+        let server_addr = server_udp.local_addr().expect("server udp addr");
+        let client_udp = tokio::net::UdpSocket::bind(("127.0.0.1", client_udp_port))
+            .await
+            .expect("client udp");
+        let udp_service = sharing.clone();
+        let udp_task = tokio::spawn(async move {
+            let mut buf = [0_u8; 1024];
+            let (len, peer) = server_udp.recv_from(&mut buf).await.expect("udp recv");
+            udp_service
+                .handle_udp_reask_datagram(&server_udp, &buf[..len], peer)
+                .await
+                .expect("udp reask");
+        });
+        let reask = PacketFrame {
+            protocol: Protocol::Emule,
+            opcode: u8::from(PeerOpcode::ReaskFilePing),
+            payload: file_hash.to_vec(),
+        };
+        client_udp
+            .send_to(
+                &encode_udp_datagram(&reask, MAX_PACKET).expect("udp encode"),
+                server_addr,
+            )
+            .await
+            .expect("udp send");
+        let mut buf = [0_u8; 1024];
+        let (len, _) = client_udp.recv_from(&mut buf).await.expect("udp reply");
+        let reply = decode_udp_datagram(&buf[..len], MAX_PACKET).expect("udp frame");
+        assert_eq!(reply.opcode, u8::from(PeerOpcode::ReaskAck));
+        assert_eq!(reply.payload, 0_u16.to_le_bytes());
+        udp_task.await.expect("udp task");
     }
 
     #[tokio::test]
