@@ -13,12 +13,14 @@ use raria_core::engine::{
 use raria_core::input_file::InputFileEntry;
 use raria_core::job::Gid;
 use raria_core::native::{
-    NativeEd2kCreditEntry, NativeEd2kCreditRow, NativeEd2kSearchLifecycle, NativeEd2kSearchNetwork,
-    NativeEd2kSearchResult, NativeEvent, NativeEventData, NativeEventType, TaskId,
+    NativeEd2kCreditEntry, NativeEd2kCreditRow, NativeEd2kKadBootstrapContact,
+    NativeEd2kKadBootstrapRow, NativeEd2kSearchLifecycle, NativeEd2kSearchNetwork,
+    NativeEd2kSearchResult, NativeEd2kServerBootstrapEntry, NativeEd2kServerBootstrapRow,
+    NativeEvent, NativeEventData, NativeEventType, TaskId,
 };
 use raria_core::persist::Store;
 use raria_core::segment::SegmentStatus;
-use raria_ed2k::kad::{KadContact, KadSearchEntry, kad_keyword_target};
+use raria_ed2k::kad::{KadContact, KadSearchEntry, kad_keyword_target, parse_nodes_dat};
 use raria_ed2k::link::{Ed2kFileLink, Ed2kLink, parse_link};
 use raria_ed2k::peer::PeerIdentity;
 use raria_ed2k::runtime::{
@@ -28,6 +30,7 @@ use raria_ed2k::runtime::{
     Ed2kRuntimeStatus, Ed2kServerEndpoint, Ed2kServerRuntime, Ed2kServerRuntimeConfig,
     Ed2kSourceQuery,
 };
+use raria_ed2k::server::{Ed2kServerBootstrap, merge_server_bootstrap, parse_server_met};
 use raria_ed2k::sharing::{
     SharedFileInput, SharedFileOrigin, SharedFileStore, SharedUploadRequest, UploadQueue,
     build_shared_part_frame, build_udp_reask_frame, build_upload_response_frame,
@@ -44,6 +47,17 @@ use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
 
+const ED2K_PROFILE_ID: &str = "default";
+const DEFAULT_ED2K_SERVER_ENDPOINTS: &[(&str, u16)] = &[
+    ("45.82.80.155", 5687),
+    ("176.123.5.89", 4725),
+    ("85.121.5.137", 4232),
+    ("176.123.2.239", 4232),
+    ("145.239.2.134", 4661),
+    ("91.208.162.87", 4232),
+    ("37.15.61.236", 4232),
+];
+
 pub(crate) async fn run_daemon_with_config(
     config: GlobalConfig,
     session_file: &std::path::Path,
@@ -58,6 +72,15 @@ pub(crate) async fn run_daemon_with_config(
 
     let store = Arc::new(Store::open(session_file)?);
     let engine = Arc::new(Engine::with_store(config.clone(), Arc::clone(&store)));
+    let ed2k_bootstrap = load_ed2k_bootstrap_state(&config, store.as_ref())?;
+    if config.ed2k_enabled {
+        publish_ed2k_bootstrap_status(&engine, ed2k_bootstrap);
+        info!(
+            ed2k_servers = ed2k_bootstrap.servers_loaded,
+            ed2k_kad_contacts = ed2k_bootstrap.kad_contacts_loaded,
+            "loaded native ED2K bootstrap state"
+        );
+    }
     let bt_service = create_bt_service(engine.as_ref(), config.download_dir.clone())?;
     raria_core::logging::replace_structured_log_context([(
         "session_id",
@@ -373,6 +396,288 @@ pub(crate) async fn run_daemon_with_config(
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
     info!("daemon stopped");
     Ok(())
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Ed2kBootstrapLoadReport {
+    servers_loaded: usize,
+    kad_contacts_loaded: usize,
+}
+
+fn load_ed2k_bootstrap_state(
+    config: &GlobalConfig,
+    store: &Store,
+) -> Result<Ed2kBootstrapLoadReport> {
+    if !config.ed2k_enabled {
+        return Ok(Ed2kBootstrapLoadReport {
+            servers_loaded: 0,
+            kad_contacts_loaded: 0,
+        });
+    }
+
+    let servers_loaded = if config.ed2k_enable_servers {
+        load_ed2k_server_bootstrap(config, store)?
+    } else {
+        0
+    };
+    let kad_contacts_loaded = if config.ed2k_enable_kad {
+        load_ed2k_kad_bootstrap(config, store)?
+    } else {
+        0
+    };
+
+    Ok(Ed2kBootstrapLoadReport {
+        servers_loaded,
+        kad_contacts_loaded,
+    })
+}
+
+fn publish_ed2k_bootstrap_status(engine: &Engine, report: Ed2kBootstrapLoadReport) {
+    let state = if report.servers_loaded == 0 && report.kad_contacts_loaded == 0 {
+        "empty"
+    } else {
+        "loaded"
+    };
+    publish_ed2k_search_status(
+        engine,
+        state,
+        Some("ED2K bootstrap state loaded"),
+        BTreeMap::from([
+            (
+                "serverBootstrapCount".to_string(),
+                report.servers_loaded as u64,
+            ),
+            (
+                "kadBootstrapContactCount".to_string(),
+                report.kad_contacts_loaded as u64,
+            ),
+        ]),
+    );
+}
+
+fn load_ed2k_server_bootstrap(config: &GlobalConfig, store: &Store) -> Result<usize> {
+    let mut servers = store
+        .get_ed2k_server_bootstrap(ED2K_PROFILE_ID)?
+        .map(native_server_bootstrap_to_ed2k)
+        .unwrap_or_default();
+
+    if config.ed2k_use_default_servers {
+        merge_server_bootstrap(
+            &mut servers,
+            DEFAULT_ED2K_SERVER_ENDPOINTS
+                .iter()
+                .map(|(host, port)| Ed2kServerBootstrap {
+                    host: (*host).to_string(),
+                    port: *port,
+                    name: None,
+                    description: None,
+                    users: None,
+                    files: None,
+                    max_users: None,
+                    soft_files: None,
+                    hard_files: None,
+                    udp_flags: None,
+                    low_id_users: None,
+                    udp_key: None,
+                    tcp_obfuscation_port: None,
+                    udp_obfuscation_port: None,
+                })
+                .collect(),
+        );
+    }
+
+    let explicit = config
+        .ed2k_servers
+        .iter()
+        .filter_map(|endpoint| parse_ed2k_server_endpoint(endpoint))
+        .collect::<Vec<_>>();
+    merge_server_bootstrap(&mut servers, explicit);
+
+    for path in &config.ed2k_server_met_paths {
+        let payload = std::fs::read(path).with_context(|| {
+            format!(
+                "failed to read ED2K server.met bootstrap file: {}",
+                path.display()
+            )
+        })?;
+        let parsed = parse_server_met(&payload).with_context(|| {
+            format!(
+                "failed to parse ED2K server.met bootstrap file: {}",
+                path.display()
+            )
+        })?;
+        merge_server_bootstrap(&mut servers, parsed);
+    }
+
+    if servers.is_empty() {
+        return Ok(0);
+    }
+    let row = NativeEd2kServerBootstrapRow::new(
+        ED2K_PROFILE_ID,
+        servers
+            .into_iter()
+            .map(native_server_bootstrap_entry)
+            .collect::<Vec<_>>(),
+    );
+    let count = row.servers.len();
+    store.put_ed2k_server_bootstrap(&row)?;
+    Ok(count)
+}
+
+fn load_ed2k_kad_bootstrap(config: &GlobalConfig, store: &Store) -> Result<usize> {
+    let mut contacts = store
+        .get_ed2k_kad_bootstrap(ED2K_PROFILE_ID)?
+        .map(|row| row.contacts)
+        .unwrap_or_default();
+
+    let paths = config
+        .ed2k_nodes_dat_paths
+        .iter()
+        .cloned()
+        .chain(local_amule_nodes_dat_paths(config.ed2k_use_local_nodes_dat))
+        .collect::<Vec<_>>();
+
+    for path in paths {
+        if !path.is_file() {
+            continue;
+        }
+        let payload = std::fs::read(&path).with_context(|| {
+            format!(
+                "failed to read ED2K nodes.dat bootstrap file: {}",
+                path.display()
+            )
+        })?;
+        let nodes = parse_nodes_dat(&payload).with_context(|| {
+            format!(
+                "failed to parse ED2K nodes.dat bootstrap file: {}",
+                path.display()
+            )
+        })?;
+        merge_kad_bootstrap_contacts(
+            &mut contacts,
+            nodes
+                .contacts
+                .into_iter()
+                .map(native_kad_bootstrap_contact)
+                .collect(),
+        );
+    }
+
+    if contacts.is_empty() {
+        return Ok(0);
+    }
+    let row = NativeEd2kKadBootstrapRow::new(ED2K_PROFILE_ID, contacts);
+    let count = row.contacts.len();
+    store.put_ed2k_kad_bootstrap(&row)?;
+    Ok(count)
+}
+
+fn parse_ed2k_server_endpoint(endpoint: &str) -> Option<Ed2kServerBootstrap> {
+    let (host, port) = endpoint.rsplit_once(':')?;
+    let port = port.parse::<u16>().ok()?;
+    if host.is_empty() || port == 0 {
+        return None;
+    }
+    Some(Ed2kServerBootstrap {
+        host: host.to_string(),
+        port,
+        name: None,
+        description: None,
+        users: None,
+        files: None,
+        max_users: None,
+        soft_files: None,
+        hard_files: None,
+        udp_flags: None,
+        low_id_users: None,
+        udp_key: None,
+        tcp_obfuscation_port: None,
+        udp_obfuscation_port: None,
+    })
+}
+
+fn native_server_bootstrap_to_ed2k(row: NativeEd2kServerBootstrapRow) -> Vec<Ed2kServerBootstrap> {
+    row.servers
+        .into_iter()
+        .map(|server| Ed2kServerBootstrap {
+            host: server.host,
+            port: server.port,
+            name: server.name,
+            description: server.description,
+            users: server.users,
+            files: server.files,
+            max_users: server.max_users,
+            soft_files: server.soft_files,
+            hard_files: server.hard_files,
+            udp_flags: server.udp_flags,
+            low_id_users: server.low_id_users,
+            udp_key: server.udp_key,
+            tcp_obfuscation_port: server.tcp_obfuscation_port,
+            udp_obfuscation_port: server.udp_obfuscation_port,
+        })
+        .collect()
+}
+
+fn native_server_bootstrap_entry(server: Ed2kServerBootstrap) -> NativeEd2kServerBootstrapEntry {
+    NativeEd2kServerBootstrapEntry {
+        host: server.host,
+        port: server.port,
+        name: server.name,
+        description: server.description,
+        users: server.users,
+        files: server.files,
+        max_users: server.max_users,
+        soft_files: server.soft_files,
+        hard_files: server.hard_files,
+        udp_flags: server.udp_flags,
+        low_id_users: server.low_id_users,
+        udp_key: server.udp_key,
+        tcp_obfuscation_port: server.tcp_obfuscation_port,
+        udp_obfuscation_port: server.udp_obfuscation_port,
+    }
+}
+
+fn native_kad_bootstrap_contact(contact: KadContact) -> NativeEd2kKadBootstrapContact {
+    NativeEd2kKadBootstrapContact {
+        id: contact.id,
+        host: contact.host,
+        udp_port: contact.udp_port,
+        tcp_port: contact.tcp_port,
+        version: contact.version,
+        verified: contact.verified,
+    }
+}
+
+fn merge_kad_bootstrap_contacts(
+    existing: &mut Vec<NativeEd2kKadBootstrapContact>,
+    incoming: Vec<NativeEd2kKadBootstrapContact>,
+) {
+    for contact in incoming {
+        if let Some(current) = existing.iter_mut().find(|candidate| {
+            candidate.id == contact.id
+                || (candidate.host == contact.host && candidate.udp_port == contact.udp_port)
+        }) {
+            *current = contact;
+        } else {
+            existing.push(contact);
+        }
+    }
+}
+
+fn local_amule_nodes_dat_paths(enabled: bool) -> Vec<PathBuf> {
+    if !enabled {
+        return Vec::new();
+    }
+    let Some(home) = std::env::var_os("HOME").map(PathBuf::from) else {
+        return Vec::new();
+    };
+    vec![
+        home.join(".aMule").join("nodes.dat"),
+        home.join("Library")
+            .join("Application Support")
+            .join("aMule")
+            .join("nodes.dat"),
+    ]
 }
 
 #[cfg(unix)]
@@ -2006,6 +2311,32 @@ mod tests {
         );
     }
 
+    fn test_server_met(host: &str, port: u16) -> Vec<u8> {
+        let ip = host.parse::<std::net::Ipv4Addr>().expect("ipv4").octets();
+        let mut bytes = vec![0x0e];
+        bytes.extend_from_slice(&1_u32.to_le_bytes());
+        bytes.extend_from_slice(&u32::from_le_bytes(ip).to_le_bytes());
+        bytes.extend_from_slice(&port.to_le_bytes());
+        bytes.extend_from_slice(&0_u32.to_le_bytes());
+        bytes
+    }
+
+    fn test_nodes_dat(host: &str, udp_port: u16, tcp_port: u16) -> Vec<u8> {
+        let ip = host.parse::<std::net::Ipv4Addr>().expect("ipv4").octets();
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&0_u32.to_le_bytes());
+        bytes.extend_from_slice(&2_u32.to_le_bytes());
+        bytes.extend_from_slice(&1_u32.to_le_bytes());
+        bytes.extend_from_slice(&[0x55; 16]);
+        bytes.extend_from_slice(&[ip[3], ip[2], ip[1], ip[0]]);
+        bytes.extend_from_slice(&udp_port.to_le_bytes());
+        bytes.extend_from_slice(&tcp_port.to_le_bytes());
+        bytes.push(8);
+        bytes.extend_from_slice(&0_u64.to_le_bytes());
+        bytes.push(1);
+        bytes
+    }
+
     #[test]
     fn daemon_classification_matches_core_service_heuristics() {
         use raria_core::service::{DownloadErrorClass, classify_download_error};
@@ -3211,6 +3542,161 @@ mod tests {
                 .await
                 .is_err()
         );
+    }
+
+    #[test]
+    fn ed2k_bootstrap_loader_persists_default_and_configured_servers() {
+        let dir = tempdir().expect("tempdir");
+        let store = Store::open(&dir.path().join("session.redb")).expect("store");
+        let report = load_ed2k_bootstrap_state(
+            &GlobalConfig {
+                ed2k_enabled: true,
+                ed2k_enable_servers: true,
+                ed2k_use_default_servers: true,
+                ed2k_servers: vec!["127.0.0.1:4661".to_string()],
+                ed2k_use_local_nodes_dat: false,
+                ..Default::default()
+            },
+            &store,
+        )
+        .expect("bootstrap load");
+
+        assert!(report.servers_loaded > 1);
+        let row = store
+            .get_ed2k_server_bootstrap("default")
+            .expect("server bootstrap")
+            .expect("server row");
+        assert!(
+            row.servers
+                .iter()
+                .any(|server| server.host == "127.0.0.1" && server.port == 4661)
+        );
+        assert!(
+            row.servers
+                .iter()
+                .any(|server| server.host == "45.82.80.155" && server.port == 5687)
+        );
+    }
+
+    #[test]
+    fn ed2k_bootstrap_loader_merges_server_met_and_nodes_dat_files() {
+        let dir = tempdir().expect("tempdir");
+        let server_met = dir.path().join("server.met");
+        std::fs::write(&server_met, test_server_met("203.0.113.8", 4661)).expect("server.met");
+        let nodes_dat = dir.path().join("nodes.dat");
+        std::fs::write(&nodes_dat, test_nodes_dat("203.0.113.9", 4672, 4662)).expect("nodes.dat");
+        let store = Store::open(&dir.path().join("session.redb")).expect("store");
+
+        let report = load_ed2k_bootstrap_state(
+            &GlobalConfig {
+                ed2k_enabled: true,
+                ed2k_enable_servers: true,
+                ed2k_enable_kad: true,
+                ed2k_use_default_servers: false,
+                ed2k_server_met_paths: vec![server_met],
+                ed2k_nodes_dat_paths: vec![nodes_dat],
+                ed2k_use_local_nodes_dat: false,
+                ..Default::default()
+            },
+            &store,
+        )
+        .expect("bootstrap load");
+
+        assert_eq!(report.servers_loaded, 1);
+        assert_eq!(report.kad_contacts_loaded, 1);
+        let server_row = store
+            .get_ed2k_server_bootstrap("default")
+            .expect("server bootstrap")
+            .expect("server row");
+        assert_eq!(server_row.servers[0].host, "203.0.113.8");
+        assert_eq!(server_row.servers[0].port, 4661);
+        let kad_row = store
+            .get_ed2k_kad_bootstrap("default")
+            .expect("kad bootstrap")
+            .expect("kad row");
+        assert_eq!(kad_row.contacts[0].host, "203.0.113.9");
+        assert_eq!(kad_row.contacts[0].udp_port, 4672);
+        assert_eq!(kad_row.contacts[0].tcp_port, 4662);
+        assert!(kad_row.contacts[0].verified);
+    }
+
+    #[test]
+    fn ed2k_bootstrap_loader_reports_empty_inputs_without_fake_rows() {
+        let dir = tempdir().expect("tempdir");
+        let store = Store::open(&dir.path().join("session.redb")).expect("store");
+
+        let report = load_ed2k_bootstrap_state(
+            &GlobalConfig {
+                ed2k_enabled: true,
+                ed2k_enable_servers: false,
+                ed2k_enable_kad: true,
+                ed2k_use_default_servers: false,
+                ed2k_use_local_nodes_dat: false,
+                ..Default::default()
+            },
+            &store,
+        )
+        .expect("bootstrap load");
+
+        assert_eq!(report.servers_loaded, 0);
+        assert_eq!(report.kad_contacts_loaded, 0);
+        assert!(
+            store
+                .get_ed2k_server_bootstrap("default")
+                .expect("server row")
+                .is_none()
+        );
+        assert!(
+            store
+                .get_ed2k_kad_bootstrap("default")
+                .expect("kad row")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn ed2k_bootstrap_status_reports_loaded_and_empty_counts() {
+        let loaded_engine = Engine::new(GlobalConfig::default());
+        let mut loaded_events = loaded_engine.native_event_bus.subscribe();
+        publish_ed2k_bootstrap_status(
+            &loaded_engine,
+            Ed2kBootstrapLoadReport {
+                servers_loaded: 2,
+                kad_contacts_loaded: 3,
+            },
+        );
+        let loaded = loaded_events.try_recv().expect("loaded event");
+        assert_eq!(
+            loaded.event_type,
+            raria_core::native::NativeEventType::TaskEd2kSearchUpdated
+        );
+        match loaded.data {
+            NativeEventData::Ed2kStatus { state, metrics, .. } => {
+                assert_eq!(state, "loaded");
+                assert_eq!(metrics.get("serverBootstrapCount"), Some(&2));
+                assert_eq!(metrics.get("kadBootstrapContactCount"), Some(&3));
+            }
+            other => panic!("unexpected bootstrap payload: {other:?}"),
+        }
+
+        let empty_engine = Engine::new(GlobalConfig::default());
+        let mut empty_events = empty_engine.native_event_bus.subscribe();
+        publish_ed2k_bootstrap_status(
+            &empty_engine,
+            Ed2kBootstrapLoadReport {
+                servers_loaded: 0,
+                kad_contacts_loaded: 0,
+            },
+        );
+        let empty = empty_events.try_recv().expect("empty event");
+        match empty.data {
+            NativeEventData::Ed2kStatus { state, metrics, .. } => {
+                assert_eq!(state, "empty");
+                assert_eq!(metrics.get("serverBootstrapCount"), Some(&0));
+                assert_eq!(metrics.get("kadBootstrapContactCount"), Some(&0));
+            }
+            other => panic!("unexpected bootstrap payload: {other:?}"),
+        }
     }
 
     #[tokio::test]

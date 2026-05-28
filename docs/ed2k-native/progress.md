@@ -816,3 +816,20 @@ native_config --locked`, `cargo test -p raria-rpc --test native_api config
 Remaining: Start ED2K-038 bootstrap loading and persistence.
 
 Blocked: none.
+
+## 2026-05-28 ED2K-038 verified
+
+Changed: Added daemon startup loading for native ED2K bootstrap state. A fresh
+daemon now persists raria default server endpoints, explicit server endpoints,
+configured `server.met` files, configured `nodes.dat` files, and useful local
+aMule `nodes.dat` files into versioned native redb bootstrap rows. Startup also
+publishes native ED2K bootstrap status metrics so empty bootstrap state is
+observable before public search runs.
+
+Verified: `cargo fmt --all --check`, `cargo test -p raria-cli ed2k_bootstrap
+--locked`, ED2K CSV validation for 46 files, and `git diff --check` passed.
+The first focused test run failed before `load_ed2k_bootstrap_state` existed.
+
+Remaining: Start ED2K-039 server search codec.
+
+Blocked: none.
