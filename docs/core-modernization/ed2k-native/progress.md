@@ -382,3 +382,23 @@ passed.
 Remaining: Start ED2K-019 Kad source search, publish, and keyword search.
 
 Blocked: none.
+
+## 2026-05-28 ED2K-019 verified
+
+Changed: Added native Kad source search, source publish, and keyword search
+ownership in `raria-ed2k`. The Kad module now owns bounded traversal actions,
+source-search request payloads, search result payload parsing, direct source
+tag extraction, source-policy merge through `SourceLifecycle`, sharing-gated
+source publish payloads, large-file source type truth, keyword target hashing,
+keyword request payloads, and result-id dedupe.
+
+Verified: The RED check failed before implementation because Kad traversal,
+source search payloads, publish payloads, keyword target hashing, and search
+entry dedupe did not exist. After implementation, `cargo test -p raria-ed2k
+--test kad_search --locked`, `cargo test -p raria-ed2k --locked`, `cargo fmt
+--all --check`, focused raria-ed2k clippy with `-D warnings`, and `cargo check
+--workspace --locked` passed.
+
+Remaining: Start ED2K-020 Kad firewall state, buddy limits, and scheduling.
+
+Blocked: none.

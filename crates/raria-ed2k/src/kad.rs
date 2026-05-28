@@ -1,7 +1,10 @@
 //! eMule Kad routing, source search, keyword search, and publish ownership.
 
-use crate::hash::Ed2kHash;
+use crate::hash::{Ed2kHash, md4_digest};
 use crate::opcode::KadOpcode;
+use crate::peer::PeerEndpoint;
+use crate::source::SourceExchangeEntry;
+use crate::tag::{Tag, TagError, TagName, TagValue, decode_tag_prefix, encode_tag};
 use crate::wire::{Cursor, ipv4_from_kad_contact};
 use serde::{Deserialize, Serialize};
 
@@ -564,6 +567,535 @@ impl KadTransactionTable {
         }
         expired
     }
+}
+
+/// Kind of Kad traversal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KadTraversalKind {
+    /// File source lookup traversal.
+    SourceLookup,
+    /// Keyword lookup traversal.
+    KeywordLookup,
+}
+
+/// Action emitted by a Kad traversal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KadTraversalActionType {
+    /// Ask a node for closer contacts.
+    FindNode,
+    /// Ask a node for source or keyword values.
+    Search,
+}
+
+/// Kad traversal action.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KadTraversalAction {
+    /// Action type.
+    pub action_type: KadTraversalActionType,
+    /// Remote contact.
+    pub contact: KadContact,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct KadTraversalObserver {
+    contact: KadContact,
+    queried: bool,
+    alive: bool,
+    failed: bool,
+    searched: bool,
+}
+
+/// Deterministic Kad lookup traversal.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KadTraversal {
+    kind: KadTraversalKind,
+    target_id: Ed2kHash,
+    file_size: u64,
+    branch_factor: usize,
+    target_nodes: usize,
+    observers: Vec<KadTraversalObserver>,
+    in_flight: usize,
+    search_started: bool,
+    done: bool,
+}
+
+impl KadTraversal {
+    /// Create a Kad traversal.
+    pub fn new(
+        kind: KadTraversalKind,
+        target_id: Ed2kHash,
+        file_size: u64,
+        branch_factor: usize,
+        target_nodes: usize,
+    ) -> Self {
+        Self {
+            kind,
+            target_id,
+            file_size,
+            branch_factor: branch_factor.max(1),
+            target_nodes: target_nodes.max(1),
+            observers: Vec::new(),
+            in_flight: 0,
+            search_started: false,
+            done: false,
+        }
+    }
+
+    /// Return the file size associated with a source lookup.
+    pub fn file_size(&self) -> u64 {
+        self.file_size
+    }
+
+    /// Return whether the traversal has no more work.
+    pub fn is_done(&self) -> bool {
+        self.done
+    }
+
+    /// Start traversal from seed contacts.
+    pub fn start(&mut self, seeds: Vec<KadContact>) -> Vec<KadTraversalAction> {
+        for seed in seeds {
+            self.add_contact(seed);
+        }
+        self.next_actions()
+    }
+
+    /// Record a lookup response and return follow-up actions.
+    pub fn on_response(
+        &mut self,
+        contact: &KadContact,
+        closer: Vec<KadContact>,
+    ) -> Vec<KadTraversalAction> {
+        for observer in &mut self.observers {
+            if contacts_equivalent(&observer.contact, contact) {
+                observer.alive = true;
+                self.in_flight = self.in_flight.saturating_sub(1);
+                break;
+            }
+        }
+        for item in closer {
+            self.add_contact(item);
+        }
+        self.next_actions()
+    }
+
+    /// Record a lookup failure and return follow-up actions.
+    pub fn on_failure(&mut self, contact: &KadContact) -> Vec<KadTraversalAction> {
+        for observer in &mut self.observers {
+            if contacts_equivalent(&observer.contact, contact) {
+                observer.failed = true;
+                self.in_flight = self.in_flight.saturating_sub(1);
+                break;
+            }
+        }
+        self.next_actions()
+    }
+
+    fn add_contact(&mut self, contact: KadContact) {
+        if !useful_contact(&contact) {
+            return;
+        }
+        if let Some(observer) = self
+            .observers
+            .iter_mut()
+            .find(|observer| contacts_equivalent(&observer.contact, &contact))
+        {
+            if observer.contact.tcp_port == 0 {
+                observer.contact.tcp_port = contact.tcp_port;
+            }
+            if observer.contact.version == 0 {
+                observer.contact.version = contact.version;
+            }
+            if observer.contact.udp_key.is_none() {
+                observer.contact.udp_key = contact.udp_key;
+            }
+            return;
+        }
+
+        let observer = KadTraversalObserver {
+            contact,
+            queried: false,
+            alive: false,
+            failed: false,
+            searched: false,
+        };
+        let insert_at = self
+            .observers
+            .binary_search_by(|item| {
+                xor_distance(&item.contact.id, &self.target_id)
+                    .cmp(&xor_distance(&observer.contact.id, &self.target_id))
+            })
+            .unwrap_or_else(|index| index);
+        self.observers.insert(insert_at, observer);
+        self.observers.truncate(100);
+    }
+
+    fn next_actions(&mut self) -> Vec<KadTraversalAction> {
+        let mut actions = Vec::new();
+        if self.done {
+            return actions;
+        }
+        let alive = self
+            .observers
+            .iter()
+            .filter(|observer| observer.alive && !observer.failed)
+            .count();
+
+        for observer in &mut self.observers {
+            if self.in_flight >= self.branch_factor || alive >= self.target_nodes {
+                break;
+            }
+            if observer.queried || observer.failed {
+                continue;
+            }
+            observer.queried = true;
+            self.in_flight += 1;
+            actions.push(KadTraversalAction {
+                action_type: KadTraversalActionType::FindNode,
+                contact: observer.contact.clone(),
+            });
+        }
+
+        if actions.is_empty()
+            && self.in_flight == 0
+            && self.kind == KadTraversalKind::SourceLookup
+            && alive != 0
+        {
+            self.start_search(&mut actions, true);
+        }
+        if !actions.is_empty() || self.in_flight != 0 {
+            return actions;
+        }
+        self.start_search(&mut actions, false);
+        actions
+    }
+
+    fn start_search(&mut self, actions: &mut Vec<KadTraversalAction>, only_alive: bool) {
+        if self.search_started && !only_alive {
+            self.done = true;
+            return;
+        }
+        self.search_started = true;
+        for observer in &mut self.observers {
+            if observer.failed || observer.searched || (only_alive && !observer.alive) {
+                continue;
+            }
+            observer.searched = true;
+            actions.push(KadTraversalAction {
+                action_type: KadTraversalActionType::Search,
+                contact: observer.contact.clone(),
+            });
+            if actions.len() >= self.target_nodes {
+                break;
+            }
+        }
+        if actions.is_empty() {
+            self.done = true;
+        }
+    }
+}
+
+/// Kad source-search request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KadSourceSearchRequest {
+    /// Search target id.
+    pub target_id: Ed2kHash,
+    /// Result start position.
+    pub start_position: u16,
+    /// Target file size.
+    pub file_size: u64,
+}
+
+/// Kad search result entry.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KadSearchEntry {
+    /// Entry id.
+    pub id: Ed2kHash,
+    /// Entry metadata tags.
+    pub tags: Vec<Tag>,
+}
+
+/// Kad search response.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KadSearchResult {
+    /// Responding Kad node id.
+    pub source_id: Ed2kHash,
+    /// Search target id.
+    pub target_id: Ed2kHash,
+    /// Result entries.
+    pub entries: Vec<KadSearchEntry>,
+}
+
+/// Kad source publish request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KadPublishSourceRequest {
+    /// File id being published.
+    pub file_id: Ed2kHash,
+    /// Published source entry.
+    pub source: KadSearchEntry,
+}
+
+/// Kad search codec error.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum KadSearchError {
+    /// Payload is malformed or truncated.
+    #[error("invalid Kad search payload")]
+    InvalidPayload,
+    /// Search keyword cannot produce a Kad target.
+    #[error("invalid Kad keyword")]
+    InvalidKeyword,
+    /// Tag payload is invalid.
+    #[error("invalid Kad search tag")]
+    InvalidTag(#[from] TagError),
+    /// Too many entries for the retained wire shape.
+    #[error("too many Kad search entries")]
+    TooManyEntries,
+}
+
+/// Build a Kad source-search request payload.
+pub fn build_kad_source_search_request(
+    target_id: Ed2kHash,
+    start_position: u16,
+    file_size: u64,
+) -> Vec<u8> {
+    let mut payload = Vec::with_capacity(26);
+    payload.extend_from_slice(&target_id);
+    payload.extend_from_slice(&start_position.to_le_bytes());
+    payload.extend_from_slice(&file_size.to_le_bytes());
+    payload
+}
+
+/// Parse a Kad source-search request payload.
+pub fn parse_kad_source_search_request(
+    payload: &[u8],
+) -> Result<KadSourceSearchRequest, KadSearchError> {
+    let mut cursor = Cursor::new(payload);
+    let target_id = cursor.read_hash16().ok_or(KadSearchError::InvalidPayload)?;
+    let start_position = cursor.read_u16().ok_or(KadSearchError::InvalidPayload)?;
+    let file_size = cursor.read_u64().ok_or(KadSearchError::InvalidPayload)?;
+    if !cursor.is_done() {
+        return Err(KadSearchError::InvalidPayload);
+    }
+    Ok(KadSourceSearchRequest {
+        target_id,
+        start_position,
+        file_size,
+    })
+}
+
+/// Build a Kad keyword-search request payload.
+pub fn build_kad_keyword_search_request(target_id: Ed2kHash, start_position: u16) -> Vec<u8> {
+    let mut payload = Vec::with_capacity(18);
+    payload.extend_from_slice(&target_id);
+    payload.extend_from_slice(&start_position.to_le_bytes());
+    payload
+}
+
+/// Return the Kad keyword target hash for a query.
+pub fn kad_keyword_target(query: &str) -> Result<Ed2kHash, KadSearchError> {
+    let mut best = String::new();
+    let mut current = String::new();
+    for ch in query.chars().flat_map(char::to_lowercase) {
+        if ch.is_ascii_alphanumeric() {
+            current.push(ch);
+            continue;
+        }
+        if current.len() >= 3 && current.len() > best.len() {
+            best = std::mem::take(&mut current);
+        }
+        current.clear();
+    }
+    if current.len() >= 3 && current.len() > best.len() {
+        best = current;
+    }
+    if best.is_empty() {
+        return Err(KadSearchError::InvalidKeyword);
+    }
+    Ok(md4_digest(best.as_bytes()))
+}
+
+/// Build a Kad search response payload.
+pub fn build_kad_search_result(
+    source_id: Ed2kHash,
+    target_id: Ed2kHash,
+    entries: &[KadSearchEntry],
+) -> Result<Vec<u8>, KadSearchError> {
+    let count = u16::try_from(entries.len()).map_err(|_| KadSearchError::TooManyEntries)?;
+    let mut payload = Vec::new();
+    payload.extend_from_slice(&source_id);
+    payload.extend_from_slice(&target_id);
+    payload.extend_from_slice(&count.to_le_bytes());
+    for entry in entries {
+        payload.extend_from_slice(&encode_kad_search_entry(entry)?);
+    }
+    Ok(payload)
+}
+
+/// Parse a Kad search response payload.
+pub fn parse_kad_search_result(payload: &[u8]) -> Result<KadSearchResult, KadSearchError> {
+    let mut cursor = Cursor::new(payload);
+    let source_id = cursor.read_hash16().ok_or(KadSearchError::InvalidPayload)?;
+    let target_id = cursor.read_hash16().ok_or(KadSearchError::InvalidPayload)?;
+    let count = cursor.read_u16().ok_or(KadSearchError::InvalidPayload)?;
+    let mut entries = Vec::with_capacity(usize::from(count));
+    for _ in 0..count {
+        entries.push(read_kad_search_entry(&mut cursor)?);
+    }
+    if !cursor.is_done() {
+        return Err(KadSearchError::InvalidPayload);
+    }
+    Ok(KadSearchResult {
+        source_id,
+        target_id,
+        entries,
+    })
+}
+
+/// Deduplicate Kad search entries by result id.
+pub fn dedupe_kad_search_entries(entries: Vec<KadSearchEntry>) -> Vec<KadSearchEntry> {
+    let mut deduped: Vec<KadSearchEntry> = Vec::new();
+    for entry in entries {
+        if let Some(existing) = deduped.iter_mut().find(|existing| existing.id == entry.id) {
+            *existing = entry;
+        } else {
+            deduped.push(entry);
+        }
+    }
+    deduped
+}
+
+/// Extract direct ED2K sources from Kad search results.
+pub fn extract_kad_source_entries(result: &KadSearchResult) -> Vec<SourceExchangeEntry> {
+    result
+        .entries
+        .iter()
+        .filter_map(extract_kad_source_entry)
+        .collect()
+}
+
+/// Build a Kad source-publish request payload when sharing policy allows it.
+pub fn build_kad_publish_source_request(
+    file_id: Ed2kHash,
+    source: PeerEndpoint,
+    source_id: Ed2kHash,
+    file_size: u64,
+    sharing_enabled: bool,
+) -> Result<Option<Vec<u8>>, KadSearchError> {
+    if !sharing_enabled {
+        return Ok(None);
+    }
+    let source_type = if file_size > u64::from(u32::MAX) {
+        4
+    } else {
+        1
+    };
+    let mut tags = vec![
+        Tag::new(TagName::Id(0xff), TagValue::UInt32(source_type)),
+        Tag::new(TagName::Id(0xfe), TagValue::UInt32(reverse_u32(source.ip))),
+        Tag::new(TagName::Id(0xfd), TagValue::UInt32(u32::from(source.port))),
+    ];
+    if file_size != 0 {
+        tags.push(Tag::new(TagName::Id(0xd3), TagValue::UInt64(file_size)));
+    }
+    let entry = KadSearchEntry {
+        id: source_id,
+        tags,
+    };
+    let mut payload = Vec::new();
+    payload.extend_from_slice(&file_id);
+    payload.extend_from_slice(&encode_kad_search_entry(&entry)?);
+    Ok(Some(payload))
+}
+
+/// Parse a Kad source-publish request payload.
+pub fn parse_kad_publish_source_request(
+    payload: &[u8],
+) -> Result<KadPublishSourceRequest, KadSearchError> {
+    let mut cursor = Cursor::new(payload);
+    let file_id = cursor.read_hash16().ok_or(KadSearchError::InvalidPayload)?;
+    let source = read_kad_search_entry(&mut cursor)?;
+    if !cursor.is_done() {
+        return Err(KadSearchError::InvalidPayload);
+    }
+    Ok(KadPublishSourceRequest { file_id, source })
+}
+
+fn encode_kad_search_entry(entry: &KadSearchEntry) -> Result<Vec<u8>, KadSearchError> {
+    let count = u8::try_from(entry.tags.len()).map_err(|_| KadSearchError::TooManyEntries)?;
+    let mut payload = Vec::new();
+    payload.extend_from_slice(&entry.id);
+    payload.push(count);
+    for tag in &entry.tags {
+        payload.extend_from_slice(&encode_tag(tag)?);
+    }
+    Ok(payload)
+}
+
+fn read_kad_search_entry(cursor: &mut Cursor<'_>) -> Result<KadSearchEntry, KadSearchError> {
+    let id = cursor.read_hash16().ok_or(KadSearchError::InvalidPayload)?;
+    let count = cursor.read_u8().ok_or(KadSearchError::InvalidPayload)?;
+    let mut tags = Vec::with_capacity(usize::from(count));
+    for _ in 0..count {
+        let (tag, consumed) = decode_tag_prefix(cursor.remaining_bytes())?;
+        cursor
+            .read_exact(consumed)
+            .ok_or(KadSearchError::InvalidPayload)?;
+        tags.push(tag);
+    }
+    Ok(KadSearchEntry { id, tags })
+}
+
+fn extract_kad_source_entry(entry: &KadSearchEntry) -> Option<SourceExchangeEntry> {
+    let mut ip = None;
+    let mut port = None;
+    let mut udp_port = None;
+    let mut source_type = 0_u32;
+    let mut crypt_options = None;
+    for tag in &entry.tags {
+        let TagName::Id(id) = tag.name else {
+            continue;
+        };
+        match id {
+            0xfe => ip = numeric_tag(&tag.value).map(reverse_u32),
+            0xfd => port = numeric_tag(&tag.value).and_then(|value| u16::try_from(value).ok()),
+            0xfc => udp_port = numeric_tag(&tag.value).and_then(|value| u16::try_from(value).ok()),
+            0xff => source_type = numeric_tag(&tag.value).unwrap_or(0),
+            0xf3 => {
+                crypt_options = numeric_tag(&tag.value).and_then(|value| u8::try_from(value).ok());
+            }
+            _ => {}
+        }
+    }
+    if !matches!(source_type, 0 | 1 | 4) {
+        return None;
+    }
+    let endpoint = PeerEndpoint {
+        ip: ip?,
+        port: port?,
+    };
+    if endpoint.port == 0 {
+        return None;
+    }
+    let _ = udp_port;
+    Some(SourceExchangeEntry {
+        endpoint,
+        server: None,
+        user_hash: Some(entry.id),
+        crypt_options,
+    })
+}
+
+fn numeric_tag(value: &TagValue) -> Option<u32> {
+    match value {
+        TagValue::UInt8(value) => Some(u32::from(*value)),
+        TagValue::UInt16(value) => Some(u32::from(*value)),
+        TagValue::UInt32(value) => Some(*value),
+        TagValue::UInt64(value) => u32::try_from(*value).ok(),
+        _ => None,
+    }
+}
+
+fn reverse_u32(value: u32) -> u32 {
+    value.swap_bytes()
 }
 
 /// nodes.dat parse error.
