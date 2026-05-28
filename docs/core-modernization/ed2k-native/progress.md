@@ -423,3 +423,22 @@ crates with `-D warnings`, and `cargo check --workspace --locked` passed.
 Remaining: Start ED2K-021 shared file store and publishing.
 
 Blocked: none.
+
+## 2026-05-28 ED2K-021 verified
+
+Changed: Added native ED2K shared-file store ownership. `raria-ed2k` now has
+`SharedFileStore` for completed and explicitly imported files, strict metadata
+validation through ED2K disk truth, duplicate root-hash replacement,
+sharing-gated server and Kad publish records, and verified-range disk reads for
+future upload responders. Legacy `known.met`, preview, browsing UI, and old
+database import behavior remain absent.
+
+Verified: The RED check failed before implementation because shared metadata,
+publish records, and verified shared reads did not exist. After implementation,
+`cargo test -p raria-ed2k --test sharing_store --locked`, `cargo test -p
+raria-ed2k --locked`, `cargo fmt --all --check`, focused raria-ed2k clippy
+with `-D warnings`, and `cargo check --workspace --locked` passed.
+
+Remaining: Start ED2K-022 upload queue, UDP reask, and responder.
+
+Blocked: none.
