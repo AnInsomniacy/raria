@@ -7,7 +7,7 @@ sha1,retain-narrow,Existing hash primitive supports AICH tree material,workspace
 flate2,add-narrow,flate2 1.1.9 is a mature compression crate with a pure Rust backend for compressed ED2K payload wrappers,workspace dependency,raria-ed2k packet and part compression wrappers,ED2K-016,verified,Streaming compressed-part inflation is retained behind raria-owned range and ownership validation.
 governor,retain,Existing rate limiting primitive for native transfer policy,workspace dependency,ED2K source and upload rate policy,ED2K-031,pending,Small native policy layer only.
 axum,retain,Existing native HTTP JSON and WebSocket framework,workspace dependency,ED2K API and event resources,ED2K-025,verified,"Native ED2K task status, events, config, and search resources are exposed through /api/v1 with no JSON-RPC."
-tracing,retain,Existing structured logging boundary,workspace dependency,ED2K task logs,ED2K-032,pending,Keep redaction and task correlation during final daemon-wide live network validation.
+tracing,retain,Existing structured logging boundary,workspace dependency,ED2K task logs,ED2K-030,verified,Peer runtime logs corrupt payload rejection through existing structured logging without adding another logging dependency.
 ed2k crate,evaluate-narrow,ed2k 1.0.1 is an ED2K hash helper and not a downloader engine,not present,possible test cross-check only,ED2K-002,verified,Do not add unless it reduces risk more than direct md4 use.
 kademlia-dht,reject,kademlia-dht 1.2.0 is a generic Kademlia DHT and not eMule Kad wire protocol,not present,not used,ED2K-002,verified,Do not force-fit.
 kad,reject,kad 0.6.1 is a generic futures Kademlia crate and not eMule Kad,not present,not used,ED2K-002,verified,Do not force-fit.

@@ -607,3 +607,35 @@ and `cargo test -p raria-ed2k --locked` passed.
 Remaining: Start ED2K-030 peer TCP download runtime.
 
 Blocked: none.
+
+## 2026-05-28 ED2K-030 started
+
+Target: Add bounded peer TCP runtime exchange for hello, capability, file
+status, hashset, queue rank, part request, payload validation, source exchange,
+retry, and cancellation using local socket tests only.
+
+Expected validation: focused peer runtime tests first, then retained peer,
+transfer, source, runtime, and raria-ed2k crate tests. No public network gate.
+
+Blocked: none.
+
+## 2026-05-28 ED2K-030 verified
+
+Changed: Added live peer TCP exchange ownership inside `raria-ed2k`.
+`Ed2kPeerRuntime` now performs bounded local TCP peer hello, eMule info, Source
+Exchange, file status, hashset, upload-slot, queue-rank, part-request, and part
+payload handling. Corrupt part payloads and stalled part requests move the peer
+exchange into native failure/backoff state instead of becoming task-wide
+compatibility behavior.
+
+Verified: RED checks failed before peer runtime types existed, then before
+corrupt payload and stalled part-request handling reported native peer state.
+After implementation, `cargo test -p raria-ed2k --test peer_runtime --locked`,
+`cargo test -p raria-ed2k --test peer_handshake --locked`, `cargo test -p
+raria-ed2k --test peer_request_state --locked`, `cargo test -p raria-ed2k
+--test part_transfer --locked`, and `cargo test -p raria-ed2k --test
+source_exchange --locked` passed.
+
+Remaining: Start ED2K-031 disk completion, resume, sharing, and upload runtime.
+
+Blocked: none.

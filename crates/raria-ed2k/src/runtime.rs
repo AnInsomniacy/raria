@@ -21,13 +21,26 @@ use crate::packet::{
     PacketFrame, Protocol, decode_tcp_frame, decode_udp_datagram, encode_tcp_frame,
     encode_udp_datagram,
 };
-use crate::peer::PeerEndpoint;
+use crate::peer::{
+    PeerEndpoint, PeerFailureKind, PeerIdentity, PeerRequestAction, PeerRequestPhase,
+    PeerRequestState, build_emule_info, build_file_status_request, build_hashset_request,
+    build_peer_hello, build_start_upload_request, parse_emule_info, parse_file_status,
+    parse_hashset_answer, parse_peer_hello, parse_queue_rank,
+};
 use crate::server::{
     FoundSource, ServerTcpState, ServerUdpState, ServerUdpStatus, build_get_sources_request,
     build_global_get_sources_request, build_login_request, build_udp_status_request,
     parse_udp_found_sources_payloads,
 };
-use crate::source::SourceExchangeEntry;
+use crate::source::{
+    SourceEndpoint, SourceExchangeEntry, SourceLifecycle, SourceOrigin,
+    build_source_exchange_request, parse_source_exchange_answer,
+};
+use crate::transfer::{
+    CompressedPartInflater, PartPlanInput, PartRange, PeerTransferState, ReceivedPart,
+    TransferFailureKind, TransferStatus, build_part_request, parse_part_payload,
+    plan_part_requests,
+};
 
 /// Native ED2K runtime configuration projected from `raria.toml`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -530,6 +543,312 @@ pub struct Ed2kUdpServerReport {
     pub sources: Vec<FoundSource>,
 }
 
+/// Live peer TCP runtime configuration.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Ed2kPeerRuntimeConfig {
+    /// Local ED2K peer identity advertised during handshake.
+    pub local_identity: PeerIdentity,
+    /// Maximum accepted packet payload size.
+    pub max_packet_size: usize,
+    /// Per-operation network timeout.
+    pub io_timeout: Duration,
+    /// Source lifecycle active cap used for Source Exchange results.
+    pub source_active_limit: usize,
+    /// Maximum decoded part payload bytes accepted per frame.
+    pub max_part_output: usize,
+}
+
+impl Default for Ed2kPeerRuntimeConfig {
+    fn default() -> Self {
+        Self {
+            local_identity: PeerIdentity::default_for_name("raria"),
+            max_packet_size: 1024 * 1024,
+            io_timeout: Duration::from_secs(5),
+            source_active_limit: 32,
+            max_part_output: 1024 * 1024,
+        }
+    }
+}
+
+/// One bounded peer download exchange request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Ed2kPeerDownloadRequest {
+    /// Remote peer host.
+    pub endpoint_host: String,
+    /// Remote peer TCP port.
+    pub endpoint_port: u16,
+    /// Target ED2K file hash.
+    pub file_hash: Ed2kHash,
+    /// Target file size.
+    pub file_size: u64,
+    /// Local completed part bitfield advertised to the peer.
+    pub local_part_status: Vec<bool>,
+    /// Locally completed byte ranges.
+    pub completed_ranges: Vec<PartRange>,
+    /// Globally requested ranges owned by other peer workers.
+    pub globally_requested: Vec<PartRange>,
+    /// Whether the remote hashset is required before requesting data.
+    pub hashset_required: bool,
+    /// Maximum new ranges to request from this peer.
+    pub max_new_ranges: usize,
+    /// Whether to request Source Exchange from capable peers.
+    pub request_source_exchange: bool,
+    /// Caller-owned monotonic timestamp.
+    pub now_seconds: u64,
+}
+
+/// Result of one bounded peer download exchange.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Ed2kPeerDownloadReport {
+    /// Final peer request phase.
+    pub phase: PeerRequestPhase,
+    /// Final transfer state for this peer exchange.
+    pub transfer_status: TransferStatus,
+    /// Last remote queue rank.
+    pub queue_rank: Option<u16>,
+    /// Ranges requested from the peer.
+    pub requested_ranges: Vec<PartRange>,
+    /// Validated part payloads received from the peer.
+    pub received_parts: Vec<ReceivedPart>,
+    /// Source Exchange records retained after native dedupe and policy checks.
+    pub sources: Vec<crate::source::SourceRecord>,
+}
+
+/// Live peer TCP runtime owner.
+#[derive(Debug, Clone)]
+pub struct Ed2kPeerRuntime {
+    config: Ed2kPeerRuntimeConfig,
+}
+
+impl Ed2kPeerRuntime {
+    /// Create a peer runtime.
+    pub fn new(config: Ed2kPeerRuntimeConfig) -> Self {
+        Self { config }
+    }
+
+    /// Run one bounded peer TCP exchange.
+    pub async fn download_once(
+        &mut self,
+        request: Ed2kPeerDownloadRequest,
+    ) -> anyhow::Result<Ed2kPeerDownloadReport> {
+        let addr = resolve_peer_endpoint(&request).await?;
+        let mut stream = tokio::time::timeout(self.config.io_timeout, TcpStream::connect(addr))
+            .await
+            .context("ED2K peer TCP connect timed out")?
+            .context("ED2K peer TCP connect failed")?;
+        let mut peer_state = PeerRequestState::new(request.file_hash);
+        let mut transfer_state = PeerTransferState::new(request.now_seconds);
+        let mut inflater = CompressedPartInflater::default();
+        let mut received_parts = Vec::new();
+        let mut source_lifecycle = SourceLifecycle::new(
+            SourceEndpoint::new(
+                self.config.local_identity.client_id,
+                self.config.local_identity.tcp_port,
+            ),
+            self.config.source_active_limit,
+        );
+
+        write_tcp_frame(
+            &mut stream,
+            &build_peer_hello(&self.config.local_identity)?,
+            self.config.max_packet_size,
+        )
+        .await?;
+        let hello_answer = read_tcp_frame(
+            &mut stream,
+            self.config.max_packet_size,
+            self.config.io_timeout,
+        )
+        .await?;
+        let remote_hello = parse_peer_hello(&hello_answer)?;
+
+        write_tcp_frame(
+            &mut stream,
+            &build_emule_info(self.config.local_identity.udp_port, false)?,
+            self.config.max_packet_size,
+        )
+        .await?;
+        let info_answer = read_tcp_frame(
+            &mut stream,
+            self.config.max_packet_size,
+            self.config.io_timeout,
+        )
+        .await?;
+        let remote_info = parse_emule_info(&info_answer)?;
+
+        if request.request_source_exchange {
+            let mut capabilities = remote_hello.capabilities;
+            capabilities.source_exchange1_version =
+                remote_info.capabilities.source_exchange1_version;
+            capabilities.supports_source_exchange2 =
+                remote_info.capabilities.supports_source_exchange2;
+            if let Some(frame) = build_source_exchange_request(request.file_hash, capabilities) {
+                write_tcp_frame(&mut stream, &frame, self.config.max_packet_size).await?;
+                let answer = read_tcp_frame(
+                    &mut stream,
+                    self.config.max_packet_size,
+                    self.config.io_timeout,
+                )
+                .await?;
+                let parsed = parse_source_exchange_answer(
+                    &answer,
+                    request.file_hash,
+                    Some(capabilities.source_exchange1_version),
+                )?;
+                for entry in parsed.entries {
+                    source_lifecycle.merge(
+                        entry,
+                        SourceOrigin::SourceExchange,
+                        request.now_seconds,
+                    );
+                }
+            }
+        }
+
+        write_tcp_frame(
+            &mut stream,
+            &build_file_status_request(request.file_hash),
+            self.config.max_packet_size,
+        )
+        .await?;
+        let status = read_tcp_frame(
+            &mut stream,
+            self.config.max_packet_size,
+            self.config.io_timeout,
+        )
+        .await?;
+        let part_status = parse_file_status(&status.payload, request.file_hash)?;
+        let action = peer_state.apply_file_status(part_status, request.hashset_required);
+        if action == PeerRequestAction::RequestHashset {
+            write_tcp_frame(
+                &mut stream,
+                &build_hashset_request(request.file_hash),
+                self.config.max_packet_size,
+            )
+            .await?;
+            let hashset = read_tcp_frame(
+                &mut stream,
+                self.config.max_packet_size,
+                self.config.io_timeout,
+            )
+            .await?;
+            let hashes = parse_hashset_answer(&hashset.payload, request.file_hash)?;
+            peer_state.apply_hashset_answer(hashes);
+        }
+
+        write_tcp_frame(
+            &mut stream,
+            &build_start_upload_request(request.file_hash),
+            self.config.max_packet_size,
+        )
+        .await?;
+        let response = read_tcp_frame(
+            &mut stream,
+            self.config.max_packet_size,
+            self.config.io_timeout,
+        )
+        .await?;
+        match crate::opcode::PeerOpcode::from_byte(response.opcode) {
+            Some(crate::opcode::PeerOpcode::AcceptUploadRequest) => {
+                peer_state.accept_upload();
+                let ranges = plan_peer_ranges(&request, &peer_state)?;
+                if !ranges.is_empty() {
+                    let use_i64_offsets = request.file_size > u64::from(u32::MAX)
+                        || ranges.iter().any(|range| range.begin > u64::from(u32::MAX));
+                    write_tcp_frame(
+                        &mut stream,
+                        &build_part_request(request.file_hash, &ranges, use_i64_offsets)?,
+                        self.config.max_packet_size,
+                    )
+                    .await?;
+                    peer_state.record_requested_ranges(
+                        ranges
+                            .iter()
+                            .map(|range| crate::peer::PeerRequestedRange {
+                                begin: range.begin,
+                                end: range.end,
+                            })
+                            .collect(),
+                    );
+                    transfer_state.record_requested_ranges(ranges, request.now_seconds);
+                    let Some(part) = read_tcp_frame_optional(
+                        &mut stream,
+                        self.config.max_packet_size,
+                        self.config.io_timeout,
+                    )
+                    .await?
+                    else {
+                        transfer_state
+                            .apply_failure(TransferFailureKind::Timeout, request.now_seconds);
+                        peer_state.fail(PeerFailureKind::Disconnected);
+                        return Ok(Ed2kPeerDownloadReport {
+                            phase: peer_state.phase,
+                            transfer_status: transfer_state.status,
+                            queue_rank: peer_state.queue_rank,
+                            requested_ranges: transfer_state.requested_ranges,
+                            received_parts,
+                            sources: source_lifecycle.sources().to_vec(),
+                        });
+                    };
+                    match parse_part_payload(
+                        &part,
+                        request.file_hash,
+                        &transfer_state.requested_ranges,
+                        request.file_size,
+                        &mut inflater,
+                        self.config.max_part_output,
+                    ) {
+                        Ok(part) => received_parts.push(part),
+                        Err(error) => {
+                            transfer_state.apply_failure(
+                                TransferFailureKind::CorruptBlock,
+                                request.now_seconds,
+                            );
+                            peer_state.fail(PeerFailureKind::BadPacket);
+                            tracing::debug!(
+                                error = %error,
+                                "rejected corrupt ED2K peer part payload"
+                            );
+                        }
+                    }
+                }
+            }
+            Some(crate::opcode::PeerOpcode::QueueRank)
+            | Some(crate::opcode::PeerOpcode::QueueRanking) => {
+                peer_state.mark_queued(parse_queue_rank(&response.payload)?);
+                transfer_state
+                    .apply_failure(TransferFailureKind::RemoteCancel, request.now_seconds);
+            }
+            Some(crate::opcode::PeerOpcode::FileRequestNoFile) => {
+                peer_state.fail(PeerFailureKind::NoFile);
+                transfer_state.apply_failure(TransferFailureKind::NoFile, request.now_seconds);
+            }
+            Some(crate::opcode::PeerOpcode::OutOfPartRequests) => {
+                peer_state.fail(PeerFailureKind::OutOfParts);
+                transfer_state.apply_failure(TransferFailureKind::OutOfParts, request.now_seconds);
+            }
+            Some(crate::opcode::PeerOpcode::CancelTransfer) => {
+                peer_state.fail(PeerFailureKind::Cancelled);
+                transfer_state
+                    .apply_failure(TransferFailureKind::RemoteCancel, request.now_seconds);
+            }
+            _ => {
+                peer_state.fail(PeerFailureKind::BadPacket);
+                transfer_state.apply_failure(TransferFailureKind::BadPacket, request.now_seconds);
+            }
+        }
+
+        Ok(Ed2kPeerDownloadReport {
+            phase: peer_state.phase,
+            transfer_status: transfer_state.status,
+            queue_rank: peer_state.queue_rank,
+            requested_ranges: transfer_state.requested_ranges,
+            received_parts,
+            sources: source_lifecycle.sources().to_vec(),
+        })
+    }
+}
+
 /// Live Kad runtime configuration.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Ed2kKadRuntimeConfig {
@@ -960,6 +1279,35 @@ async fn read_tcp_frame(
     Ok(decode_tcp_frame(&bytes, max_packet_size)?)
 }
 
+async fn read_tcp_frame_optional(
+    stream: &mut TcpStream,
+    max_packet_size: usize,
+    timeout: Duration,
+) -> anyhow::Result<Option<PacketFrame>> {
+    let mut header = [0_u8; 6];
+    let Some(result) = tokio::time::timeout(timeout, stream.read_exact(&mut header))
+        .await
+        .ok()
+    else {
+        return Ok(None);
+    };
+    result.context("ED2K TCP header read failed")?;
+    let length = u32::from_le_bytes(header[1..5].try_into()?) as usize;
+    anyhow::ensure!(length > 0, "invalid ED2K TCP packet length");
+    let payload_len = length - 1;
+    let mut payload = vec![0_u8; payload_len];
+    let Some(result) = tokio::time::timeout(timeout, stream.read_exact(&mut payload))
+        .await
+        .ok()
+    else {
+        return Ok(None);
+    };
+    result.context("ED2K TCP payload read failed")?;
+    let mut bytes = header.to_vec();
+    bytes.extend_from_slice(&payload);
+    Ok(Some(decode_tcp_frame(&bytes, max_packet_size)?))
+}
+
 async fn write_udp_frame(
     socket: &UdpSocket,
     server_addr: SocketAddr,
@@ -1015,6 +1363,38 @@ async fn resolve_udp_endpoint(endpoint: &Ed2kServerEndpoint) -> anyhow::Result<S
     addrs
         .next()
         .context("ED2K UDP host resolution returned no addresses")
+}
+
+fn plan_peer_ranges(
+    request: &Ed2kPeerDownloadRequest,
+    peer_state: &PeerRequestState,
+) -> Result<Vec<PartRange>, crate::transfer::TransferPlanError> {
+    let peer_requested = peer_state
+        .requested_ranges
+        .iter()
+        .map(|range| PartRange {
+            begin: range.begin,
+            end: range.end,
+        })
+        .collect();
+    plan_part_requests(&PartPlanInput {
+        file_size: request.file_size,
+        completed_ranges: request.completed_ranges.clone(),
+        globally_requested: request.globally_requested.clone(),
+        peer_requested,
+        remote_part_status: peer_state.part_status.clone(),
+        max_new_ranges: request.max_new_ranges,
+    })
+}
+
+async fn resolve_peer_endpoint(request: &Ed2kPeerDownloadRequest) -> anyhow::Result<SocketAddr> {
+    let mut addrs =
+        tokio::net::lookup_host((request.endpoint_host.as_str(), request.endpoint_port))
+            .await
+            .context("ED2K peer TCP host resolution failed")?;
+    addrs
+        .next()
+        .context("ED2K peer TCP host resolution returned no addresses")
 }
 
 async fn resolve_kad_contact(contact: &KadContact) -> anyhow::Result<SocketAddr> {
