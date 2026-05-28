@@ -1,0 +1,4 @@
+id,status,area,target,acceptance,validation,evidence,notes
+ED2K-031.1,pending,disk,transfer runtime,"Verified ED2K bytes are flushed through the native disk path with MD4 and AICH truth before completion.","Focused disk completion tests","pending","No completion from unverified bytes."
+ED2K-031.2,pending,resume,persistence,"ED2K runtime snapshots restore verified bytes sources Kad state credits and task state after daemon restart.","Focused persistence and session restore tests","pending","Version native schemas only."
+ED2K-031.3,pending,sharing,upload runtime,"Completed or imported files enter the native shared store when enabled and serve bounded upload queue responses from verified data.","Focused upload runtime tests","pending","No known.met import."

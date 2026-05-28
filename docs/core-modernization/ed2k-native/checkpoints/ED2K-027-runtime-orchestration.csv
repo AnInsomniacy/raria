@@ -1,0 +1,4 @@
+id,status,area,target,acceptance,validation,evidence,notes
+ED2K-027.1,pending,context,daemon runtime,"ED2K tasks create a runtime context with task id config identity source state transfer state sharing handles and event publisher.","Focused raria-cli or raria-ed2k tests","pending","No global mutable runtime."
+ED2K-027.2,pending,scheduler,daemon runtime,"Runtime loops use bounded timers backoff cancellation and shutdown joins without blocking unrelated tasks.","Focused async runtime tests","pending","No public-network gate."
+ED2K-027.3,pending,status,events and task state,"Runtime status updates expose source queue transfer Kad and sharing progress through native task summaries and task.ed2k.* events.","Focused native API and event tests","pending","Keep payload compact."

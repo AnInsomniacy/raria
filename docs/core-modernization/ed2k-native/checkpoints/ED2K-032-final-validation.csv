@@ -1,0 +1,4 @@
+id,status,area,target,acceptance,validation,evidence,notes
+ED2K-032.1,pending,tracker,ed2k-native docs,"Every capability is implemented, pruned, or documented as a proven technical limitation.","CSV validation and ledger scan","pending","No undocumented gaps."
+ED2K-032.2,pending,rust,workspace,"fmt check test and clippy all pass without ignored placeholders or public-network gates.","cargo fmt --all --check; cargo check --workspace --locked; cargo test --workspace; cargo clippy --workspace --all-targets -- -D warnings","pending","No compatibility-only tests."
+ED2K-032.3,pending,smoke,manual ED2K evidence,"Manual ED2K smoke records exact operational evidence without becoming an automated gate.","Manual smoke report under var with concise committed conclusion","pending","Do not commit raw logs or downloads."

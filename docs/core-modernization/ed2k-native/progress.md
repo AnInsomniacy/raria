@@ -520,8 +520,8 @@ creates and lists opaque search resources with native server/Kad network
 selection. `/api/v1/ed2k/searches/{searchId}` returns paged results with
 startable `ed2kUri` links. README and the ED2K overview now describe the
 implemented ED2K surface accurately: task creation, status projection, events,
-search resources, protocol primitives, and persistence are present, while full
-ED2K network transfer runtime remains open until final tracker closure.
+search resources, protocol primitives, and persistence are present, while live
+ED2K network transfer runtime remains open until the runtime checkpoints close.
 
 Verified: The RED checks failed before implementation because the native search
 routes, search ids, result model, and result-recording hook did not exist. After
@@ -529,6 +529,23 @@ implementation, `cargo test -p raria-rpc --test native_api ed2k_search
 --locked` passed. CSV validation and stale-surface scans found no legacy public
 search method, JSON-RPC revival, or false full-runtime claim.
 
-Remaining: Start ED2K-026 final validation and smoke evidence.
+Remaining: Start ED2K-026 runtime checkpoint reset.
+
+Blocked: none.
+
+## 2026-05-28 ED2K-026 verified
+
+Changed: Reset the ED2K tracker tail so the workstream no longer treats native
+API resources and protocol primitives as final runtime completion. The daemon
+still publishes an ED2K waiting-for-runtime status and waits for cancellation,
+so the remaining work is now split into runtime orchestration, server runtime,
+Kad runtime, peer download runtime, disk and sharing runtime, and final
+validation checkpoints.
+
+Verified: Source inspection confirmed the daemon placeholder. CSV validation
+covered the tracker files. Stale-surface scans found no JSON-RPC, aria2 method,
+legacy Motrix adapter, or false full-runtime claim introduced by the reset.
+
+Remaining: Start ED2K-027 runtime orchestration.
 
 Blocked: none.

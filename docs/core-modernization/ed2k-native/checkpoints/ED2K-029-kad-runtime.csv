@@ -1,0 +1,4 @@
+id,status,area,target,acceptance,validation,evidence,notes
+ED2K-029.1,pending,bootstrap,kad runtime,"Kad nodes bootstrap into a live routing table with refresh cadence transaction expiry and failure handling.","Focused Kad runtime tests with local UDP harness","pending","Generic Kademlia crates remain rejected."
+ED2K-029.2,pending,search,kad runtime,"Source search keyword search and result dedupe run through live bounded UDP scheduling.","Focused Kad search runtime tests","pending","Keep native search resources."
+ED2K-029.3,pending,publish,kad runtime,"Sharing-gated source publish and firewall state updates run without advertising unsupported buddy or direct-callback flows.","Focused Kad publish and config tests","pending","No router helper dependency."

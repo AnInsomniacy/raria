@@ -1,0 +1,4 @@
+id,status,area,target,acceptance,validation,evidence,notes
+ED2K-030.1,pending,handshake,peer runtime,"Peer TCP sessions perform hello capability file status hashset and queue rank exchange against live sockets.","Focused peer runtime tests with local sockets","pending","No broad fake network scaffold."
+ED2K-030.2,pending,download,peer runtime,"Part requests normal I64 compressed payloads cancellation timeout retry and corrupt payload rejection update native transfer state.","Focused peer transfer runtime tests","pending","Verify bytes before disk truth."
+ED2K-030.3,pending,sources,peer runtime,"Source exchange and dead-source policy feed the live source pool without duplicates or busy loops.","Focused source runtime tests","pending","Respect active source caps."
