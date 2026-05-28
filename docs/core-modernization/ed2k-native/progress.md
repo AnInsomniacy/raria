@@ -747,3 +747,20 @@ with local TCP and UDP fixtures.
 Remaining: Start ED2K-035 final validation and smoke evidence.
 
 Blocked: none.
+
+## 2026-05-28 ED2K-035 verified
+
+Changed: Closed the native ED2K workstream tracker. Final validation records
+local operational smoke evidence for daemon peer transfer, server discovery,
+Kad discovery, native search, sharing activation, TCP upload serving, UDP
+reask, and native credit persistence. Public ED2K network smoke remains outside
+the automated gate.
+
+Verified: `cargo fmt --all --check`, `cargo check --workspace --locked`,
+`cargo test --workspace`, `cargo clippy --workspace --all-targets -- -D warnings`,
+ED2K CSV validation for 38 files, and `git diff --check` passed.
+`cargo test --workspace` completed with zero failed and zero ignored tests.
+
+Remaining: Native ED2K workstream complete.
+
+Blocked: none.

@@ -1146,6 +1146,7 @@ struct Ed2kDaemonSharingService {
     inner: Arc<tokio::sync::Mutex<Ed2kDaemonSharingState>>,
     store: Option<Arc<Store>>,
     local_identity: PeerIdentity,
+    upload_limiter: Arc<raria_core::limiter::SharedRateLimiter>,
 }
 
 struct Ed2kDaemonSharingState {
@@ -1165,6 +1166,9 @@ impl Ed2kDaemonSharingService {
             })),
             store,
             local_identity: ed2k_local_peer_identity(config),
+            upload_limiter: Arc::new(raria_core::limiter::SharedRateLimiter::new(
+                config.global_upload_limit,
+            )),
         }
     }
 
@@ -1248,6 +1252,9 @@ impl Ed2kDaemonSharingService {
             let state = self.inner.lock().await;
             build_shared_part_frame(&state.shared_store, file_hash, range, use_i64_offsets)?
         };
+        self.upload_limiter
+            .consume((range.end.saturating_sub(range.begin)).min(u64::from(u32::MAX)) as u32)
+            .await;
         write_ed2k_tcp_frame(&mut stream, &part, 16 * 1024).await?;
         self.note_uploaded(endpoint, range.end.saturating_sub(range.begin))
             .await?;
