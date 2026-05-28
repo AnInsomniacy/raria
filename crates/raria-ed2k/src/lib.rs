@@ -28,6 +28,8 @@ pub mod persist;
 pub mod server;
 /// Shared-file and upload cooperation ownership.
 pub mod sharing;
+/// ED2K source exchange and lifecycle ownership.
+pub mod source;
 /// ED2K typed tag codec.
 pub mod tag;
 /// Transfer planning and part payload ownership.

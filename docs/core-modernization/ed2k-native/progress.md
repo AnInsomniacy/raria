@@ -271,3 +271,24 @@ passed.
 Remaining: Start ED2K-014 Source Exchange and source lifecycle.
 
 Blocked: none.
+
+## 2026-05-28 ED2K-014 verified
+
+Changed: Added native Source Exchange and source lifecycle ownership in
+`raria-ed2k`. The new `source` module builds SX1 and SX2 source requests,
+builds and parses versioned Source Exchange answers, preserves endpoint,
+server, user-hash, and crypt option metadata, and returns typed errors for bad
+payloads. It also owns source merge and scheduling policy for useful endpoints,
+duplicates, self and loopback rejection, required-crypt exclusion, origin
+updates, active caps, queue retry, no-needed-parts quality, and dead-source
+expiry.
+
+Verified: The RED check failed before implementation because no source module,
+Source Exchange payload helpers, source model, or lifecycle policy existed.
+After implementation, `cargo test -p raria-ed2k --test source_exchange
+--locked`, `cargo test -p raria-ed2k --locked`, `cargo fmt --all --check`, and
+`cargo clippy -p raria-ed2k --locked --all-targets -- -D warnings` passed.
+
+Remaining: Start ED2K-015 part request planning and I64 offsets.
+
+Blocked: none.
