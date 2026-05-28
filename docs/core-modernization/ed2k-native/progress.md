@@ -141,3 +141,23 @@ raria-rpc --locked --all-targets -- -D warnings` passed.
 Remaining: Start ED2K-008 packet codec.
 
 Blocked: none.
+
+## 2026-05-28 ED2K-008 verified
+
+Changed: Added native packet, tag, and opcode codecs in `raria-ed2k`. The
+packet module now owns ED2K TCP framing, ED2K-family UDP datagrams, protocol
+markers, deterministic payload limits, typed malformed-input errors, and zlib
+payload wrappers through `flate2`. The tag module now round-trips compact IDs,
+text names, string and short-string values, UInt8/16/32/64, bool, HASH16, BSOB,
+and blob payloads. The opcode module names retained server, peer, and Kad
+opcodes while leaving pruned legacy chat behavior unadvertised.
+
+Verified: The RED check failed before implementation because public `packet`,
+`tag`, and `opcode` modules did not exist. After implementation, `cargo test -p
+raria-ed2k --locked`, `cargo fmt --all --check`, `cargo clippy -p raria-ed2k
+--locked --all-targets -- -D warnings`, and `cargo check --workspace --locked`
+passed.
+
+Remaining: Start ED2K-009 server TCP.
+
+Blocked: none.

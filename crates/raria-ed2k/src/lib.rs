@@ -16,6 +16,10 @@ pub mod identity;
 pub mod kad;
 /// ED2K link parsing ownership.
 pub mod link;
+/// Retained ED2K, eMule, and Kad opcode names.
+pub mod opcode;
+/// ED2K, eMule, and Kad packet framing.
+pub mod packet;
 /// ED2K peer session ownership.
 pub mod peer;
 /// ED2K protocol persistence ownership.
@@ -24,6 +28,8 @@ pub mod persist;
 pub mod server;
 /// Shared-file and upload cooperation ownership.
 pub mod sharing;
+/// ED2K typed tag codec.
+pub mod tag;
 /// Transfer planning and part payload ownership.
 pub mod transfer;
 
