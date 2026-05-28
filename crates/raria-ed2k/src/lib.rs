@@ -27,6 +27,8 @@ pub mod peer;
 pub mod persist;
 /// ED2K daemon runtime context and scheduling ownership.
 pub mod runtime;
+/// ED2K server search request and result ownership.
+pub mod search;
 /// Server TCP and UDP ownership.
 pub mod server;
 /// Shared-file and upload cooperation ownership.

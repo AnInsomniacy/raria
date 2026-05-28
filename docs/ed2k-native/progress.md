@@ -833,3 +833,21 @@ The first focused test run failed before `load_ed2k_bootstrap_state` existed.
 Remaining: Start ED2K-039 server search codec.
 
 Blocked: none.
+
+## 2026-05-28 ED2K-039 verified
+
+Changed: Added raria-ed2k server search codec ownership. The new module builds
+retained server search request payloads, parses server search result payloads,
+preserves large-file size tags, direct source endpoints, source counts, file
+type, extension, and source-network metadata, and generates startable native
+ED2K file URIs without adding aria2-shaped fields.
+
+Verified: The first focused test failed because `raria_ed2k::search` did not
+exist. After implementation, `cargo fmt --all --check`, `cargo test -p
+raria-ed2k --test server_search --locked`, `cargo test -p raria-ed2k
+--locked`, `cargo clippy -p raria-ed2k --all-targets --locked -- -D
+warnings`, ED2K CSV validation for 46 files, and `git diff --check` passed.
+
+Remaining: Start ED2K-040 native server and Kad search execution.
+
+Blocked: none.
