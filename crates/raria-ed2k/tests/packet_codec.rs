@@ -1,4 +1,4 @@
-use raria_ed2k::opcode::{KadOpcode, PeerOpcode, ServerOpcode};
+use raria_ed2k::opcode::{EmuleOpcode, KadOpcode, PeerOpcode, ServerOpcode};
 use raria_ed2k::packet::{
     PacketError, PacketFrame, Protocol, decode_tcp_frame, decode_udp_datagram, encode_tcp_frame,
     encode_udp_datagram, pack_payload, unpack_payload,
@@ -99,6 +99,8 @@ fn retained_opcodes_are_named_and_legacy_chat_is_not() {
         Some(ServerOpcode::GetSources)
     );
     assert_eq!(PeerOpcode::from_byte(0x47), Some(PeerOpcode::RequestParts));
+    assert_eq!(EmuleOpcode::from_byte(0x01), Some(EmuleOpcode::Info));
+    assert_eq!(EmuleOpcode::from_byte(0x02), Some(EmuleOpcode::InfoAnswer));
     assert_eq!(
         KadOpcode::from_byte(0x34),
         Some(KadOpcode::SearchSourceRequestV2)

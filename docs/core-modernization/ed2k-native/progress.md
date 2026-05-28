@@ -227,3 +227,25 @@ passed.
 Remaining: Start ED2K-012 peer handshake.
 
 Blocked: none.
+
+## 2026-05-28 ED2K-012 verified
+
+Changed: Added native ED2K peer handshake payload ownership in `raria-ed2k`.
+The peer module now builds and parses hello, hello answer, eMule info, and
+eMule info answer frames. Local capability truth advertises retained AICH,
+Unicode, compression, Source Exchange, extended request, and large-file
+metadata while keeping crypt, secure-ident, Kad peer capability, multipacket,
+extended multipacket, direct callback, captcha, comments, and preview disabled
+until native owners exist. Malformed handshake inputs return typed errors
+without producing partial peer state.
+
+Verified: The RED check failed before implementation because the peer
+handshake API, identity model, capability model, eMule info opcode wrapper, and
+typed error model did not exist. After implementation, `cargo test -p
+raria-ed2k --test peer_handshake --locked`, `cargo test -p raria-ed2k
+--locked`, `cargo fmt --all --check`, and `cargo clippy -p raria-ed2k --locked
+--all-targets -- -D warnings` passed.
+
+Remaining: Start ED2K-013 peer file status, hashset, queue, and request state.
+
+Blocked: none.

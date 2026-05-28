@@ -14,6 +14,10 @@ impl<'a> Cursor<'a> {
         self.payload.len().saturating_sub(self.offset)
     }
 
+    pub(crate) fn remaining_bytes(&self) -> &'a [u8] {
+        &self.payload[self.offset..]
+    }
+
     pub(crate) fn is_done(&self) -> bool {
         self.offset == self.payload.len()
     }

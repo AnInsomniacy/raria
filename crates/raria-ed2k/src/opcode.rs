@@ -132,6 +132,33 @@ impl From<ServerOpcode> for u8 {
     }
 }
 
+/// eMule extension opcodes retained by raria.
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+#[repr(u8)]
+pub enum EmuleOpcode {
+    /// eMule info packet.
+    Info = 0x01,
+    /// eMule info answer packet.
+    InfoAnswer = 0x02,
+}
+
+impl EmuleOpcode {
+    /// Return a retained eMule opcode by wire value.
+    pub fn from_byte(value: u8) -> Option<Self> {
+        Some(match value {
+            0x01 => Self::Info,
+            0x02 => Self::InfoAnswer,
+            _ => return None,
+        })
+    }
+}
+
+impl From<EmuleOpcode> for u8 {
+    fn from(value: EmuleOpcode) -> Self {
+        value as u8
+    }
+}
+
 /// Client/client ED2K and eMule opcodes retained by raria.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 #[repr(u8)]

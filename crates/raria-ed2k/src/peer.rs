@@ -1,8 +1,522 @@
 //! ED2K peer handshake, capability, queue, and request-state ownership.
 
+use crate::hash::Ed2kHash;
 use crate::opcode::ServerOpcode;
+use crate::opcode::{EmuleOpcode, PeerOpcode};
 use crate::packet::{PacketFrame, Protocol};
 use crate::server::is_low_id;
+use crate::tag::{Tag, TagError, TagName, TagValue, decode_tag_prefix, encode_tag};
+use crate::wire::Cursor;
+
+const HASH_SIZE: u8 = 16;
+const EMULE_PROTOCOL_VERSION: u8 = 0x01;
+const EDONKEY_CLIENT_VERSION: u32 = 0x3c;
+const COMPATIBLE_CLIENT_RARIA: u8 = 0x03;
+const RARIA_EMULE_VERSION: u32 = 3 << 17;
+const CT_NAME: u8 = 0x01;
+const CT_VERSION: u8 = 0x11;
+const CT_EMULE_UDPPORTS: u8 = 0xf9;
+const CT_EMULECOMPAT_OPTIONS: u8 = 0xef;
+const CT_EMULE_MISCOPTIONS1: u8 = 0xfa;
+const CT_EMULE_VERSION: u8 = 0xfb;
+const CT_EMULE_MISCOPTIONS2: u8 = 0xfe;
+const ET_COMPRESSION: u8 = 0x20;
+const ET_UDPPORT: u8 = 0x21;
+const ET_UDPVER: u8 = 0x22;
+const ET_SOURCEEXCHANGE: u8 = 0x23;
+const ET_EXTENDEDREQUEST: u8 = 0x25;
+const ET_COMPATIBLECLIENT: u8 = 0x26;
+const ET_FEATURES: u8 = 0x27;
+
+/// Native peer endpoint encoded inside ED2K hello packets.
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub struct PeerEndpoint {
+    /// IPv4 address as the ED2K wire integer.
+    pub ip: u32,
+    /// TCP port.
+    pub port: u16,
+}
+
+/// Native ED2K peer identity used by hello and hello answer packets.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PeerIdentity {
+    /// Stable ED2K user hash.
+    pub user_hash: Ed2kHash,
+    /// Server-assigned client ID or zero before assignment.
+    pub client_id: u32,
+    /// TCP listen port.
+    pub tcp_port: u16,
+    /// UDP listen port.
+    pub udp_port: u16,
+    /// Kad UDP listen port when Kad is fully owned.
+    pub kad_udp_port: u16,
+    /// Last server endpoint advertised to the peer.
+    pub server: Option<PeerEndpoint>,
+    /// Native client display name.
+    pub name: String,
+}
+
+impl PeerIdentity {
+    /// Create a local identity template for tests and bootstrap state.
+    pub fn default_for_name(name: impl Into<String>) -> Self {
+        Self {
+            user_hash: [0_u8; 16],
+            client_id: 0,
+            tcp_port: 0,
+            udp_port: 0,
+            kad_udp_port: 0,
+            server: None,
+            name: name.into(),
+        }
+    }
+}
+
+/// ED2K/eMule peer capability truth retained by raria.
+#[derive(Debug, Copy, Clone, Default, PartialEq, Eq)]
+pub struct PeerCapabilities {
+    /// AICH capability version.
+    pub aich_version: u8,
+    /// Unicode tag and filename support.
+    pub unicode: bool,
+    /// UDP peer protocol version.
+    pub udp_version: u8,
+    /// Zlib data compression version.
+    pub data_compression_version: u8,
+    /// Secure-ident support version.
+    pub secure_ident_version: u8,
+    /// Source Exchange v1 support version.
+    pub source_exchange1_version: u8,
+    /// Extended request support version.
+    pub extended_requests_version: u8,
+    /// Comment support version.
+    pub accepts_comments: bool,
+    /// Multipacket support.
+    pub supports_multipacket: bool,
+    /// Preview support.
+    pub supports_preview: bool,
+    /// Direct UDP callback support.
+    pub supports_direct_udp_callback: bool,
+    /// Captcha support.
+    pub supports_captcha: bool,
+    /// Source Exchange v2 support.
+    pub supports_source_exchange2: bool,
+    /// Required crypt-layer support.
+    pub requires_crypt_layer: bool,
+    /// Requested crypt-layer support.
+    pub requests_crypt_layer: bool,
+    /// Supported crypt-layer support.
+    pub supports_crypt_layer: bool,
+    /// Extended multipacket support.
+    pub supports_extended_multipacket: bool,
+    /// Large-file support.
+    pub supports_large_files: bool,
+    /// Kad version advertised to peers.
+    pub kad_version: u8,
+}
+
+impl PeerCapabilities {
+    /// Return the locally advertised raria ED2K peer capabilities.
+    pub fn local() -> Self {
+        Self {
+            aich_version: 1,
+            unicode: true,
+            udp_version: 4,
+            data_compression_version: 1,
+            secure_ident_version: 0,
+            source_exchange1_version: 3,
+            extended_requests_version: 2,
+            accepts_comments: false,
+            supports_multipacket: false,
+            supports_preview: false,
+            supports_direct_udp_callback: false,
+            supports_captcha: false,
+            supports_source_exchange2: true,
+            requires_crypt_layer: false,
+            requests_crypt_layer: false,
+            supports_crypt_layer: false,
+            supports_extended_multipacket: false,
+            supports_large_files: true,
+            kad_version: 0,
+        }
+    }
+}
+
+/// Parsed peer hello metadata.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParsedPeerHello {
+    /// Peer identity from the hello packet.
+    pub identity: PeerIdentity,
+    /// Peer capability metadata.
+    pub capabilities: PeerCapabilities,
+}
+
+/// Parsed eMule info metadata.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParsedEmuleInfo {
+    /// eMule peer version byte.
+    pub version: u8,
+    /// eMule protocol version byte.
+    pub protocol_version: u8,
+    /// Peer UDP listen port.
+    pub udp_port: u16,
+    /// Peer capability metadata.
+    pub capabilities: PeerCapabilities,
+}
+
+/// Peer handshake parse or encode error.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum PeerHandshakeError {
+    /// The frame uses the wrong protocol marker.
+    #[error("unexpected ED2K peer handshake protocol: {0:?}")]
+    UnexpectedProtocol(Protocol),
+    /// The frame uses the wrong opcode.
+    #[error("unexpected ED2K peer handshake opcode: 0x{0:02x}")]
+    UnexpectedOpcode(u8),
+    /// Hello hash-size prefix is not the retained 16-byte hash size.
+    #[error("invalid ED2K hello hash size: {0}")]
+    InvalidHashSize(u8),
+    /// The payload is malformed or truncated.
+    #[error("truncated ED2K peer handshake payload")]
+    Truncated,
+    /// Tag encoding or decoding failed.
+    #[error(transparent)]
+    Tag(#[from] TagError),
+    /// The encoded value exceeds retained wire limits.
+    #[error("ED2K peer handshake value is too large")]
+    ValueTooLarge,
+}
+
+/// Build a peer hello frame.
+pub fn build_peer_hello(identity: &PeerIdentity) -> Result<PacketFrame, PeerHandshakeError> {
+    Ok(PacketFrame {
+        protocol: Protocol::Edonkey,
+        opcode: PeerOpcode::Hello.into(),
+        payload: encode_peer_hello_payload(identity, true)?,
+    })
+}
+
+/// Build a peer hello answer frame.
+pub fn build_peer_hello_answer(identity: &PeerIdentity) -> Result<PacketFrame, PeerHandshakeError> {
+    Ok(PacketFrame {
+        protocol: Protocol::Edonkey,
+        opcode: PeerOpcode::HelloAnswer.into(),
+        payload: encode_peer_hello_payload(identity, false)?,
+    })
+}
+
+/// Parse a peer hello or hello answer frame.
+pub fn parse_peer_hello(frame: &PacketFrame) -> Result<ParsedPeerHello, PeerHandshakeError> {
+    if frame.protocol != Protocol::Edonkey {
+        return Err(PeerHandshakeError::UnexpectedProtocol(frame.protocol));
+    }
+    let has_hash_size = match PeerOpcode::from_byte(frame.opcode) {
+        Some(PeerOpcode::Hello) => true,
+        Some(PeerOpcode::HelloAnswer) => false,
+        _ => return Err(PeerHandshakeError::UnexpectedOpcode(frame.opcode)),
+    };
+    decode_peer_hello_payload(&frame.payload, has_hash_size)
+}
+
+/// Build a retained eMule info or info answer frame.
+pub fn build_emule_info(udp_port: u16, answer: bool) -> Result<PacketFrame, PeerHandshakeError> {
+    let caps = PeerCapabilities::local();
+    let tags = vec![
+        Tag::new(
+            TagName::Id(ET_COMPRESSION),
+            TagValue::UInt32(u32::from(caps.data_compression_version)),
+        ),
+        Tag::new(
+            TagName::Id(ET_UDPPORT),
+            TagValue::UInt32(u32::from(udp_port)),
+        ),
+        Tag::new(
+            TagName::Id(ET_UDPVER),
+            TagValue::UInt32(u32::from(caps.udp_version)),
+        ),
+        Tag::new(
+            TagName::Id(ET_SOURCEEXCHANGE),
+            TagValue::UInt32(u32::from(caps.source_exchange1_version)),
+        ),
+        Tag::new(
+            TagName::Id(ET_EXTENDEDREQUEST),
+            TagValue::UInt32(u32::from(caps.extended_requests_version)),
+        ),
+        Tag::new(
+            TagName::Id(ET_FEATURES),
+            TagValue::UInt32(u32::from(caps.secure_ident_version)),
+        ),
+        Tag::new(
+            TagName::Id(ET_COMPATIBLECLIENT),
+            TagValue::UInt32(u32::from(COMPATIBLE_CLIENT_RARIA)),
+        ),
+    ];
+    let mut payload = Vec::new();
+    payload.push(EDONKEY_CLIENT_VERSION as u8);
+    payload.push(EMULE_PROTOCOL_VERSION);
+    write_tags(&mut payload, &tags)?;
+    Ok(PacketFrame {
+        protocol: Protocol::Emule,
+        opcode: if answer {
+            EmuleOpcode::InfoAnswer.into()
+        } else {
+            EmuleOpcode::Info.into()
+        },
+        payload,
+    })
+}
+
+/// Parse a retained eMule info or info answer frame.
+pub fn parse_emule_info(frame: &PacketFrame) -> Result<ParsedEmuleInfo, PeerHandshakeError> {
+    if frame.protocol != Protocol::Emule {
+        return Err(PeerHandshakeError::UnexpectedProtocol(frame.protocol));
+    }
+    if frame.opcode != u8::from(EmuleOpcode::Info)
+        && frame.opcode != u8::from(EmuleOpcode::InfoAnswer)
+    {
+        return Err(PeerHandshakeError::UnexpectedOpcode(frame.opcode));
+    }
+    let mut cursor = Cursor::new(&frame.payload);
+    let version = cursor.read_u8().ok_or(PeerHandshakeError::Truncated)?;
+    let protocol_version = cursor.read_u8().ok_or(PeerHandshakeError::Truncated)?;
+    let tags = read_tags(&mut cursor)?;
+    if !cursor.is_done() {
+        return Err(PeerHandshakeError::Truncated);
+    }
+    let mut caps = PeerCapabilities::default();
+    let mut udp_port = 0;
+    for tag in tags {
+        let TagName::Id(id) = tag.name else {
+            continue;
+        };
+        let Some(value) = tag_u32(&tag.value) else {
+            continue;
+        };
+        match id {
+            ET_COMPRESSION => caps.data_compression_version = clamp_nibble(value),
+            ET_UDPPORT => udp_port = value as u16,
+            ET_UDPVER => caps.udp_version = clamp_nibble(value),
+            ET_SOURCEEXCHANGE => caps.source_exchange1_version = clamp_nibble(value),
+            ET_EXTENDEDREQUEST => caps.extended_requests_version = clamp_nibble(value),
+            ET_FEATURES => {
+                caps.secure_ident_version = (value & 0x03) as u8;
+                caps.supports_preview = value & 0x80 != 0;
+            }
+            _ => {}
+        }
+    }
+    Ok(ParsedEmuleInfo {
+        version,
+        protocol_version,
+        udp_port,
+        capabilities: caps,
+    })
+}
+
+fn encode_peer_hello_payload(
+    identity: &PeerIdentity,
+    include_hash_size: bool,
+) -> Result<Vec<u8>, PeerHandshakeError> {
+    let caps = PeerCapabilities::local();
+    let udp_ports = (u32::from(identity.kad_udp_port) << 16) | u32::from(identity.udp_port);
+    let tags = vec![
+        Tag::new(
+            TagName::Id(CT_NAME),
+            TagValue::String(identity.name.clone()),
+        ),
+        Tag::new(
+            TagName::Id(CT_VERSION),
+            TagValue::UInt32(EDONKEY_CLIENT_VERSION),
+        ),
+        Tag::new(TagName::Id(CT_EMULE_UDPPORTS), TagValue::UInt32(udp_ports)),
+        Tag::new(
+            TagName::Id(CT_EMULE_VERSION),
+            TagValue::UInt32((u32::from(COMPATIBLE_CLIENT_RARIA) << 24) | RARIA_EMULE_VERSION),
+        ),
+        Tag::new(
+            TagName::Id(CT_EMULE_MISCOPTIONS1),
+            TagValue::UInt32(encode_misc_options1(caps)),
+        ),
+        Tag::new(
+            TagName::Id(CT_EMULE_MISCOPTIONS2),
+            TagValue::UInt32(encode_misc_options2(caps)),
+        ),
+        Tag::new(TagName::Id(CT_EMULECOMPAT_OPTIONS), TagValue::UInt32(0)),
+    ];
+    let mut payload = Vec::new();
+    if include_hash_size {
+        payload.push(HASH_SIZE);
+    }
+    payload.extend_from_slice(&identity.user_hash);
+    payload.extend_from_slice(&identity.client_id.to_le_bytes());
+    payload.extend_from_slice(&identity.tcp_port.to_le_bytes());
+    write_tags(&mut payload, &tags)?;
+    let server = identity.server.unwrap_or(PeerEndpoint { ip: 0, port: 0 });
+    payload.extend_from_slice(&server.ip.to_le_bytes());
+    payload.extend_from_slice(&server.port.to_le_bytes());
+    Ok(payload)
+}
+
+fn decode_peer_hello_payload(
+    payload: &[u8],
+    has_hash_size: bool,
+) -> Result<ParsedPeerHello, PeerHandshakeError> {
+    let mut cursor = Cursor::new(payload);
+    if has_hash_size {
+        let hash_size = cursor.read_u8().ok_or(PeerHandshakeError::Truncated)?;
+        if hash_size != HASH_SIZE {
+            return Err(PeerHandshakeError::InvalidHashSize(hash_size));
+        }
+    }
+    let user_hash = cursor.read_hash16().ok_or(PeerHandshakeError::Truncated)?;
+    let client_id = cursor.read_u32().ok_or(PeerHandshakeError::Truncated)?;
+    let tcp_port = cursor.read_u16().ok_or(PeerHandshakeError::Truncated)?;
+    let tags = read_tags(&mut cursor)?;
+    let server_ip = cursor.read_u32().ok_or(PeerHandshakeError::Truncated)?;
+    let server_port = cursor.read_u16().ok_or(PeerHandshakeError::Truncated)?;
+    if !cursor.is_done() {
+        return Err(PeerHandshakeError::Truncated);
+    }
+    let mut identity = PeerIdentity {
+        user_hash,
+        client_id,
+        tcp_port,
+        udp_port: 0,
+        kad_udp_port: 0,
+        server: (server_ip != 0 && server_port != 0).then_some(PeerEndpoint {
+            ip: server_ip,
+            port: server_port,
+        }),
+        name: String::new(),
+    };
+    let mut caps = PeerCapabilities::default();
+    for tag in tags {
+        let TagName::Id(id) = tag.name else {
+            continue;
+        };
+        match id {
+            CT_NAME => {
+                if let TagValue::String(value) = tag.value {
+                    identity.name = value;
+                }
+            }
+            CT_EMULE_UDPPORTS => {
+                if let Some(value) = tag_u32(&tag.value) {
+                    identity.udp_port = value as u16;
+                    identity.kad_udp_port = (value >> 16) as u16;
+                }
+            }
+            CT_EMULE_MISCOPTIONS1 => {
+                if let Some(value) = tag_u32(&tag.value) {
+                    caps = parse_misc_options1(caps, value);
+                }
+            }
+            CT_EMULE_MISCOPTIONS2 => {
+                if let Some(value) = tag_u32(&tag.value) {
+                    caps = parse_misc_options2(caps, value);
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(ParsedPeerHello {
+        identity,
+        capabilities: caps,
+    })
+}
+
+fn write_tags(out: &mut Vec<u8>, tags: &[Tag]) -> Result<(), PeerHandshakeError> {
+    out.extend_from_slice(
+        &u32::try_from(tags.len())
+            .map_err(|_| PeerHandshakeError::ValueTooLarge)?
+            .to_le_bytes(),
+    );
+    for tag in tags {
+        out.extend_from_slice(&encode_tag(tag)?);
+    }
+    Ok(())
+}
+
+fn read_tags(cursor: &mut Cursor<'_>) -> Result<Vec<Tag>, PeerHandshakeError> {
+    let count = cursor.read_u32().ok_or(PeerHandshakeError::Truncated)?;
+    let count = usize::try_from(count).map_err(|_| PeerHandshakeError::ValueTooLarge)?;
+    let mut tags = Vec::with_capacity(count.min(64));
+    for _ in 0..count {
+        let (tag, consumed) = decode_tag_prefix(cursor.remaining_bytes())?;
+        tags.push(tag);
+        cursor
+            .read_exact(consumed)
+            .ok_or(PeerHandshakeError::Truncated)?;
+    }
+    Ok(tags)
+}
+
+fn tag_u32(value: &TagValue) -> Option<u32> {
+    match value {
+        TagValue::UInt8(value) => Some(u32::from(*value)),
+        TagValue::UInt16(value) => Some(u32::from(*value)),
+        TagValue::UInt32(value) => Some(*value),
+        TagValue::UInt64(value) => u32::try_from(*value).ok(),
+        _ => None,
+    }
+}
+
+fn encode_misc_options1(caps: PeerCapabilities) -> u32 {
+    ((u32::from(caps.aich_version) & 0x07) << 29)
+        | (u32::from(caps.unicode) << 28)
+        | ((u32::from(caps.udp_version) & 0x0f) << 24)
+        | ((u32::from(caps.data_compression_version) & 0x0f) << 20)
+        | ((u32::from(caps.secure_ident_version) & 0x0f) << 16)
+        | ((u32::from(caps.source_exchange1_version) & 0x0f) << 12)
+        | ((u32::from(caps.extended_requests_version) & 0x0f) << 8)
+        | (u32::from(caps.accepts_comments) << 4)
+        | (u32::from(caps.supports_multipacket) << 1)
+        | u32::from(caps.supports_preview)
+}
+
+fn parse_misc_options1(mut caps: PeerCapabilities, value: u32) -> PeerCapabilities {
+    caps.aich_version = ((value >> 29) & 0x07) as u8;
+    caps.unicode = value & (1 << 28) != 0;
+    caps.udp_version = ((value >> 24) & 0x0f) as u8;
+    caps.data_compression_version = ((value >> 20) & 0x0f) as u8;
+    caps.secure_ident_version = ((value >> 16) & 0x0f) as u8;
+    caps.source_exchange1_version = ((value >> 12) & 0x0f) as u8;
+    caps.extended_requests_version = ((value >> 8) & 0x0f) as u8;
+    caps.accepts_comments = ((value >> 4) & 0x0f) != 0;
+    caps.supports_multipacket = value & (1 << 1) != 0;
+    caps.supports_preview = value & 1 != 0;
+    caps
+}
+
+fn encode_misc_options2(caps: PeerCapabilities) -> u32 {
+    (u32::from(caps.supports_direct_udp_callback) << 12)
+        | (u32::from(caps.supports_captcha) << 11)
+        | (u32::from(caps.supports_source_exchange2) << 10)
+        | (u32::from(caps.requires_crypt_layer) << 9)
+        | (u32::from(caps.requests_crypt_layer) << 8)
+        | (u32::from(caps.supports_crypt_layer) << 7)
+        | (u32::from(caps.supports_extended_multipacket) << 5)
+        | (u32::from(caps.supports_large_files) << 4)
+        | (u32::from(caps.kad_version) & 0x0f)
+}
+
+fn parse_misc_options2(mut caps: PeerCapabilities, value: u32) -> PeerCapabilities {
+    caps.supports_direct_udp_callback = value & (1 << 12) != 0;
+    caps.supports_captcha = value & (1 << 11) != 0;
+    caps.supports_source_exchange2 = value & (1 << 10) != 0;
+    caps.requires_crypt_layer = value & (1 << 9) != 0;
+    caps.requests_crypt_layer = value & (1 << 8) != 0;
+    caps.supports_crypt_layer = value & (1 << 7) != 0;
+    caps.supports_extended_multipacket = value & (1 << 5) != 0;
+    caps.supports_large_files = value & (1 << 4) != 0;
+    caps.kad_version = (value & 0x0f) as u8;
+    caps.requests_crypt_layer &= caps.supports_crypt_layer;
+    caps.requires_crypt_layer &= caps.requests_crypt_layer;
+    caps
+}
+
+fn clamp_nibble(value: u32) -> u8 {
+    (value & 0x0f) as u8
+}
 
 /// Endpoint accepted through a server-mediated LowID callback.
 #[derive(Debug, Clone, PartialEq, Eq)]
