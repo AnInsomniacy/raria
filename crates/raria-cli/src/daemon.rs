@@ -12,7 +12,7 @@ use raria_core::engine::{
 };
 use raria_core::input_file::InputFileEntry;
 use raria_core::job::Gid;
-use raria_core::native::TaskId;
+use raria_core::native::{NativeEvent, NativeEventData, NativeEventType, TaskId};
 use raria_core::persist::Store;
 use raria_core::segment::SegmentStatus;
 use raria_range::backend::{ByteSourceBackend, Credentials, ProbeContext};
@@ -280,10 +280,12 @@ pub(crate) async fn run_daemon_with_config(
                     });
                 }
                 raria_core::job::JobKind::Ed2k => {
-                    token.cancel();
-                    let message = "native ED2K runtime is not implemented yet";
-                    warn!(%task_id, message, "ED2K task cannot be activated");
-                    let _ = engine_ref.fail_native_task(&task_id, message);
+                    tokio::spawn(async move {
+                        if let Err(e) = run_ed2k_download(engine_ref, task_id.clone(), token).await
+                        {
+                            error!(%task_id, error = %e, "ED2K runtime task failed");
+                        }
+                    });
                 }
             }
         }
@@ -1088,6 +1090,55 @@ async fn run_job_download(
     Ok(())
 }
 
+async fn run_ed2k_download(
+    engine: Arc<Engine>,
+    task_id: TaskId,
+    cancel: CancellationToken,
+) -> Result<()> {
+    publish_ed2k_status(
+        &engine,
+        &task_id,
+        NativeEventType::TaskEd2kSourceUpdated,
+        "source",
+        "waiting",
+        Some("ED2K source discovery is waiting for runtime network integration"),
+        [("knownSources".to_string(), 0)],
+    );
+    publish_ed2k_status(
+        &engine,
+        &task_id,
+        NativeEventType::TaskEd2kQueueUpdated,
+        "queue",
+        "ready",
+        None,
+        [("waitingUploadPeers".to_string(), 0)],
+    );
+    cancel.cancelled().await;
+    Ok(())
+}
+
+fn publish_ed2k_status<const N: usize>(
+    engine: &Engine,
+    task_id: &TaskId,
+    event_type: NativeEventType,
+    category: &str,
+    state: &str,
+    message: Option<&str>,
+    metrics: [(String, u64); N],
+) {
+    engine.native_event_bus.publish(NativeEvent::new(
+        0,
+        event_type,
+        Some(task_id.clone()),
+        NativeEventData::Ed2kStatus {
+            category: category.to_string(),
+            state: state.to_string(),
+            message: message.map(str::to_string),
+            metrics: metrics.into_iter().collect(),
+        },
+    ));
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1460,6 +1511,54 @@ mod tests {
             std::fs::read(dir.path().join("adaptive.bin")).expect("downloaded output"),
             b"done"
         );
+    }
+
+    #[tokio::test]
+    async fn ed2k_runtime_waits_for_cancellation_without_failing_task() {
+        let dir = tempdir().expect("tempdir");
+        let engine = Arc::new(Engine::new(GlobalConfig::default()));
+        let handle = engine
+            .add_uri(&AddUriSpec {
+                uris: vec![
+                    "ed2k://|file|sample.iso|1234|0123456789abcdef0123456789abcdef|/".into(),
+                ],
+                dir: dir.path().to_path_buf(),
+                filename: Some("sample.iso".into()),
+                connections: 1,
+                headers: Vec::new(),
+                http_user: None,
+                http_password: None,
+                checksum: None,
+            })
+            .expect("add ED2K task");
+        let task_id = engine.task_id_for_gid(handle.gid).expect("task id");
+        let mut events = engine.native_event_bus.subscribe();
+        let token = engine
+            .activate_native_task(&task_id)
+            .expect("activate")
+            .cancel;
+
+        let runtime = tokio::spawn(run_ed2k_download(
+            Arc::clone(&engine),
+            task_id.clone(),
+            token.clone(),
+        ));
+        let started = events.recv().await.expect("started event");
+        assert_eq!(
+            started.event_type,
+            raria_core::native::NativeEventType::TaskStarted
+        );
+        let source_event = events.recv().await.expect("ED2K source event");
+        assert_eq!(
+            source_event.event_type,
+            raria_core::native::NativeEventType::TaskEd2kSourceUpdated
+        );
+
+        token.cancel();
+        runtime.await.expect("join").expect("runtime shutdown");
+        let job = engine.registry.get(handle.gid).expect("job");
+        assert_eq!(job.status, Status::Active);
+        assert!(job.error_msg.is_none());
     }
 
     #[test]

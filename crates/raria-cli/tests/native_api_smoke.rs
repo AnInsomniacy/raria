@@ -2,6 +2,7 @@ use std::io::Read;
 use std::net::TcpListener;
 use std::process::{Child, Command, Stdio};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use base64::Engine;
@@ -16,6 +17,8 @@ fn cargo_bin(name: &str) -> String {
     std::env::var(format!("CARGO_BIN_EXE_{name}")).expect("cargo should provide binary path")
 }
 
+static NEXT_SMOKE_PORT: AtomicUsize = AtomicUsize::new(41_000);
+
 struct ChildGuard {
     child: Child,
 }
@@ -28,10 +31,16 @@ impl Drop for ChildGuard {
 }
 
 fn allocate_port() -> u16 {
-    let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
-    let port = listener.local_addr().expect("local addr").port();
-    drop(listener);
-    port
+    for _ in 0..20_000 {
+        let raw = NEXT_SMOKE_PORT.fetch_add(1, Ordering::SeqCst);
+        let port = 41_000 + ((raw - 41_000) % 20_000);
+        if TcpListener::bind(("127.0.0.1", port as u16)).is_ok() {
+            return port as u16;
+        }
+    }
+
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind fallback ephemeral port");
+    listener.local_addr().expect("local addr").port()
 }
 
 async fn wait_for_native_api_ready(port: u16, child: &mut ChildGuard) -> Result<(), String> {

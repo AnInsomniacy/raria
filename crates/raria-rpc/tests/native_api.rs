@@ -625,6 +625,11 @@ mod tests {
         let gid = engine.gid_for_task_id(&task_id).expect("runtime gid");
         let job = engine.registry.get(gid).expect("job");
         assert_eq!(job.kind, raria_core::job::JobKind::Ed2k);
+        assert_eq!(created["ed2k"]["runtimeState"], "queued");
+        assert_eq!(created["ed2k"]["knownSources"], 0);
+        assert_eq!(created["ed2k"]["connectedPeers"], 0);
+        assert_eq!(created["ed2k"]["sharingEnabled"], false);
+        assert!(created["ed2k"].get("gid").is_none());
 
         cancel.cancel();
     }
@@ -1889,6 +1894,73 @@ mod tests {
         assert_eq!(json["data"]["uri"], "https://mirror.example/file.iso");
         assert_eq!(json["data"]["code"], "source_failed");
         assert_eq!(json["data"]["message"], "transient error: timeout");
+        assert!(json.get("method").is_none());
+        assert!(json.get("gid").is_none());
+
+        cancel.cancel();
+    }
+
+    #[tokio::test]
+    async fn native_events_websocket_streams_ed2k_status_events() {
+        use raria_core::native::{NativeEvent, NativeEventData, NativeEventType};
+        use std::collections::BTreeMap;
+
+        let engine = Arc::new(Engine::new(GlobalConfig::default()));
+        let summary = engine
+            .add_native_task(&AddUriSpec {
+                uris: vec![
+                    "ed2k://|file|sample.iso|1234|0123456789abcdef0123456789abcdef|/".into(),
+                ],
+                dir: PathBuf::from("/tmp"),
+                filename: Some("sample.iso".into()),
+                connections: 1,
+                headers: Vec::new(),
+                http_user: None,
+                http_password: None,
+                checksum: None,
+            })
+            .expect("add native ED2K task");
+        let cancel = CancellationToken::new();
+        let addrs = start_native_api_server(
+            Arc::clone(&engine),
+            &NativeApiConfig {
+                listen_addr: SocketAddr::from(([127, 0, 0, 1], 0)),
+                ..NativeApiConfig::default()
+            },
+            cancel.clone(),
+        )
+        .await
+        .expect("start native api");
+
+        let ws_url = format!("ws://{}/api/v1/events", addrs.http);
+        let (mut ws, _) = tokio_tungstenite::connect_async(ws_url)
+            .await
+            .expect("connect native events");
+
+        engine.native_event_bus.publish(NativeEvent::new(
+            7,
+            NativeEventType::TaskEd2kPeerUpdated,
+            Some(summary.task_id.clone()),
+            NativeEventData::Ed2kStatus {
+                category: "peer".to_string(),
+                state: "connected".to_string(),
+                message: Some("peer session updated".to_string()),
+                metrics: BTreeMap::from([
+                    ("knownSources".to_string(), 3),
+                    ("connectedPeers".to_string(), 1),
+                ]),
+            },
+        ));
+
+        let json = next_native_event(&mut ws).await;
+        assert_eq!(json["type"], "task.ed2k.peer.updated");
+        assert_eq!(json["taskId"], summary.task_id.as_str());
+        assert_eq!(json["data"]["kind"], "ed2kStatus");
+        assert_eq!(json["data"]["category"], "peer");
+        assert_eq!(json["data"]["state"], "connected");
+        assert_eq!(json["data"]["message"], "peer session updated");
+        assert_eq!(json["data"]["metrics"]["knownSources"], 3);
+        assert_eq!(json["data"]["metrics"]["connectedPeers"], 1);
         assert!(json.get("method").is_none());
         assert!(json.get("gid").is_none());
 

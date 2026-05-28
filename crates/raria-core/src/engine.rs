@@ -3400,6 +3400,51 @@ mod tests {
     }
 
     #[test]
+    fn engine_restore_preserves_ed2k_task_kind() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("ed2k-native-restore.redb");
+        let store = Arc::new(Store::open(&db_path).unwrap());
+        let engine1 = Engine::with_store(default_config(), Arc::clone(&store));
+        let handle = engine1
+            .add_uri(&AddUriSpec {
+                uris: vec![
+                    "ed2k://|file|sample.iso|1234|0123456789abcdef0123456789abcdef|/".into(),
+                ],
+                dir: PathBuf::from("/tmp"),
+                filename: Some("sample.iso".into()),
+                connections: 1,
+                headers: Vec::new(),
+                http_user: None,
+                http_password: None,
+                checksum: None,
+            })
+            .unwrap();
+        let task_id = engine1.task_id_for_gid(handle.gid).expect("task id");
+        engine1.save_session().unwrap();
+        drop(engine1);
+
+        let engine2 = Engine::with_store(default_config(), Arc::clone(&store));
+        assert_eq!(engine2.restore().unwrap(), 1);
+
+        let gid = engine2.gid_for_task_id(&task_id).expect("runtime gid");
+        let restored = engine2.registry.get(gid).expect("restored job");
+        assert_eq!(restored.kind, JobKind::Ed2k);
+        assert_eq!(
+            restored.uris[0],
+            "ed2k://|file|sample.iso|1234|0123456789abcdef0123456789abcdef|/"
+        );
+        assert_eq!(
+            engine2
+                .native_task_summary(&task_id)
+                .unwrap()
+                .ed2k
+                .unwrap()
+                .runtime_state,
+            "queued"
+        );
+    }
+
+    #[test]
     fn engine_restore_with_empty_native_schema_loads_no_tasks() {
         let dir = tempfile::tempdir().unwrap();
         let db_path = dir.path().join("native-only-restore.redb");

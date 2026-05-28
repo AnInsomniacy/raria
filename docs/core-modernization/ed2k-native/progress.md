@@ -487,3 +487,28 @@ and raria-ed2k clippy with `-D warnings`, and `cargo check --workspace
 Remaining: Start ED2K-024 native API, events, CLI, and daemon integration.
 
 Blocked: none.
+
+## 2026-05-28 ED2K-024 verified
+
+Changed: Wired ED2K into the raria-native integration surface. `/api/v1/tasks`
+now creates native ED2K jobs from ED2K links and task summaries expose compact
+ED2K runtime status fields. `/api/v1/events` streams stable `task.ed2k.*`
+events with `ed2kStatus` payloads for source, peer, queue, Kad, transfer,
+sharing, upload, and search updates. The daemon no longer fails ED2K tasks at
+activation; it publishes native ED2K status and waits for cancellation until the
+protocol runtime is attached. `raria download` accepts ED2K links as native URL
+inputs. Native task persistence now stores and restores the backend kind so ED2K
+session rows do not come back as range downloads.
+
+Verified: The RED check failed before implementation because native task rows
+did not preserve ED2K backend kind. After implementation, focused ED2K checks,
+`cargo test -p raria-core --locked`, `cargo test -p raria-rpc --test
+native_api --locked`, `cargo test -p raria-cli ed2k --locked`, `cargo test
+--workspace --locked`, `cargo fmt --all --check`, `cargo check --workspace
+--locked`, and focused clippy for touched crates with `-D warnings` passed. A
+pre-existing native API smoke port race was fixed after the first workspace run
+reported a local address-in-use failure.
+
+Remaining: Start ED2K-025 search API, status docs, and stale-surface scans.
+
+Blocked: none.

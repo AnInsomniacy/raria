@@ -261,6 +261,22 @@ mod native_persist_tests {
     }
 
     #[test]
+    fn task_row_restores_ed2k_backend_kind() {
+        let job = crate::job::Job::new_ed2k(
+            vec!["ed2k://|file|sample.iso|1234|0123456789abcdef0123456789abcdef|/".into()],
+            std::path::PathBuf::from("/tmp/sample.iso"),
+        );
+        let row = NativeTaskRow::from_runtime_job(&job);
+
+        let restored = row.to_runtime_job().expect("restored ED2K job");
+
+        assert_eq!(row.job_kind, crate::job::JobKind::Ed2k);
+        assert_eq!(restored.kind, crate::job::JobKind::Ed2k);
+        assert_eq!(restored.uris, job.uris);
+        assert_eq!(restored.out_path, job.out_path);
+    }
+
+    #[test]
     fn task_row_restores_opaque_task_id_using_runtime_bridge() {
         let mut job = crate::job::Job::new_range(
             vec!["https://example.com/file.iso".into()],
@@ -508,6 +524,63 @@ mod native_projection_tests {
         assert_eq!(
             NativeEventType::TaskBtTrackerUpdated.as_str(),
             "task.bt.tracker.updated"
+        );
+    }
+
+    #[test]
+    fn ed2k_native_events_use_stable_type_strings_and_payloads() {
+        let task_id = TaskId::new();
+        let event = NativeEvent::new(
+            1,
+            NativeEventType::TaskEd2kPeerUpdated,
+            Some(task_id.clone()),
+            NativeEventData::Ed2kStatus {
+                category: "peer".to_string(),
+                state: "connected".to_string(),
+                message: Some("peer session updated".to_string()),
+                metrics: std::collections::BTreeMap::from([
+                    ("knownSources".to_string(), 3),
+                    ("connectedPeers".to_string(), 1),
+                ]),
+            },
+        );
+
+        let json = serde_json::to_value(event).expect("event json");
+
+        assert_eq!(json["type"], "task.ed2k.peer.updated");
+        assert_eq!(json["taskId"], task_id.as_str());
+        assert_eq!(json["data"]["kind"], "ed2kStatus");
+        assert_eq!(json["data"]["category"], "peer");
+        assert_eq!(json["data"]["state"], "connected");
+        assert_eq!(json["data"]["metrics"]["knownSources"], 3);
+
+        assert_eq!(
+            NativeEventType::TaskEd2kSourceUpdated.as_str(),
+            "task.ed2k.source.updated"
+        );
+        assert_eq!(
+            NativeEventType::TaskEd2kQueueUpdated.as_str(),
+            "task.ed2k.queue.updated"
+        );
+        assert_eq!(
+            NativeEventType::TaskEd2kKadUpdated.as_str(),
+            "task.ed2k.kad.updated"
+        );
+        assert_eq!(
+            NativeEventType::TaskEd2kTransferUpdated.as_str(),
+            "task.ed2k.transfer.updated"
+        );
+        assert_eq!(
+            NativeEventType::TaskEd2kSharingUpdated.as_str(),
+            "task.ed2k.sharing.updated"
+        );
+        assert_eq!(
+            NativeEventType::TaskEd2kUploadUpdated.as_str(),
+            "task.ed2k.upload.updated"
+        );
+        assert_eq!(
+            NativeEventType::TaskEd2kSearchUpdated.as_str(),
+            "task.ed2k.search.updated"
         );
     }
 }

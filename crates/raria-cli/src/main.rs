@@ -110,6 +110,18 @@ mod tests {
     }
 
     #[test]
+    fn download_accepts_ed2k_links_as_native_urls() {
+        let link = "ed2k://|file|sample.iso|1234|0123456789abcdef0123456789abcdef|/";
+        let cli = Cli::try_parse_from(["raria", "download", link, "--filename", "sample.iso"])
+            .expect("parse ED2K download URL");
+        let Commands::Download { url, out, .. } = cli.command else {
+            panic!("expected download command");
+        };
+        assert_eq!(url, link);
+        assert_eq!(out.as_deref(), Some("sample.iso"));
+    }
+
+    #[test]
     fn help_exposes_native_cli_names_only() {
         let mut command = Cli::command();
         let mut help = command.render_long_help().to_string();

@@ -326,6 +326,22 @@ pub enum NativeEventType {
     TaskBtPeerUpdated,
     /// BitTorrent tracker snapshot changed.
     TaskBtTrackerUpdated,
+    /// ED2K source state changed.
+    TaskEd2kSourceUpdated,
+    /// ED2K peer state changed.
+    TaskEd2kPeerUpdated,
+    /// ED2K queue state changed.
+    TaskEd2kQueueUpdated,
+    /// ED2K Kad state changed.
+    TaskEd2kKadUpdated,
+    /// ED2K transfer state changed.
+    TaskEd2kTransferUpdated,
+    /// ED2K sharing state changed.
+    TaskEd2kSharingUpdated,
+    /// ED2K upload state changed.
+    TaskEd2kUploadUpdated,
+    /// ED2K search state changed.
+    TaskEd2kSearchUpdated,
 }
 
 impl Serialize for NativeEventType {
@@ -354,6 +370,14 @@ impl NativeEventType {
             Self::TaskBtSeedingStarted => "task.bt.seeding.started",
             Self::TaskBtPeerUpdated => "task.bt.peer.updated",
             Self::TaskBtTrackerUpdated => "task.bt.tracker.updated",
+            Self::TaskEd2kSourceUpdated => "task.ed2k.source.updated",
+            Self::TaskEd2kPeerUpdated => "task.ed2k.peer.updated",
+            Self::TaskEd2kQueueUpdated => "task.ed2k.queue.updated",
+            Self::TaskEd2kKadUpdated => "task.ed2k.kad.updated",
+            Self::TaskEd2kTransferUpdated => "task.ed2k.transfer.updated",
+            Self::TaskEd2kSharingUpdated => "task.ed2k.sharing.updated",
+            Self::TaskEd2kUploadUpdated => "task.ed2k.upload.updated",
+            Self::TaskEd2kSearchUpdated => "task.ed2k.search.updated",
         }
     }
 }
@@ -424,6 +448,17 @@ pub enum NativeEventData {
     BtTracker {
         /// Tracker snapshot.
         tracker: NativeTrackerSnapshot,
+    },
+    /// ED2K status payload.
+    Ed2kStatus {
+        /// ED2K subsystem category.
+        category: String,
+        /// Stable compact state.
+        state: String,
+        /// Optional human-readable detail.
+        message: Option<String>,
+        /// Numeric counters associated with the update.
+        metrics: std::collections::BTreeMap<String, u64>,
     },
 }
 
@@ -504,6 +539,8 @@ pub struct NativeTaskRow {
     pub runtime_bridge_id: Option<u64>,
     /// Persisted lifecycle state.
     pub lifecycle: TaskLifecycle,
+    /// Native backend kind required to restore the correct runtime executor.
+    pub job_kind: crate::job::JobKind,
     /// Source URIs assigned to the task.
     pub sources: Vec<String>,
     /// Runtime health recorded for each source URI.
@@ -896,7 +933,7 @@ impl NativeEd2kCreditRow {
 
 impl NativeTaskRow {
     /// Current native task row schema version.
-    pub const CURRENT_ROW_VERSION: u32 = 1;
+    pub const CURRENT_ROW_VERSION: u32 = 2;
 
     /// Create a native task row.
     pub fn new(task_id: TaskId, lifecycle: TaskLifecycle) -> Self {
@@ -906,6 +943,7 @@ impl NativeTaskRow {
             task_id,
             runtime_bridge_id: None,
             lifecycle,
+            job_kind: crate::job::JobKind::Range,
             sources: Vec::new(),
             source_health: std::collections::HashMap::new(),
             output_path: PathBuf::new(),
@@ -933,6 +971,7 @@ impl NativeTaskRow {
             task_id: job.task_id.clone(),
             runtime_bridge_id: Some(job.gid.as_raw()),
             lifecycle,
+            job_kind: job.kind,
             sources: job.uris.clone(),
             source_health: job.options.source_health.clone(),
             output_path: job.out_path.clone(),
@@ -968,21 +1007,34 @@ impl NativeTaskRow {
             TaskLifecycle::Failed => crate::job::Status::Error,
             TaskLifecycle::Removed => crate::job::Status::Removed,
         };
-        let mut job = crate::job::Job::new_range_with_options(
-            self.sources.clone(),
-            self.output_path.clone(),
-            crate::config::JobOptions {
-                max_connections: self.segments.max(1),
-                source_health: self.source_health.clone(),
-                dir: self.output_path.parent().map(PathBuf::from),
-                out: self
-                    .output_path
-                    .file_name()
-                    .and_then(|name| name.to_str())
-                    .map(ToOwned::to_owned),
-                ..crate::config::JobOptions::default()
-            },
-        );
+        let options = crate::config::JobOptions {
+            max_connections: self.segments.max(1),
+            source_health: self.source_health.clone(),
+            dir: self.output_path.parent().map(PathBuf::from),
+            out: self
+                .output_path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .map(ToOwned::to_owned),
+            ..crate::config::JobOptions::default()
+        };
+        let mut job = match self.job_kind {
+            crate::job::JobKind::Range => crate::job::Job::new_range_with_options(
+                self.sources.clone(),
+                self.output_path.clone(),
+                options,
+            ),
+            crate::job::JobKind::Bt => crate::job::Job::new_bt_with_options(
+                self.sources.clone(),
+                self.output_path.clone(),
+                options,
+            ),
+            crate::job::JobKind::Ed2k => crate::job::Job::new_ed2k_with_options(
+                self.sources.clone(),
+                self.output_path.clone(),
+                options,
+            ),
+        };
         job.task_id = self.task_id.clone();
         job.gid = gid;
         job.status = status;
@@ -1186,6 +1238,31 @@ pub struct NativeTaskSummary {
     /// Terminal error message when the task failed.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error_message: Option<String>,
+    /// ED2K-specific native status when this is an ED2K task.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ed2k: Option<NativeEd2kTaskStatus>,
+}
+
+/// Native ED2K task status projection.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeEd2kTaskStatus {
+    /// Compact runtime state.
+    pub runtime_state: String,
+    /// Known source count.
+    pub known_sources: u32,
+    /// Connected peer count.
+    pub connected_peers: u32,
+    /// Active upload peer count.
+    pub active_upload_peers: u32,
+    /// Waiting upload peer count.
+    pub waiting_upload_peers: u32,
+    /// Whether sharing is enabled for this task.
+    pub sharing_enabled: bool,
+    /// Whether server discovery is enabled.
+    pub server_enabled: bool,
+    /// Whether Kad discovery is enabled.
+    pub kad_enabled: bool,
 }
 
 impl NativeTaskSummary {
@@ -1264,6 +1341,16 @@ impl NativeTaskSummary {
             created_at: job.created_at,
             updated_at: Utc::now(),
             error_message: job.error_msg.clone(),
+            ed2k: (job.kind == crate::job::JobKind::Ed2k).then(|| NativeEd2kTaskStatus {
+                runtime_state: lifecycle.as_str().to_string(),
+                known_sources: 0,
+                connected_peers: job.connections,
+                active_upload_peers: 0,
+                waiting_upload_peers: 0,
+                sharing_enabled: false,
+                server_enabled: true,
+                kad_enabled: true,
+            }),
         }
     }
 }
