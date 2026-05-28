@@ -5,8 +5,11 @@ Engineering reference map,adapt,not present,documented aria2-next ED2K tracker m
 License isolation,adapt,not present,GPL reference boundary recorded,ED2K-002,verified,"aMule GPL v2 text and raria Apache-2.0 workspace license were checked; ED2K work must be behavior-level research with independent Rust implementation.",No copied source comments tests names or packet handler structure.
 Rust engine availability,adapt,not present,native raria-ed2k ownership,ED2K-002,verified,"crates.io searches and cargo info found no mature Rust ED2K/eMule downloader engine. ed2k is hash-only; generic Kademlia crates are not eMule Kad.",Use mature primitives and local protocol ownership.
 Native public surface,add,not present,"raria.toml, /api/v1, /api/v1/events, native CLI",ED2K-024,pending,pending,No JSON-RPC or aria2-shaped method names.
-ED2K task kind,add,JobKind has Range and Bt,JobKind::Ed2k with native projections,ED2K-003,pending,pending,Keep public IDs opaque TaskId values.
-ED2K source protocol,add,SourceProtocol lacks Ed2k,SourceProtocol::Ed2k,ED2K-003,pending,pending,Detect ed2k:// links without compatibility aliases.
+ED2K crate boundary,add,not present,crates/raria-ed2k,ED2K-003,verified,"cargo check -p raria-ed2k --locked passed with module ownership boundaries and no runtime behavior claims.",Protocol behavior starts in later checkpoints.
+ED2K task kind,add,JobKind has Range and Bt,JobKind::Ed2k with native projections,ED2K-003,verified,"Focused raria-core tests cover Job::new_ed2k, add_uri ED2K classification, and native ED2K kind creation. Daemon activation has an explicit not-implemented guard until runtime ownership exists.",Keep public IDs opaque TaskId values.
+ED2K source protocol,add,SourceProtocol lacks Ed2k,SourceProtocol::Ed2k,ED2K-003,verified,"Focused native model tests cover ed2k:// source detection into TaskSource.",Detect ed2k:// links without compatibility aliases.
+ED2K config skeleton,add,not present,raria.toml [ed2k],ED2K-003,verified,"native_config tests cover strict [ed2k] parsing and rejection of legacy ED2K option names.",Runtime use starts in later checkpoints.
+ED2K persistence row names,add,not present,ed2k_identities redb table and NativeEd2kIdentityRow,ED2K-003,verified,"Focused persistence test covers ED2K identity row roundtrip and row versioning.",Runtime identity generation starts in ED2K-007.
 ED2K links,add,not present,raria-ed2k link parser,ED2K-004,pending,pending,Include safe filenames and link metadata.
 ED2K root hash,add,not present,md4-backed ED2K hash implementation,ED2K-005,pending,pending,Use mature hash primitive with native ED2K rules.
 MD4 hashsets,add,not present,native theoretical part-hash model,ED2K-005,pending,pending,Cover exact part-size boundaries.

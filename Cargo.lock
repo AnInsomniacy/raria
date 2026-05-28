@@ -3142,6 +3142,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "raria-ed2k"
+version = "1.0.0"
+dependencies = [
+ "raria-core",
+ "serde",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "raria-ftp"
 version = "1.0.0"
 dependencies = [

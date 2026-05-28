@@ -1,6 +1,8 @@
 // raria-core: Native persistence layer using redb.
 
-use crate::native::{NativeSegmentRow, NativeStoreMetadata, NativeTaskRow, TaskId};
+use crate::native::{
+    NativeEd2kIdentityRow, NativeSegmentRow, NativeStoreMetadata, NativeTaskRow, TaskId,
+};
 use crate::segment::SegmentState;
 use anyhow::{Context, Result};
 use redb::{Database, ReadableTable, TableDefinition};
@@ -19,6 +21,9 @@ const NATIVE_TASKS_TABLE: TableDefinition<&str, &str> = TableDefinition::new("na
 /// Table: native_segments — stores versioned segment rows keyed by native task id and segment id.
 const NATIVE_SEGMENTS_TABLE: TableDefinition<(&str, u32), &str> =
     TableDefinition::new("native_segments");
+
+/// Table: ed2k_identities — stores versioned native ED2K identity rows.
+const ED2K_IDENTITIES_TABLE: TableDefinition<&str, &str> = TableDefinition::new("ed2k_identities");
 
 /// Persistent storage for raria state.
 #[derive(Clone)]
@@ -43,6 +48,7 @@ impl Store {
             }
             let _ = write_txn.open_table(NATIVE_TASKS_TABLE)?;
             let _ = write_txn.open_table(NATIVE_SEGMENTS_TABLE)?;
+            let _ = write_txn.open_table(ED2K_IDENTITIES_TABLE)?;
         }
         write_txn.commit()?;
 
@@ -213,6 +219,35 @@ impl Store {
         }
         Ok(rows)
     }
+
+    /// Insert or update a native ED2K identity row.
+    pub fn put_ed2k_identity(&self, row: &NativeEd2kIdentityRow) -> Result<()> {
+        row.validate_version()
+            .context("unsupported native ED2K identity row version")?;
+        let json = serde_json::to_string(row)?;
+        let write_txn = self.db.begin_write()?;
+        {
+            let mut table = write_txn.open_table(ED2K_IDENTITIES_TABLE)?;
+            table.insert(row.profile_id.as_str(), json.as_str())?;
+        }
+        write_txn.commit()?;
+        Ok(())
+    }
+
+    /// Retrieve a native ED2K identity row by profile id.
+    pub fn get_ed2k_identity(&self, profile_id: &str) -> Result<Option<NativeEd2kIdentityRow>> {
+        let read_txn = self.db.begin_read()?;
+        let table = read_txn.open_table(ED2K_IDENTITIES_TABLE)?;
+        match table.get(profile_id)? {
+            Some(guard) => {
+                let row: NativeEd2kIdentityRow = serde_json::from_str(guard.value())?;
+                row.validate_version()
+                    .context("unsupported native ED2K identity row version")?;
+                Ok(Some(row))
+            }
+            None => Ok(None),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -333,6 +368,31 @@ mod tests {
         assert_eq!(recovered.task_id, task_id);
         assert_eq!(recovered.lifecycle, TaskLifecycle::Queued);
         assert_eq!(recovered.row_version, NativeTaskRow::CURRENT_ROW_VERSION);
+    }
+
+    #[test]
+    fn ed2k_identity_rows_roundtrip_by_profile() {
+        let (store, _dir) = temp_store();
+        let row = crate::native::NativeEd2kIdentityRow::new(
+            "default",
+            [0x11; crate::native::ED2K_CLIENT_IDENTITY_BYTES],
+        );
+
+        store.put_ed2k_identity(&row).unwrap();
+        let recovered = store
+            .get_ed2k_identity("default")
+            .unwrap()
+            .expect("ED2K identity row");
+
+        assert_eq!(
+            recovered.row_version,
+            crate::native::NativeEd2kIdentityRow::CURRENT_ROW_VERSION
+        );
+        assert_eq!(recovered.profile_id, "default");
+        assert_eq!(
+            recovered.client_hash,
+            [0x11; crate::native::ED2K_CLIENT_IDENTITY_BYTES]
+        );
     }
 
     #[test]

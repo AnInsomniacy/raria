@@ -8,6 +8,7 @@ members = [
     "crates/raria-sftp",
     "crates/raria-metalink",
     "crates/raria-bt",
+    "crates/raria-ed2k",
     "crates/raria-rpc",
     "crates/raria-cli",
 ]
@@ -111,6 +112,7 @@ raria-ftp = { path = "crates/raria-ftp" }
 raria-sftp = { path = "crates/raria-sftp" }
 raria-metalink = { path = "crates/raria-metalink" }
 raria-bt = { path = "crates/raria-bt" }
+raria-ed2k = { path = "crates/raria-ed2k" }
 raria-rpc = { path = "crates/raria-rpc" }
 
 # === Test Dependencies ===

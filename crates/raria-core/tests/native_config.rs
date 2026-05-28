@@ -31,6 +31,16 @@ mod tests {
             seed_ratio = 1.5
             seed_time = 60
 
+            [ed2k]
+            enabled = true
+            enable_servers = true
+            enable_kad = true
+            listen_tcp_port = 4662
+            listen_udp_port = 4672
+            max_sources_per_task = 400
+            max_upload_slots = 3
+            share_completed = false
+
             [metalink]
             preferred_locations = ["jp", "us"]
             preferred_protocol = "https"
@@ -56,6 +66,12 @@ mod tests {
         assert_eq!(config.downloads.default_segments, 6);
         assert_eq!(config.network.no_proxy, vec!["localhost", "127.0.0.1"]);
         assert!(config.bittorrent.enable_dht);
+        assert!(config.ed2k.enabled);
+        assert_eq!(config.ed2k.listen_tcp_port, 4662);
+        assert_eq!(config.ed2k.listen_udp_port, 4672);
+        assert_eq!(config.ed2k.max_sources_per_task, 400);
+        assert_eq!(config.ed2k.max_upload_slots, 3);
+        assert!(!config.ed2k.share_completed);
         assert_eq!(config.metalink.preferred_locations, vec!["jp", "us"]);
         assert_eq!(config.metalink.preferred_protocol.as_deref(), Some("https"));
         assert!(config.metalink.unique_protocols);
@@ -110,6 +126,19 @@ mod tests {
             "#,
         )
         .expect_err("removed hook keys must fail");
+
+        assert!(err.to_string().contains("unknown field"));
+    }
+
+    #[test]
+    fn raria_toml_rejects_legacy_ed2k_option_names() {
+        let err = RariaConfig::from_toml_str(
+            r#"
+            [ed2k]
+            ed2k-server-list = "/tmp/server.met"
+            "#,
+        )
+        .expect_err("legacy option names must fail");
 
         assert!(err.to_string().contains("unknown field"));
     }

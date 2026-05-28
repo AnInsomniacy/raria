@@ -24,6 +24,9 @@ pub struct RariaConfig {
     /// BitTorrent settings.
     #[serde(default)]
     pub bittorrent: BitTorrentConfig,
+    /// ED2K/eMule settings.
+    #[serde(default)]
+    pub ed2k: Ed2kConfig,
     /// Metalink settings.
     #[serde(default)]
     pub metalink: MetalinkConfig,
@@ -202,6 +205,43 @@ impl Default for BitTorrentConfig {
             enable_pex: true,
             seed_ratio: None,
             seed_time: None,
+        }
+    }
+}
+
+/// Native ED2K/eMule settings.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Ed2kConfig {
+    /// Enable the native ED2K backend.
+    pub enabled: bool,
+    /// Enable ED2K server discovery.
+    pub enable_servers: bool,
+    /// Enable eMule Kad discovery.
+    pub enable_kad: bool,
+    /// TCP listen port for ED2K peer sessions.
+    pub listen_tcp_port: u16,
+    /// UDP listen port for ED2K server UDP and Kad traffic.
+    pub listen_udp_port: u16,
+    /// Maximum retained sources per ED2K task.
+    pub max_sources_per_task: u32,
+    /// Maximum local upload slots for shared ED2K files.
+    pub max_upload_slots: u16,
+    /// Share completed ED2K files through native metadata.
+    pub share_completed: bool,
+}
+
+impl Default for Ed2kConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            enable_servers: true,
+            enable_kad: true,
+            listen_tcp_port: 4662,
+            listen_udp_port: 4672,
+            max_sources_per_task: 400,
+            max_upload_slots: 3,
+            share_completed: false,
         }
     }
 }

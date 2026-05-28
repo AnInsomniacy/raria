@@ -39,3 +39,24 @@ ED2K/eMule downloader engine. `cargo info` verified the current scope of
 Remaining: Start ED2K-003 crate boundary and native model.
 
 Blocked: none.
+
+## 2026-05-28 ED2K-003 verified
+
+Changed: Added the native ED2K crate and core model boundary without runtime
+protocol behavior. `crates/raria-ed2k` now exists with ownership modules for
+hash, identity, Kad, link parsing, peer state, persistence, server handling,
+sharing, and transfer planning. `raria-core` now has `JobKind::Ed2k`,
+`SourceProtocol::Ed2k`, a strict `[ed2k]` native config section, the
+`ed2k_identities` redb table, and `NativeEd2kIdentityRow` schema versioning.
+ED2K links are classified as ED2K jobs at the core boundary, and daemon
+activation fails them explicitly until the runtime backend exists.
+
+Verified: The RED checks failed before implementation because `raria-ed2k`,
+`JobKind::Ed2k`, `SourceProtocol::Ed2k`, `[ed2k]`, and ED2K identity
+persistence did not exist. After implementation, `cargo check -p raria-ed2k
+--locked`, focused native model tests, `cargo test -p raria-core --test
+native_config --locked`, and the ED2K identity persistence roundtrip passed.
+
+Remaining: Start ED2K-004 link parser and file identity.
+
+Blocked: none.

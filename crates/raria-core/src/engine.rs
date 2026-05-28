@@ -971,10 +971,11 @@ impl Engine {
             anyhow::bail!("output file already exists: {}", out_path.display());
         }
 
-        // Detect whether this is a BT job or a range-based download.
+        // Detect the native backend family before runtime activation.
         let is_bt = spec.uris.iter().any(|u| {
             u.starts_with("magnet:") || u.starts_with("torrent:") || u.ends_with(".torrent")
         });
+        let is_ed2k = spec.uris.iter().any(|u| u.starts_with("ed2k://"));
         let options = JobOptions {
             out: spec.filename.clone(),
             max_connections: spec.connections.max(1),
@@ -987,6 +988,8 @@ impl Engine {
 
         let mut job = if is_bt {
             Job::new_bt_with_options(spec.uris.clone(), out_path, options)
+        } else if is_ed2k {
+            Job::new_ed2k_with_options(spec.uris.clone(), out_path, options)
         } else {
             Job::new_range_with_options(spec.uris.clone(), out_path, options)
         };
@@ -2193,6 +2196,27 @@ mod tests {
         assert_eq!(engine.scheduler.queue_len(), 1);
         let task_id = engine.task_id_for_gid(handle.gid).expect("task id");
         assert_eq!(engine.gid_for_task_id(&task_id), Some(handle.gid));
+    }
+
+    #[test]
+    fn add_uri_creates_native_ed2k_job_for_ed2k_links() {
+        let engine = Engine::new(default_config());
+        let spec = AddUriSpec {
+            uris: vec!["ed2k://|file|sample.iso|1234|0123456789abcdef0123456789abcdef|/".into()],
+            dir: PathBuf::from("/tmp/downloads"),
+            filename: None,
+            connections: 1,
+            headers: Vec::new(),
+            http_user: None,
+            http_password: None,
+            checksum: None,
+        };
+
+        let handle = engine.add_uri(&spec).unwrap();
+        let job = engine.registry.get(handle.gid).unwrap();
+
+        assert_eq!(job.kind, JobKind::Ed2k);
+        assert_eq!(job.status, Status::Waiting);
     }
 
     #[test]

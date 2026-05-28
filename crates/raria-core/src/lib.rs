@@ -119,6 +119,11 @@ mod native_model_tests {
         let source = TaskSource::new("https://example.com/file.iso").expect("valid source");
         assert_eq!(source.protocol, SourceProtocol::Https);
 
+        let source =
+            TaskSource::new("ed2k://|file|sample.iso|1234|0123456789abcdef0123456789abcdef|/")
+                .expect("valid ED2K source");
+        assert_eq!(source.protocol, SourceProtocol::Ed2k);
+
         let source = TaskSource::new("magnet:?xt=urn:btih:abcdef").expect("valid source");
         assert_eq!(source.protocol, SourceProtocol::Magnet);
 

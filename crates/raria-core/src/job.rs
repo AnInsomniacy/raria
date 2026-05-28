@@ -98,6 +98,8 @@ pub enum JobKind {
     Range,
     /// BitTorrent (managed by librqbit).
     Bt,
+    /// Native ED2K/eMule backend.
+    Ed2k,
 }
 
 /// How a BT job should advance once payload download completes.
@@ -287,6 +289,42 @@ impl Job {
             task_id: TaskId::new(),
             gid: Gid::new(),
             kind: JobKind::Bt,
+            status: Status::Waiting,
+            uris,
+            out_path,
+            total_size: None,
+            downloaded: 0,
+            upload_speed: 0,
+            download_speed: 0,
+            connections: 0,
+            created_at: Utc::now(),
+            error_msg: None,
+            options,
+            bt_files: None,
+            bt_peers: None,
+            bt: None,
+            piece_checksum: None,
+            followed_by: Vec::new(),
+            following: None,
+            belongs_to: None,
+        }
+    }
+
+    /// Create a new native ED2K job with default options.
+    pub fn new_ed2k(uris: Vec<String>, out_path: PathBuf) -> Self {
+        Self::new_ed2k_with_options(uris, out_path, JobOptions::default())
+    }
+
+    /// Create a new native ED2K job with custom options.
+    pub fn new_ed2k_with_options(
+        uris: Vec<String>,
+        out_path: PathBuf,
+        options: JobOptions,
+    ) -> Self {
+        Self {
+            task_id: TaskId::new(),
+            gid: Gid::new(),
+            kind: JobKind::Ed2k,
             status: Status::Waiting,
             uris,
             out_path,
@@ -539,6 +577,17 @@ mod tests {
         );
         assert_eq!(job.status, Status::Waiting);
         assert_eq!(job.kind, JobKind::Bt);
+    }
+
+    #[test]
+    fn new_ed2k_job_starts_waiting_with_native_kind() {
+        let job = Job::new_ed2k(
+            vec!["ed2k://|file|sample.iso|1234|0123456789abcdef0123456789abcdef|/".into()],
+            PathBuf::from("/tmp/downloads/sample.iso"),
+        );
+        assert_eq!(job.status, Status::Waiting);
+        assert_eq!(job.kind, JobKind::Ed2k);
+        assert!(job.bt.is_none());
     }
 
     #[test]

@@ -279,6 +279,12 @@ pub(crate) async fn run_daemon_with_config(
                         }
                     });
                 }
+                raria_core::job::JobKind::Ed2k => {
+                    token.cancel();
+                    let message = "native ED2K runtime is not implemented yet";
+                    warn!(%task_id, message, "ED2K task cannot be activated");
+                    let _ = engine_ref.fail_native_task(&task_id, message);
+                }
             }
         }
 

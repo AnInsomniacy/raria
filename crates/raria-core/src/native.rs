@@ -106,6 +106,8 @@ pub enum SourceProtocol {
     Torrent,
     /// Metalink document source.
     Metalink,
+    /// Native ED2K/eMule link.
+    Ed2k,
 }
 
 impl SourceProtocol {
@@ -122,6 +124,9 @@ impl SourceProtocol {
         }
         if uri.starts_with("metalink:") {
             return Ok(Self::Metalink);
+        }
+        if uri.starts_with("ed2k://") {
+            return Ok(Self::Ed2k);
         }
 
         let parsed = url::Url::parse(uri).map_err(|_| NativeModelError::UnsupportedProtocol)?;
@@ -516,6 +521,53 @@ pub struct NativeTaskRow {
     pub created_at: DateTime<Utc>,
     /// Last update timestamp.
     pub updated_at: DateTime<Utc>,
+}
+
+/// Number of bytes in a native ED2K client identity.
+pub const ED2K_CLIENT_IDENTITY_BYTES: usize = 16;
+
+/// Versioned native ED2K identity persistence row.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeEd2kIdentityRow {
+    /// Row schema version.
+    pub row_version: u32,
+    /// Native ED2K identity profile id.
+    pub profile_id: String,
+    /// Stable ED2K client hash.
+    pub client_hash: [u8; ED2K_CLIENT_IDENTITY_BYTES],
+    /// Creation timestamp.
+    pub created_at: DateTime<Utc>,
+    /// Last update timestamp.
+    pub updated_at: DateTime<Utc>,
+}
+
+impl NativeEd2kIdentityRow {
+    /// Current native ED2K identity row schema version.
+    pub const CURRENT_ROW_VERSION: u32 = 1;
+
+    /// Create a native ED2K identity row.
+    pub fn new(
+        profile_id: impl Into<String>,
+        client_hash: [u8; ED2K_CLIENT_IDENTITY_BYTES],
+    ) -> Self {
+        let now = Utc::now();
+        Self {
+            row_version: Self::CURRENT_ROW_VERSION,
+            profile_id: profile_id.into(),
+            client_hash,
+            created_at: now,
+            updated_at: now,
+        }
+    }
+
+    /// Validate that this row can be read by the current binary.
+    pub fn validate_version(&self) -> Result<(), NativeModelError> {
+        if self.row_version > Self::CURRENT_ROW_VERSION {
+            return Err(NativeModelError::UnsupportedEd2kIdentityRowVersion);
+        }
+        Ok(())
+    }
 }
 
 impl NativeTaskRow {
@@ -983,6 +1035,9 @@ pub enum NativeModelError {
     /// Native task row lacks the temporary private runtime bridge id.
     #[error("missing runtime bridge id")]
     MissingRuntimeBridgeId,
+    /// Native ED2K identity row version is newer than this binary understands.
+    #[error("unsupported native ED2K identity row version")]
+    UnsupportedEd2kIdentityRowVersion,
     /// Native task id is malformed.
     #[error("invalid native task id")]
     InvalidTaskId,
