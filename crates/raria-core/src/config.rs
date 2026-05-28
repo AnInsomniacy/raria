@@ -159,6 +159,16 @@ pub struct GlobalConfig {
     pub ed2k_listen_udp_port: u16,
     /// Treat local ED2K/Kad listen ports as firewalled until runtime evidence proves otherwise.
     pub ed2k_assume_firewalled: bool,
+    /// Seed ED2K server bootstrap from raria's native default server list.
+    pub ed2k_use_default_servers: bool,
+    /// Explicit ED2K server endpoints in `host:port` form.
+    pub ed2k_servers: Vec<String>,
+    /// Paths to server.met files used only as bootstrap input.
+    pub ed2k_server_met_paths: Vec<PathBuf>,
+    /// Paths to nodes.dat files used only as Kad bootstrap input.
+    pub ed2k_nodes_dat_paths: Vec<PathBuf>,
+    /// Load useful local aMule nodes.dat paths when present.
+    pub ed2k_use_local_nodes_dat: bool,
     /// Maximum retained sources per ED2K task.
     pub ed2k_max_sources_per_task: u32,
     /// Maximum local upload slots for shared ED2K files.
@@ -236,6 +246,11 @@ impl Default for GlobalConfig {
             ed2k_listen_tcp_port: 4662,
             ed2k_listen_udp_port: 4672,
             ed2k_assume_firewalled: false,
+            ed2k_use_default_servers: true,
+            ed2k_servers: Vec::new(),
+            ed2k_server_met_paths: Vec::new(),
+            ed2k_nodes_dat_paths: Vec::new(),
+            ed2k_use_local_nodes_dat: true,
             ed2k_max_sources_per_task: 400,
             ed2k_max_upload_slots: 3,
             ed2k_share_completed: false,

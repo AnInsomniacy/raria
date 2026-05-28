@@ -121,6 +121,12 @@ seconds during manual public smoke, and turn useful search or discovery
 results into download-capable native ED2K tasks. ED2K-036 through ED2K-043 own
 that public-readiness closeout.
 
+ED2K bootstrap policy is native configuration, not legacy import. The `[ed2k]`
+section owns `use_default_servers`, `servers`, `server_met_paths`,
+`nodes_dat_paths`, and `use_local_nodes_dat`. These inputs seed runtime
+bootstrap state only; they do not promise aMule database compatibility or
+bundle external `server.met` or `nodes.dat` files.
+
 ## Capability Scope
 
 In scope:

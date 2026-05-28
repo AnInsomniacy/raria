@@ -800,3 +800,19 @@ current policy that public ED2K e2e is manual evidence, not a Rust test.
 Remaining: Start ED2K-037 native bootstrap inputs.
 
 Blocked: none.
+
+## 2026-05-28 ED2K-037 verified
+
+Changed: Added native ED2K bootstrap inputs to `raria.toml`, GlobalConfig, and
+the native `/api/v1/config` projection. The new policy supports raria default
+server bootstrap, explicit server endpoints, bootstrap-only `server.met` paths,
+bootstrap-only `nodes.dat` paths, and useful local aMule `nodes.dat` discovery
+without adding aria2 option names or legacy storage import.
+
+Verified: `cargo fmt --all --check`, `cargo test -p raria-core --test
+native_config --locked`, `cargo test -p raria-rpc --test native_api config
+--locked`, ED2K CSV validation for 46 files, and `git diff --check` passed.
+
+Remaining: Start ED2K-038 bootstrap loading and persistence.
+
+Blocked: none.

@@ -2314,6 +2314,11 @@ mod tests {
             ed2k_listen_tcp_port: 14662,
             ed2k_listen_udp_port: 14672,
             ed2k_assume_firewalled: true,
+            ed2k_use_default_servers: false,
+            ed2k_servers: vec!["127.0.0.1:4661".into()],
+            ed2k_server_met_paths: vec!["/state/server.met".into()],
+            ed2k_nodes_dat_paths: vec!["/state/nodes.dat".into()],
+            ed2k_use_local_nodes_dat: false,
             ed2k_max_sources_per_task: 250,
             ed2k_max_upload_slots: 5,
             ed2k_share_completed: true,
@@ -2351,6 +2356,20 @@ mod tests {
         assert_eq!(body["ed2k"]["listenTcpPort"], 14662);
         assert_eq!(body["ed2k"]["listenUdpPort"], 14672);
         assert_eq!(body["ed2k"]["assumeFirewalled"], true);
+        assert_eq!(body["ed2k"]["useDefaultServers"], false);
+        assert_eq!(
+            body["ed2k"]["servers"],
+            serde_json::json!(["127.0.0.1:4661"])
+        );
+        assert_eq!(
+            body["ed2k"]["serverMetPaths"],
+            serde_json::json!(["/state/server.met"])
+        );
+        assert_eq!(
+            body["ed2k"]["nodesDatPaths"],
+            serde_json::json!(["/state/nodes.dat"])
+        );
+        assert_eq!(body["ed2k"]["useLocalNodesDat"], false);
         assert_eq!(body["ed2k"]["maxSourcesPerTask"], 250);
         assert_eq!(body["ed2k"]["maxUploadSlots"], 5);
         assert_eq!(body["ed2k"]["shareCompleted"], true);

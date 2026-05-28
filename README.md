@@ -30,6 +30,9 @@ Native ED2K/eMule support is implemented through raria-native task creation,
 status projection, events, search resources, protocol runtime, persistence,
 sharing, upload service, and local transfer validation. Public ED2K network
 smoke is kept as manual evidence rather than an automated test gate.
+ED2K bootstrap is configured through the native `[ed2k]` section with
+`use_default_servers`, `servers`, `server_met_paths`, `nodes_dat_paths`, and
+`use_local_nodes_dat`; metadata files are used only as network bootstrap input.
 
 ## Implemented Capabilities
 

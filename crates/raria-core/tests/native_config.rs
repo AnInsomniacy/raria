@@ -37,6 +37,11 @@ mod tests {
             enable_kad = true
             listen_tcp_port = 4662
             listen_udp_port = 4672
+            use_default_servers = true
+            servers = ["45.82.80.155:5687", "ed2k.example.net:4661"]
+            server_met_paths = ["/bootstrap/server.met"]
+            nodes_dat_paths = ["/bootstrap/nodes.dat"]
+            use_local_nodes_dat = true
             max_sources_per_task = 400
             max_upload_slots = 3
             share_completed = false
@@ -69,6 +74,20 @@ mod tests {
         assert!(config.ed2k.enabled);
         assert_eq!(config.ed2k.listen_tcp_port, 4662);
         assert_eq!(config.ed2k.listen_udp_port, 4672);
+        assert!(config.ed2k.use_default_servers);
+        assert_eq!(
+            config.ed2k.servers,
+            vec!["45.82.80.155:5687", "ed2k.example.net:4661"]
+        );
+        assert_eq!(
+            config.ed2k.server_met_paths,
+            vec![std::path::PathBuf::from("/bootstrap/server.met")]
+        );
+        assert_eq!(
+            config.ed2k.nodes_dat_paths,
+            vec![std::path::PathBuf::from("/bootstrap/nodes.dat")]
+        );
+        assert!(config.ed2k.use_local_nodes_dat);
         assert_eq!(config.ed2k.max_sources_per_task, 400);
         assert_eq!(config.ed2k.max_upload_slots, 3);
         assert!(!config.ed2k.share_completed);
@@ -289,6 +308,11 @@ mod tests {
             listen_tcp_port = 14662
             listen_udp_port = 14672
             assume_firewalled = true
+            use_default_servers = false
+            servers = ["127.0.0.1:4661"]
+            server_met_paths = ["/state/server.met"]
+            nodes_dat_paths = ["/state/nodes.dat"]
+            use_local_nodes_dat = false
             max_sources_per_task = 250
             max_upload_slots = 5
             share_completed = true
@@ -304,9 +328,37 @@ mod tests {
         assert_eq!(global.ed2k_listen_tcp_port, 14662);
         assert_eq!(global.ed2k_listen_udp_port, 14672);
         assert!(global.ed2k_assume_firewalled);
+        assert!(!global.ed2k_use_default_servers);
+        assert_eq!(global.ed2k_servers, vec!["127.0.0.1:4661"]);
+        assert_eq!(
+            global.ed2k_server_met_paths,
+            vec![std::path::PathBuf::from("/state/server.met")]
+        );
+        assert_eq!(
+            global.ed2k_nodes_dat_paths,
+            vec![std::path::PathBuf::from("/state/nodes.dat")]
+        );
+        assert!(!global.ed2k_use_local_nodes_dat);
         assert_eq!(global.ed2k_max_sources_per_task, 250);
         assert_eq!(global.ed2k_max_upload_slots, 5);
         assert!(global.ed2k_share_completed);
+    }
+
+    #[test]
+    fn native_config_defaults_to_public_ed2k_bootstrap_policy() {
+        let config = RariaConfig::default();
+        let global = config.to_global_config().expect("convert to global config");
+
+        assert!(config.ed2k.use_default_servers);
+        assert!(config.ed2k.servers.is_empty());
+        assert!(config.ed2k.server_met_paths.is_empty());
+        assert!(config.ed2k.nodes_dat_paths.is_empty());
+        assert!(config.ed2k.use_local_nodes_dat);
+        assert!(global.ed2k_use_default_servers);
+        assert!(global.ed2k_servers.is_empty());
+        assert!(global.ed2k_server_met_paths.is_empty());
+        assert!(global.ed2k_nodes_dat_paths.is_empty());
+        assert!(global.ed2k_use_local_nodes_dat);
     }
 
     #[test]
