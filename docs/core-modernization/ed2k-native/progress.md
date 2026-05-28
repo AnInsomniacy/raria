@@ -358,3 +358,27 @@ and raria-ed2k clippy with `-D warnings`, and `cargo check --workspace
 Remaining: Start ED2K-018 Kad bootstrap and routing table.
 
 Blocked: none.
+
+## 2026-05-28 ED2K-018 verified
+
+Changed: Added native Kad routing ownership. `raria-ed2k` now represents Kad
+contacts with optional UDP keys, validates routing contacts, maintains a
+128-bucket routing table with bounded live and replacement contacts, promotes
+confirmed replacements, handles failure replacement, sorts closest contacts by
+XOR distance, excludes requesters, gates bootstrap and refresh cadence, stores
+serializable routing snapshots, and tracks Kad UDP transactions through
+completion and expiry. `raria-core` now has `NativeEd2kKadRoutingRow` and the
+`ed2k_kad_routing` redb table for native profile-scoped routing snapshots.
+
+Verified: The RED check failed before implementation because Kad routing table,
+contact validation, transaction table, and UDP-key representation did not
+exist. After implementation, `cargo test -p raria-ed2k --test kad_routing
+--locked`, `cargo test -p raria-core
+ed2k_kad_routing_rows_roundtrip_by_profile --locked`, `cargo test -p
+raria-ed2k --locked`, `cargo fmt --all --check`, focused raria-core and
+raria-ed2k clippy with `-D warnings`, and `cargo check --workspace --locked`
+passed.
+
+Remaining: Start ED2K-019 Kad source search, publish, and keyword search.
+
+Blocked: none.

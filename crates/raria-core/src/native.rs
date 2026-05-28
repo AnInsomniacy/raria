@@ -626,6 +626,22 @@ pub struct NativeEd2kKadBootstrapContact {
     pub verified: bool,
 }
 
+/// Versioned native ED2K Kad routing persistence row.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeEd2kKadRoutingRow {
+    /// Row schema version.
+    pub row_version: u32,
+    /// Native ED2K profile id.
+    pub profile_id: String,
+    /// Kad routing snapshot serialized by `raria-ed2k`.
+    pub routing_snapshot_json: String,
+    /// Creation timestamp.
+    pub created_at: DateTime<Utc>,
+    /// Last update timestamp.
+    pub updated_at: DateTime<Utc>,
+}
+
 /// Versioned native ED2K resume persistence row.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -745,6 +761,31 @@ impl NativeEd2kKadBootstrapRow {
     pub fn validate_version(&self) -> Result<(), NativeModelError> {
         if self.row_version > Self::CURRENT_ROW_VERSION {
             return Err(NativeModelError::UnsupportedEd2kKadBootstrapRowVersion);
+        }
+        Ok(())
+    }
+}
+
+impl NativeEd2kKadRoutingRow {
+    /// Current native ED2K Kad routing row schema version.
+    pub const CURRENT_ROW_VERSION: u32 = 1;
+
+    /// Create a native ED2K Kad routing row.
+    pub fn new(profile_id: impl Into<String>, routing_snapshot_json: impl Into<String>) -> Self {
+        let now = Utc::now();
+        Self {
+            row_version: Self::CURRENT_ROW_VERSION,
+            profile_id: profile_id.into(),
+            routing_snapshot_json: routing_snapshot_json.into(),
+            created_at: now,
+            updated_at: now,
+        }
+    }
+
+    /// Validate that this row can be read by the current binary.
+    pub fn validate_version(&self) -> Result<(), NativeModelError> {
+        if self.row_version > Self::CURRENT_ROW_VERSION {
+            return Err(NativeModelError::UnsupportedEd2kKadRoutingRowVersion);
         }
         Ok(())
     }
@@ -1274,6 +1315,9 @@ pub enum NativeModelError {
     /// Native ED2K Kad bootstrap row version is newer than this binary understands.
     #[error("unsupported native ED2K Kad bootstrap row version")]
     UnsupportedEd2kKadBootstrapRowVersion,
+    /// Native ED2K Kad routing row version is newer than this binary understands.
+    #[error("unsupported native ED2K Kad routing row version")]
+    UnsupportedEd2kKadRoutingRowVersion,
     /// Native ED2K resume row version is newer than this binary understands.
     #[error("unsupported native ED2K resume row version")]
     UnsupportedEd2kResumeRowVersion,

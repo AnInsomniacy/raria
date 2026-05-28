@@ -1,7 +1,7 @@
 // raria-core: Native persistence layer using redb.
 
 use crate::native::{
-    NativeEd2kIdentityRow, NativeEd2kKadBootstrapRow, NativeEd2kResumeRow,
+    NativeEd2kIdentityRow, NativeEd2kKadBootstrapRow, NativeEd2kKadRoutingRow, NativeEd2kResumeRow,
     NativeEd2kServerBootstrapRow, NativeSegmentRow, NativeStoreMetadata, NativeTaskRow, TaskId,
 };
 use crate::segment::SegmentState;
@@ -34,6 +34,10 @@ const ED2K_SERVER_BOOTSTRAP_TABLE: TableDefinition<&str, &str> =
 const ED2K_KAD_BOOTSTRAP_TABLE: TableDefinition<&str, &str> =
     TableDefinition::new("ed2k_kad_bootstrap");
 
+/// Table: ed2k_kad_routing — stores versioned native ED2K Kad routing rows.
+const ED2K_KAD_ROUTING_TABLE: TableDefinition<&str, &str> =
+    TableDefinition::new("ed2k_kad_routing");
+
 /// Table: ed2k_resume — stores versioned native ED2K resume rows.
 const ED2K_RESUME_TABLE: TableDefinition<&str, &str> = TableDefinition::new("ed2k_resume");
 
@@ -63,6 +67,7 @@ impl Store {
             let _ = write_txn.open_table(ED2K_IDENTITIES_TABLE)?;
             let _ = write_txn.open_table(ED2K_SERVER_BOOTSTRAP_TABLE)?;
             let _ = write_txn.open_table(ED2K_KAD_BOOTSTRAP_TABLE)?;
+            let _ = write_txn.open_table(ED2K_KAD_ROUTING_TABLE)?;
             let _ = write_txn.open_table(ED2K_RESUME_TABLE)?;
         }
         write_txn.commit()?;
@@ -322,6 +327,38 @@ impl Store {
                 let row: NativeEd2kKadBootstrapRow = serde_json::from_str(guard.value())?;
                 row.validate_version()
                     .context("unsupported native ED2K Kad bootstrap row version")?;
+                Ok(Some(row))
+            }
+            None => Ok(None),
+        }
+    }
+
+    /// Insert or update native ED2K Kad routing state.
+    pub fn put_ed2k_kad_routing(&self, row: &NativeEd2kKadRoutingRow) -> Result<()> {
+        row.validate_version()
+            .context("unsupported native ED2K Kad routing row version")?;
+        let json = serde_json::to_string(row)?;
+        let write_txn = self.db.begin_write()?;
+        {
+            let mut table = write_txn.open_table(ED2K_KAD_ROUTING_TABLE)?;
+            table.insert(row.profile_id.as_str(), json.as_str())?;
+        }
+        write_txn.commit()?;
+        Ok(())
+    }
+
+    /// Retrieve native ED2K Kad routing state by profile id.
+    pub fn get_ed2k_kad_routing(
+        &self,
+        profile_id: &str,
+    ) -> Result<Option<NativeEd2kKadRoutingRow>> {
+        let read_txn = self.db.begin_read()?;
+        let table = read_txn.open_table(ED2K_KAD_ROUTING_TABLE)?;
+        match table.get(profile_id)? {
+            Some(guard) => {
+                let row: NativeEd2kKadRoutingRow = serde_json::from_str(guard.value())?;
+                row.validate_version()
+                    .context("unsupported native ED2K Kad routing row version")?;
                 Ok(Some(row))
             }
             None => Ok(None),
@@ -588,6 +625,28 @@ mod tests {
         assert_eq!(
             loaded.row_version,
             crate::native::NativeEd2kResumeRow::CURRENT_ROW_VERSION
+        );
+    }
+
+    #[test]
+    fn ed2k_kad_routing_rows_roundtrip_by_profile() {
+        let (store, _dir) = temp_store();
+        let row = crate::native::NativeEd2kKadRoutingRow::new(
+            "default",
+            r#"{"selfId":[0],"lastBootstrapSeconds":30}"#,
+        );
+
+        store.put_ed2k_kad_routing(&row).unwrap();
+        let loaded = store
+            .get_ed2k_kad_routing("default")
+            .unwrap()
+            .expect("ED2K Kad routing row");
+
+        assert_eq!(loaded.profile_id, "default");
+        assert_eq!(loaded.routing_snapshot_json, row.routing_snapshot_json);
+        assert_eq!(
+            loaded.row_version,
+            crate::native::NativeEd2kKadRoutingRow::CURRENT_ROW_VERSION
         );
     }
 
