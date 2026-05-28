@@ -23,6 +23,7 @@ raria-sftp = { workspace = true }
 raria-rpc = { workspace = true }
 raria-metalink = { workspace = true }
 raria-bt = { workspace = true }
+raria-ed2k = { workspace = true }
 tokio = { workspace = true }
 clap = { workspace = true }
 clap_complete = { workspace = true }

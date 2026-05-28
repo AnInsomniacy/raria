@@ -3140,6 +3140,7 @@ dependencies = [
  "nix",
  "raria-bt",
  "raria-core",
+ "raria-ed2k",
  "raria-ftp",
  "raria-http",
  "raria-metalink",

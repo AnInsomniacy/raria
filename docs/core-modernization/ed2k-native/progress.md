@@ -549,3 +549,21 @@ legacy Motrix adapter, or false full-runtime claim introduced by the reset.
 Remaining: Start ED2K-027 runtime orchestration.
 
 Blocked: none.
+
+## 2026-05-28 ED2K-027 verified
+
+Changed: Added the native ED2K runtime context and scheduler boundary.
+`raria-ed2k` now owns projected runtime config, task-scoped context, startup
+statuses, and bounded scheduler tick status. The daemon now routes ED2K tasks
+through that context and publishes native `task.ed2k.*` source, queue, Kad,
+sharing, and transfer updates until cancellation.
+
+Verified: RED checks failed before `raria_ed2k::runtime` existed and before the
+daemon stopped emitting the placeholder waiting state. After implementation,
+`cargo test -p raria-ed2k --test runtime --locked`, `cargo test -p raria-cli
+ed2k_runtime_waits_for_cancellation_without_failing_task --locked`, `cargo test
+-p raria-ed2k --locked`, and `cargo test -p raria-cli ed2k --locked` passed.
+
+Remaining: Start ED2K-028 server TCP UDP runtime source discovery.
+
+Blocked: none.

@@ -15,6 +15,9 @@ use raria_core::job::Gid;
 use raria_core::native::{NativeEvent, NativeEventData, NativeEventType, TaskId};
 use raria_core::persist::Store;
 use raria_core::segment::SegmentStatus;
+use raria_ed2k::runtime::{
+    Ed2kRuntimeConfig, Ed2kRuntimeContext, Ed2kRuntimeEventKind, Ed2kRuntimeStatus,
+};
 use raria_range::backend::{ByteSourceBackend, Credentials, ProbeContext};
 use raria_range::executor::{ExecutorConfig, SegmentExecutor, apply_results};
 use raria_rpc::api::{NativeApiConfig, start_native_api_server};
@@ -1095,36 +1098,61 @@ async fn run_ed2k_download(
     task_id: TaskId,
     cancel: CancellationToken,
 ) -> Result<()> {
-    publish_ed2k_status(
-        &engine,
-        &task_id,
-        NativeEventType::TaskEd2kSourceUpdated,
-        "source",
-        "waiting",
-        Some("ED2K source discovery is waiting for runtime network integration"),
-        [("knownSources".to_string(), 0)],
+    let mut context = Ed2kRuntimeContext::new(
+        task_id.clone(),
+        Ed2kRuntimeConfig::from_global_config(&engine.config),
     );
-    publish_ed2k_status(
-        &engine,
-        &task_id,
-        NativeEventType::TaskEd2kQueueUpdated,
-        "queue",
-        "ready",
-        None,
-        [("waitingUploadPeers".to_string(), 0)],
-    );
-    cancel.cancelled().await;
+    for status in context.startup_statuses() {
+        publish_ed2k_runtime_status(&engine, &task_id, status);
+    }
+
+    let started_at = std::time::Instant::now();
+    let mut interval = tokio::time::interval(Duration::from_secs(1));
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    loop {
+        tokio::select! {
+            _ = cancel.cancelled() => break,
+            _ = interval.tick() => {
+                for status in context.tick(started_at.elapsed()) {
+                    publish_ed2k_runtime_status(&engine, &task_id, status);
+                }
+            }
+        }
+    }
     Ok(())
 }
 
-fn publish_ed2k_status<const N: usize>(
+fn publish_ed2k_runtime_status(engine: &Engine, task_id: &TaskId, status: Ed2kRuntimeStatus) {
+    publish_ed2k_status(
+        engine,
+        task_id,
+        ed2k_runtime_event_type(status.event_kind),
+        status.category,
+        status.state,
+        status.message,
+        status.metrics,
+    );
+}
+
+fn ed2k_runtime_event_type(kind: Ed2kRuntimeEventKind) -> NativeEventType {
+    match kind {
+        Ed2kRuntimeEventKind::Source => NativeEventType::TaskEd2kSourceUpdated,
+        Ed2kRuntimeEventKind::Queue => NativeEventType::TaskEd2kQueueUpdated,
+        Ed2kRuntimeEventKind::Kad => NativeEventType::TaskEd2kKadUpdated,
+        Ed2kRuntimeEventKind::Transfer => NativeEventType::TaskEd2kTransferUpdated,
+        Ed2kRuntimeEventKind::Sharing => NativeEventType::TaskEd2kSharingUpdated,
+        Ed2kRuntimeEventKind::Upload => NativeEventType::TaskEd2kUploadUpdated,
+    }
+}
+
+fn publish_ed2k_status(
     engine: &Engine,
     task_id: &TaskId,
     event_type: NativeEventType,
     category: &str,
     state: &str,
     message: Option<&str>,
-    metrics: [(String, u64); N],
+    metrics: std::collections::BTreeMap<String, u64>,
 ) {
     engine.native_event_bus.publish(NativeEvent::new(
         0,
@@ -1134,7 +1162,7 @@ fn publish_ed2k_status<const N: usize>(
             category: category.to_string(),
             state: state.to_string(),
             message: message.map(str::to_string),
-            metrics: metrics.into_iter().collect(),
+            metrics,
         },
     ));
 }
@@ -1552,6 +1580,29 @@ mod tests {
         assert_eq!(
             source_event.event_type,
             raria_core::native::NativeEventType::TaskEd2kSourceUpdated
+        );
+        match source_event.data {
+            NativeEventData::Ed2kStatus { state, message, .. } => {
+                assert_eq!(state, "discovering");
+                assert_eq!(
+                    message.as_deref(),
+                    Some("ED2K runtime scheduler initialized")
+                );
+            }
+            other => panic!("unexpected ED2K source payload: {other:?}"),
+        }
+        let transfer_event = loop {
+            let event = tokio::time::timeout(Duration::from_millis(1500), events.recv())
+                .await
+                .expect("runtime tick")
+                .expect("ED2K runtime event");
+            if event.event_type == raria_core::native::NativeEventType::TaskEd2kTransferUpdated {
+                break event;
+            }
+        };
+        assert_eq!(
+            transfer_event.event_type,
+            raria_core::native::NativeEventType::TaskEd2kTransferUpdated
         );
 
         token.cancel();

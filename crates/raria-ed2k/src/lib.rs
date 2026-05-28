@@ -4,9 +4,8 @@
 //!
 //! Native ED2K/eMule backend boundary for raria.
 //!
-//! This crate owns the future Rust implementation of ED2K/eMule protocol
-//! behavior. The current checkpoint intentionally exposes only module
-//! ownership boundaries and no runtime network behavior.
+//! This crate owns the Rust implementation of ED2K/eMule protocol behavior.
+//! Live network sockets are attached through small runtime checkpoints.
 
 /// ED2K disk integrity and resume ownership.
 pub mod disk;
@@ -26,6 +25,8 @@ pub mod packet;
 pub mod peer;
 /// ED2K protocol persistence ownership.
 pub mod persist;
+/// ED2K daemon runtime context and scheduling ownership.
+pub mod runtime;
 /// Server TCP and UDP ownership.
 pub mod server;
 /// Shared-file and upload cooperation ownership.
