@@ -3,6 +3,8 @@
 use crate::disk::Ed2kDiskState;
 use crate::hash::{AichHash, Ed2kHash};
 use crate::kad::{KadSearchError, build_kad_publish_source_request};
+use crate::opcode::PeerOpcode;
+use crate::packet::{PacketFrame, Protocol};
 use crate::peer::PeerEndpoint;
 use crate::tag::{Tag, TagName, TagValue};
 use crate::transfer::PartRange;
@@ -135,6 +137,91 @@ pub enum SharingError {
     KadPublishFailed,
 }
 
+/// Native upload-slot request from a remote ED2K peer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SharedUploadRequest {
+    /// Remote peer endpoint.
+    pub endpoint: PeerEndpoint,
+    /// Optional remote user hash.
+    pub user_hash: Option<Ed2kHash>,
+    /// Requested shared file hash.
+    pub file_hash: Ed2kHash,
+    /// Caller-owned timestamp in seconds.
+    pub now_seconds: u64,
+}
+
+/// Upload-queue decision for a remote peer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UploadDecision {
+    /// Peer may upload immediately.
+    Accepted,
+    /// Peer is waiting at a one-based queue rank.
+    Queued {
+        /// One-based queue rank.
+        rank: u16,
+    },
+    /// Requested file is not shared.
+    FileNotShared,
+    /// Another queued or uploading endpoint already owns this user hash.
+    DuplicatePeer,
+    /// Waiting queue is full.
+    QueueFull,
+}
+
+/// UDP reask response selected from native upload state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UdpReaskResponse {
+    /// Peer is known and receives its current queue rank. Uploading peers use rank zero.
+    Ack {
+        /// Current queue rank, or zero for an active upload slot.
+        rank: u16,
+    },
+    /// Requested shared file is missing.
+    FileNotFound,
+    /// Peer is unknown and should retry over TCP.
+    QueueFull,
+}
+
+/// Shared part frame build error.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum SharedPartError {
+    /// Shared file metadata or verified range was not readable.
+    #[error("ED2K shared part read failed")]
+    ReadFailed,
+    /// The selected offset format cannot represent the requested range.
+    #[error("ED2K shared part offset is too large")]
+    OffsetTooLarge,
+}
+
+/// Retained upload-queue peer state.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UploadPeer {
+    /// Remote peer endpoint.
+    pub endpoint: PeerEndpoint,
+    /// Optional remote user hash.
+    pub user_hash: Option<Ed2kHash>,
+    /// Requested shared file hash.
+    pub file_hash: Ed2kHash,
+    /// Whether this peer owns an upload slot.
+    pub uploading: bool,
+    /// One-based waiting rank, or zero for an active upload slot.
+    pub rank: u16,
+    /// First wait timestamp in caller-owned seconds.
+    pub wait_start_seconds: u64,
+    /// Upload start timestamp in caller-owned seconds.
+    pub upload_start_seconds: u64,
+    /// Uploaded bytes during this process lifetime.
+    pub session_uploaded: u64,
+}
+
+/// Deterministic native ED2K upload queue.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UploadQueue {
+    max_slots: usize,
+    max_waiting: usize,
+    peers: Vec<UploadPeer>,
+}
+
 impl SharedFileStore {
     /// Add or replace a shared file by ED2K root hash.
     pub fn add_or_replace(&mut self, input: SharedFileInput) -> Result<&SharedFile, SharingError> {
@@ -191,6 +278,265 @@ impl SharedFileStore {
         }
         read_range(file, range)
     }
+}
+
+impl UploadQueue {
+    /// Create an upload queue with bounded active slots and waiting peers.
+    pub fn new(max_slots: usize, max_waiting: usize) -> Self {
+        Self {
+            max_slots: max_slots.max(1),
+            max_waiting,
+            peers: Vec::new(),
+        }
+    }
+
+    /// Request an upload slot for a shared file.
+    pub fn request_upload(
+        &mut self,
+        store: &SharedFileStore,
+        request: SharedUploadRequest,
+    ) -> UploadDecision {
+        if store.find_by_hash(&request.file_hash).is_none() {
+            return UploadDecision::FileNotShared;
+        }
+        if self.duplicate_user_hash(request.endpoint, request.user_hash) {
+            return UploadDecision::DuplicatePeer;
+        }
+        if let Some(index) = self.peer_index(request.endpoint) {
+            self.peers[index].file_hash = request.file_hash;
+            if self.peers[index].user_hash.is_none() {
+                self.peers[index].user_hash = request.user_hash;
+            }
+            return peer_decision(&self.peers[index]);
+        }
+        if self.uploading_count() < self.max_slots {
+            self.peers.push(UploadPeer {
+                endpoint: request.endpoint,
+                user_hash: request.user_hash,
+                file_hash: request.file_hash,
+                uploading: true,
+                rank: 0,
+                wait_start_seconds: 0,
+                upload_start_seconds: request.now_seconds,
+                session_uploaded: 0,
+            });
+            return UploadDecision::Accepted;
+        }
+        if self.waiting_count() >= self.max_waiting {
+            return UploadDecision::QueueFull;
+        }
+        self.peers.push(UploadPeer {
+            endpoint: request.endpoint,
+            user_hash: request.user_hash,
+            file_hash: request.file_hash,
+            uploading: false,
+            rank: 0,
+            wait_start_seconds: request.now_seconds,
+            upload_start_seconds: 0,
+            session_uploaded: 0,
+        });
+        self.sort_waiting();
+        let peer = self
+            .peers
+            .iter()
+            .find(|peer| peer.endpoint == request.endpoint)
+            .expect("queued peer was inserted");
+        UploadDecision::Queued { rank: peer.rank }
+    }
+
+    /// Return whether a peer currently owns an upload slot.
+    pub fn is_uploading(&self, endpoint: PeerEndpoint) -> bool {
+        self.peers
+            .iter()
+            .any(|peer| peer.endpoint == endpoint && peer.uploading)
+    }
+
+    /// Return the current queue rank for a peer.
+    pub fn queue_rank(&self, endpoint: PeerEndpoint) -> Option<u16> {
+        self.peers
+            .iter()
+            .find(|peer| peer.endpoint == endpoint)
+            .map(|peer| peer.rank)
+    }
+
+    /// Remove a peer and promote the next waiting peer when a slot opens.
+    pub fn remove(&mut self, endpoint: PeerEndpoint) -> bool {
+        let Some(index) = self.peer_index(endpoint) else {
+            return false;
+        };
+        let was_uploading = self.peers[index].uploading;
+        self.peers.remove(index);
+        if was_uploading {
+            self.promote_waiting();
+        }
+        self.sort_waiting();
+        true
+    }
+
+    /// Return retained peers.
+    pub fn peers(&self) -> &[UploadPeer] {
+        &self.peers
+    }
+
+    /// Select a truthful UDP reask response.
+    pub fn handle_udp_reask(
+        &self,
+        store: &SharedFileStore,
+        endpoint: PeerEndpoint,
+        file_hash: Ed2kHash,
+    ) -> UdpReaskResponse {
+        if store.find_by_hash(&file_hash).is_none() {
+            return UdpReaskResponse::FileNotFound;
+        }
+        let Some(peer) = self.peers.iter().find(|peer| peer.endpoint == endpoint) else {
+            return UdpReaskResponse::QueueFull;
+        };
+        if peer.file_hash != file_hash {
+            return UdpReaskResponse::FileNotFound;
+        }
+        UdpReaskResponse::Ack { rank: peer.rank }
+    }
+
+    fn peer_index(&self, endpoint: PeerEndpoint) -> Option<usize> {
+        self.peers.iter().position(|peer| peer.endpoint == endpoint)
+    }
+
+    fn duplicate_user_hash(&self, endpoint: PeerEndpoint, user_hash: Option<Ed2kHash>) -> bool {
+        let Some(user_hash) = user_hash else {
+            return false;
+        };
+        self.peers
+            .iter()
+            .any(|peer| peer.endpoint != endpoint && peer.user_hash == Some(user_hash))
+    }
+
+    fn uploading_count(&self) -> usize {
+        self.peers.iter().filter(|peer| peer.uploading).count()
+    }
+
+    fn waiting_count(&self) -> usize {
+        self.peers.iter().filter(|peer| !peer.uploading).count()
+    }
+
+    fn promote_waiting(&mut self) {
+        if self.uploading_count() >= self.max_slots {
+            return;
+        }
+        if let Some(peer) = self
+            .peers
+            .iter_mut()
+            .filter(|peer| !peer.uploading)
+            .min_by_key(|peer| {
+                (
+                    peer.wait_start_seconds,
+                    peer.endpoint.ip,
+                    peer.endpoint.port,
+                )
+            })
+        {
+            peer.uploading = true;
+            peer.rank = 0;
+            peer.upload_start_seconds = peer.wait_start_seconds;
+        }
+    }
+
+    fn sort_waiting(&mut self) {
+        self.peers.sort_by_key(|peer| {
+            (
+                !peer.uploading,
+                if peer.uploading {
+                    peer.upload_start_seconds
+                } else {
+                    peer.wait_start_seconds
+                },
+                peer.endpoint.ip,
+                peer.endpoint.port,
+            )
+        });
+        let mut rank = 1_u16;
+        for peer in &mut self.peers {
+            if peer.uploading {
+                peer.rank = 0;
+            } else {
+                peer.rank = rank;
+                rank = rank.saturating_add(1);
+            }
+        }
+    }
+}
+
+/// Build a TCP upload response frame from an upload decision.
+pub fn build_upload_response_frame(decision: UploadDecision) -> PacketFrame {
+    match decision {
+        UploadDecision::Accepted => peer_frame(PeerOpcode::AcceptUploadRequest, Vec::new()),
+        UploadDecision::Queued { rank } => {
+            peer_frame(PeerOpcode::QueueRank, rank.to_le_bytes().to_vec())
+        }
+        UploadDecision::FileNotShared => peer_frame(PeerOpcode::FileRequestNoFile, Vec::new()),
+        UploadDecision::DuplicatePeer | UploadDecision::QueueFull => PacketFrame {
+            protocol: Protocol::Emule,
+            opcode: PeerOpcode::QueueFull.into(),
+            payload: Vec::new(),
+        },
+    }
+}
+
+/// Build a UDP reask response frame.
+pub fn build_udp_reask_frame(response: UdpReaskResponse) -> PacketFrame {
+    match response {
+        UdpReaskResponse::Ack { rank } => PacketFrame {
+            protocol: Protocol::Emule,
+            opcode: PeerOpcode::ReaskAck.into(),
+            payload: rank.to_le_bytes().to_vec(),
+        },
+        UdpReaskResponse::FileNotFound => PacketFrame {
+            protocol: Protocol::Emule,
+            opcode: PeerOpcode::FileNotFound.into(),
+            payload: Vec::new(),
+        },
+        UdpReaskResponse::QueueFull => PacketFrame {
+            protocol: Protocol::Emule,
+            opcode: PeerOpcode::QueueFull.into(),
+            payload: Vec::new(),
+        },
+    }
+}
+
+/// Build a normal shared-part payload frame from verified shared bytes.
+pub fn build_shared_part_frame(
+    store: &SharedFileStore,
+    file_hash: Ed2kHash,
+    range: PartRange,
+    use_i64_offsets: bool,
+) -> Result<PacketFrame, SharedPartError> {
+    if !use_i64_offsets && (range.begin > u64::from(u32::MAX) || range.end > u64::from(u32::MAX)) {
+        return Err(SharedPartError::OffsetTooLarge);
+    }
+    let data = store
+        .read_verified_range(&file_hash, range)
+        .map_err(|_| SharedPartError::ReadFailed)?;
+    let mut payload = file_hash.to_vec();
+    if use_i64_offsets {
+        payload.extend_from_slice(&range.begin.to_le_bytes());
+        payload.extend_from_slice(&range.end.to_le_bytes());
+    } else {
+        payload.extend_from_slice(&(range.begin as u32).to_le_bytes());
+        payload.extend_from_slice(&(range.end as u32).to_le_bytes());
+    }
+    payload.extend_from_slice(&data);
+    Ok(PacketFrame {
+        protocol: if use_i64_offsets {
+            Protocol::Emule
+        } else {
+            Protocol::Edonkey
+        },
+        opcode: if use_i64_offsets {
+            PeerOpcode::SendingPartI64.into()
+        } else {
+            PeerOpcode::SendingPart.into()
+        },
+        payload,
+    })
 }
 
 fn shared_file_from_input(input: SharedFileInput) -> Result<SharedFile, SharingError> {
@@ -285,4 +631,20 @@ fn read_range(file: &SharedFile, range: PartRange) -> Result<Vec<u8>, SharingErr
         .read_exact(&mut data)
         .map_err(|_| SharingError::ShortRead)?;
     Ok(data)
+}
+
+fn peer_decision(peer: &UploadPeer) -> UploadDecision {
+    if peer.uploading {
+        UploadDecision::Accepted
+    } else {
+        UploadDecision::Queued { rank: peer.rank }
+    }
+}
+
+fn peer_frame(opcode: PeerOpcode, payload: Vec<u8>) -> PacketFrame {
+    PacketFrame {
+        protocol: Protocol::Edonkey,
+        opcode: opcode.into(),
+        payload,
+    }
 }

@@ -442,3 +442,25 @@ with `-D warnings`, and `cargo check --workspace --locked` passed.
 Remaining: Start ED2K-022 upload queue, UDP reask, and responder.
 
 Blocked: none.
+
+## 2026-05-28 ED2K-022 verified
+
+Changed: Added native ED2K upload queue and responder ownership. `raria-ed2k`
+now has `UploadQueue` for active slot caps, waiting ranks, duplicate user-hash
+rejection, deterministic waiting order, and promotion after active-peer removal.
+Shared upload decisions now build native TCP response frames for accepted,
+queued, missing-file, duplicate, and full-queue cases. Shared part serving reads
+verified shared ranges and emits normal or I64 part payloads. UDP reask handling
+returns rank-zero ACKs only for active uploads, ranked ACKs for waiting peers,
+FileNotFound for missing or mismatched files, and QueueFull for unknown peers.
+
+Verified: The RED check failed before implementation because upload queue
+state, upload response frames, shared-part frames, and UDP reask responses did
+not exist. After implementation, `cargo test -p raria-ed2k --test
+upload_queue --locked`, `cargo test -p raria-ed2k --locked`, `cargo fmt --all
+--check`, focused raria-ed2k clippy with `-D warnings`, and `cargo check
+--workspace --locked` passed.
+
+Remaining: Start ED2K-023 credits and secure-ident truth.
+
+Blocked: none.
