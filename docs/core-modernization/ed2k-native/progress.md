@@ -707,3 +707,24 @@ with a local UDP Kad fixture and a completed native search result.
 Remaining: ED2K-033.4 discovery limits remain open.
 
 Blocked: none.
+
+## 2026-05-28 ED2K-033 verified
+
+Changed: Closed daemon ED2K discovery and native search execution. Cancelled
+tasks now exit before server or Kad discovery, in-flight server and Kad
+discovery waits are cancellation-aware, discovered source counts honor
+`ed2k.max_sources_per_task`, and inline peer bytes pass through the native
+cancellable download limiter before verified disk writes.
+
+Verified: RED checks failed when a cancelled task could still enter discovery
+and when an inline peer transfer completed without applying the native task
+download limiter. After implementation, `cargo test -p raria-cli
+ed2k_runtime_cancelled_before_discovery_exits_without_network_probe --locked
+-- --nocapture`, `cargo test -p raria-cli
+ed2k_inline_peer_transfer_honors_cancellable_download_limit --locked --
+--nocapture`, and `cargo test -p raria-cli ed2k --locked -- --nocapture`
+passed with local socket fixtures.
+
+Remaining: Start ED2K-034 daemon sharing and upload service.
+
+Blocked: none.
