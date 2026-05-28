@@ -16,6 +16,8 @@ tokio = { workspace = true }
 serde = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
+md4 = { workspace = true }
+sha1 = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

@@ -77,3 +77,22 @@ metadata links, safe names, and malformed inputs. `cargo test -p raria-rpc
 Remaining: Start ED2K-005 hashset and AICH primitives.
 
 Blocked: none.
+
+## 2026-05-28 ED2K-005 verified
+
+Changed: Added ED2K integrity primitives in `raria-ed2k`. The hash module now
+owns md4-backed ED2K digests, ED2K root hash construction, theoretical
+part-hash counts, provided hashset validation, SHA-1 AICH roots, canonical
+unpadded AICH Base32 roots, and local AICH recovery metadata verification.
+`md4` is now a workspace dependency; ED2K protocol rules remain implemented in
+raria-owned code.
+
+Verified: The RED check failed before implementation because no hash constants,
+digest helpers, root hash helpers, AICH helpers, or recovery metadata model
+existed. After implementation, `cargo test -p raria-ed2k hash --locked`,
+`cargo fmt --all --check`, `cargo clippy -p raria-ed2k --all-targets -- -D
+warnings`, and `cargo check --workspace --locked` passed.
+
+Remaining: Start ED2K-006 bootstrap files.
+
+Blocked: none.

@@ -2,8 +2,8 @@ dependency,decision,reason,current_owner,target_owner,checkpoint,status,notes
 tokio,retain,Workspace runtime and mature async TCP UDP timer task owner,workspace dependency,raria-ed2k runtime,ED2K-003,pending,Do not introduce another runtime.
 redb,retain,Existing native persistence engine with raria-owned schema versions,workspace dependency,ED2K identity peer source Kad and credit rows,ED2K-007,pending,redb is storage engine only.
 serde,retain,Existing serialization boundary for native API and persistence,workspace dependency,ED2K native structs,ED2K-003,pending,Keep schemas versioned.
-md4,add-narrow,RustCrypto MD4 0.11.0 is a mature hash primitive for ED2K root and part hashes,not present,ED2K hash primitive,ED2K-005,pending,Use ED2K rules locally; do not outsource the protocol.
-sha1,retain-narrow,Existing hash primitive can support AICH tree material,workspace dependency,AICH hash primitive,ED2K-005,pending,Keep AICH ownership local.
+md4,add-narrow,RustCrypto MD4 0.11.0 is a mature hash primitive for ED2K root and part hashes,workspace dependency,ED2K hash primitive,ED2K-005,verified,Use ED2K rules locally; do not outsource the protocol.
+sha1,retain-narrow,Existing hash primitive supports AICH tree material,workspace dependency,AICH hash primitive,ED2K-005,verified,Keep AICH ownership local.
 flate2,add-narrow,flate2 1.1.9 is a mature compression crate with a pure Rust default backend for compressed ED2K part payloads,not present,compressed ED2K parts,ED2K-016,pending,Select backend during implementation checkpoint.
 governor,retain,Existing rate limiting primitive for native transfer policy,workspace dependency,ED2K source and upload rate policy,ED2K-014,pending,Small native policy layer only.
 axum,retain,Existing native HTTP JSON and WebSocket framework,workspace dependency,ED2K API and event resources,ED2K-024,pending,No JSON-RPC.

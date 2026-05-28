@@ -11,9 +11,9 @@ ED2K source protocol,add,SourceProtocol lacks Ed2k,SourceProtocol::Ed2k,ED2K-003
 ED2K config skeleton,add,not present,raria.toml [ed2k],ED2K-003,verified,"native_config tests cover strict [ed2k] parsing and rejection of legacy ED2K option names.",Runtime use starts in later checkpoints.
 ED2K persistence row names,add,not present,ed2k_identities redb table and NativeEd2kIdentityRow,ED2K-003,verified,"Focused persistence test covers ED2K identity row roundtrip and row versioning.",Runtime identity generation starts in ED2K-007.
 ED2K links,add,not present,raria-ed2k link parser,ED2K-004,verified,"cargo test -p raria-ed2k link --locked covers file, server, serverlist, nodeslist, search, safe names, root hashes, part hashes, AICH roots, inline sources, crypt options, and malformed inputs.",Include safe filenames and link metadata.
-ED2K root hash,add,not present,md4-backed ED2K hash implementation,ED2K-005,pending,pending,Use mature hash primitive with native ED2K rules.
-MD4 hashsets,add,not present,native theoretical part-hash model,ED2K-005,pending,pending,Cover exact part-size boundaries.
-AICH,add,not present,native SHA-1 tree and recovery metadata,ED2K-005,pending,pending,Do not claim unsupported recovery flows.
+ED2K root hash,add,not present,md4-backed ED2K hash implementation,ED2K-005,verified,"cargo test -p raria-ed2k hash --locked covers MD4 vectors, small files, exact part-size trailing empty hashes, and multi-part roots.",Use mature hash primitive with native ED2K rules.
+MD4 hashsets,add,not present,native theoretical part-hash model,ED2K-005,verified,"cargo test -p raria-ed2k hash --locked covers theoretical part-hash counts for ED2K boundary sizes and rejects mismatched provided hashsets.",Cover exact part-size boundaries.
+AICH,add,not present,native SHA-1 tree and recovery metadata,ED2K-005,verified,"cargo test -p raria-ed2k hash --locked covers AICH Base32 root parse/format, root tree boundaries, recovery metadata parse, and local recovery verification.",Do not claim unsupported peer recovery flows.
 server.met,add,not present,native bootstrap metadata parser,ED2K-006,pending,pending,Use only as bootstrap data.
 nodes.dat,add,not present,native Kad bootstrap parser,ED2K-006,pending,pending,Filter obsolete unusable contacts.
 Stable ED2K identity,add,not present,native redb identity row,ED2K-007,pending,pending,Required for queues and credits.
