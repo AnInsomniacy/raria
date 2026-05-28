@@ -1,8 +1,8 @@
 // raria-core: Native persistence layer using redb.
 
 use crate::native::{
-    NativeEd2kIdentityRow, NativeEd2kKadBootstrapRow, NativeEd2kServerBootstrapRow,
-    NativeSegmentRow, NativeStoreMetadata, NativeTaskRow, TaskId,
+    NativeEd2kIdentityRow, NativeEd2kKadBootstrapRow, NativeEd2kResumeRow,
+    NativeEd2kServerBootstrapRow, NativeSegmentRow, NativeStoreMetadata, NativeTaskRow, TaskId,
 };
 use crate::segment::SegmentState;
 use anyhow::{Context, Result};
@@ -34,6 +34,9 @@ const ED2K_SERVER_BOOTSTRAP_TABLE: TableDefinition<&str, &str> =
 const ED2K_KAD_BOOTSTRAP_TABLE: TableDefinition<&str, &str> =
     TableDefinition::new("ed2k_kad_bootstrap");
 
+/// Table: ed2k_resume — stores versioned native ED2K resume rows.
+const ED2K_RESUME_TABLE: TableDefinition<&str, &str> = TableDefinition::new("ed2k_resume");
+
 /// Persistent storage for raria state.
 #[derive(Clone)]
 pub struct Store {
@@ -60,6 +63,7 @@ impl Store {
             let _ = write_txn.open_table(ED2K_IDENTITIES_TABLE)?;
             let _ = write_txn.open_table(ED2K_SERVER_BOOTSTRAP_TABLE)?;
             let _ = write_txn.open_table(ED2K_KAD_BOOTSTRAP_TABLE)?;
+            let _ = write_txn.open_table(ED2K_RESUME_TABLE)?;
         }
         write_txn.commit()?;
 
@@ -323,6 +327,35 @@ impl Store {
             None => Ok(None),
         }
     }
+
+    /// Insert or update native ED2K resume state.
+    pub fn put_ed2k_resume(&self, row: &NativeEd2kResumeRow) -> Result<()> {
+        row.validate_version()
+            .context("unsupported native ED2K resume row version")?;
+        let json = serde_json::to_string(row)?;
+        let write_txn = self.db.begin_write()?;
+        {
+            let mut table = write_txn.open_table(ED2K_RESUME_TABLE)?;
+            table.insert(row.task_id.as_str(), json.as_str())?;
+        }
+        write_txn.commit()?;
+        Ok(())
+    }
+
+    /// Retrieve native ED2K resume state by task id.
+    pub fn get_ed2k_resume(&self, task_id: &TaskId) -> Result<Option<NativeEd2kResumeRow>> {
+        let read_txn = self.db.begin_read()?;
+        let table = read_txn.open_table(ED2K_RESUME_TABLE)?;
+        match table.get(task_id.as_str())? {
+            Some(guard) => {
+                let row: NativeEd2kResumeRow = serde_json::from_str(guard.value())?;
+                row.validate_version()
+                    .context("unsupported native ED2K resume row version")?;
+                Ok(Some(row))
+            }
+            None => Ok(None),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -518,6 +551,44 @@ mod tests {
 
         assert_eq!(recovered_servers, server_row);
         assert_eq!(recovered_kad, kad_row);
+    }
+
+    #[test]
+    fn ed2k_resume_rows_roundtrip_by_task() {
+        let (store, _dir) = temp_store();
+        let task_id = TaskId::new();
+        let row = crate::native::NativeEd2kResumeRow::new(
+            task_id.clone(),
+            12,
+            [0x11; 16],
+            Vec::new(),
+            Some([0x22; 20]),
+            vec![crate::native::ByteRange::new(0, 12).unwrap()],
+            vec![crate::native::ByteRange::new(4, 8).unwrap()],
+            vec![crate::native::NativeEd2kResumeSourceRow {
+                endpoint: "198.51.100.7:4662".to_string(),
+                last_seen_seconds: 120,
+                queue_rank: Some(42),
+            }],
+        );
+
+        store.put_ed2k_resume(&row).unwrap();
+        let loaded = store
+            .get_ed2k_resume(&task_id)
+            .unwrap()
+            .expect("ED2K resume row");
+
+        assert_eq!(loaded.task_id, task_id);
+        assert_eq!(loaded.file_size, 12);
+        assert_eq!(loaded.root_hash, [0x11; 16]);
+        assert_eq!(loaded.aich_root, Some([0x22; 20]));
+        assert_eq!(loaded.verified_ranges, row.verified_ranges);
+        assert_eq!(loaded.requeue_ranges, row.requeue_ranges);
+        assert_eq!(loaded.sources, row.sources);
+        assert_eq!(
+            loaded.row_version,
+            crate::native::NativeEd2kResumeRow::CURRENT_ROW_VERSION
+        );
     }
 
     #[test]

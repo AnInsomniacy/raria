@@ -5,12 +5,13 @@ use crate::opcode::PeerOpcode;
 use crate::packet::{PacketFrame, Protocol};
 use crate::wire::Cursor;
 use flate2::{Decompress, FlushDecompress, Status};
+use serde::{Deserialize, Serialize};
 
 const REQUEST_PART_WIRE_RANGES: usize = 3;
 const DEFAULT_TRANSFER_RETRY_DELAY_SECONDS: u64 = 5;
 
 /// ED2K part byte range.
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PartRange {
     /// Inclusive range start offset.
     pub begin: u64,

@@ -626,6 +626,46 @@ pub struct NativeEd2kKadBootstrapContact {
     pub verified: bool,
 }
 
+/// Versioned native ED2K resume persistence row.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeEd2kResumeRow {
+    /// Row schema version.
+    pub row_version: u32,
+    /// Native task id.
+    pub task_id: TaskId,
+    /// Total file size in bytes.
+    pub file_size: u64,
+    /// ED2K root hash.
+    pub root_hash: [u8; ED2K_CLIENT_IDENTITY_BYTES],
+    /// ED2K part hashes when protocol boundary rules require them.
+    pub part_hashes: Vec<[u8; ED2K_CLIENT_IDENTITY_BYTES]>,
+    /// Optional AICH root hash.
+    pub aich_root: Option<[u8; 20]>,
+    /// Ranges verified by disk and integrity truth.
+    pub verified_ranges: Vec<ByteRange>,
+    /// Ranges queued for re-download after integrity failure.
+    pub requeue_ranges: Vec<ByteRange>,
+    /// Resumeable ED2K source state.
+    pub sources: Vec<NativeEd2kResumeSourceRow>,
+    /// Creation timestamp.
+    pub created_at: DateTime<Utc>,
+    /// Last update timestamp.
+    pub updated_at: DateTime<Utc>,
+}
+
+/// Native ED2K resume source row.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeEd2kResumeSourceRow {
+    /// Native endpoint string such as `host:port`.
+    pub endpoint: String,
+    /// Last seen timestamp in caller-owned monotonic or wall-clock seconds.
+    pub last_seen_seconds: u64,
+    /// Last observed queue rank.
+    pub queue_rank: Option<u16>,
+}
+
 impl NativeEd2kIdentityRow {
     /// Current native ED2K identity row schema version.
     pub const CURRENT_ROW_VERSION: u32 = 1;
@@ -705,6 +745,56 @@ impl NativeEd2kKadBootstrapRow {
     pub fn validate_version(&self) -> Result<(), NativeModelError> {
         if self.row_version > Self::CURRENT_ROW_VERSION {
             return Err(NativeModelError::UnsupportedEd2kKadBootstrapRowVersion);
+        }
+        Ok(())
+    }
+}
+
+impl NativeEd2kResumeRow {
+    /// Current native ED2K resume row schema version.
+    pub const CURRENT_ROW_VERSION: u32 = 1;
+
+    /// Create a native ED2K resume row.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        task_id: TaskId,
+        file_size: u64,
+        root_hash: [u8; ED2K_CLIENT_IDENTITY_BYTES],
+        part_hashes: Vec<[u8; ED2K_CLIENT_IDENTITY_BYTES]>,
+        aich_root: Option<[u8; 20]>,
+        verified_ranges: Vec<ByteRange>,
+        requeue_ranges: Vec<ByteRange>,
+        sources: Vec<NativeEd2kResumeSourceRow>,
+    ) -> Self {
+        let now = Utc::now();
+        Self {
+            row_version: Self::CURRENT_ROW_VERSION,
+            task_id,
+            file_size,
+            root_hash,
+            part_hashes,
+            aich_root,
+            verified_ranges,
+            requeue_ranges,
+            sources,
+            created_at: now,
+            updated_at: now,
+        }
+    }
+
+    /// Validate that this row can be read by the current binary.
+    pub fn validate_version(&self) -> Result<(), NativeModelError> {
+        if self.row_version > Self::CURRENT_ROW_VERSION {
+            return Err(NativeModelError::UnsupportedEd2kResumeRowVersion);
+        }
+        for range in self
+            .verified_ranges
+            .iter()
+            .chain(self.requeue_ranges.iter())
+        {
+            if range.is_empty() || range.end > self.file_size {
+                return Err(NativeModelError::InvalidByteRange);
+            }
         }
         Ok(())
     }
@@ -1184,6 +1274,9 @@ pub enum NativeModelError {
     /// Native ED2K Kad bootstrap row version is newer than this binary understands.
     #[error("unsupported native ED2K Kad bootstrap row version")]
     UnsupportedEd2kKadBootstrapRowVersion,
+    /// Native ED2K resume row version is newer than this binary understands.
+    #[error("unsupported native ED2K resume row version")]
+    UnsupportedEd2kResumeRowVersion,
     /// Native task id is malformed.
     #[error("invalid native task id")]
     InvalidTaskId,

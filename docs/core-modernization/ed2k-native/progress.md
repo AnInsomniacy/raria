@@ -337,3 +337,24 @@ check --workspace --locked` passed.
 Remaining: Start ED2K-017 integrity, disk resume, and completion truth.
 
 Blocked: none.
+
+## 2026-05-28 ED2K-017 verified
+
+Changed: Added native ED2K verified-byte and resume ownership. `raria-ed2k`
+now has `Ed2kDiskState` for staged durable writes, incomplete-part rejection,
+MD4-gated verified ranges, corrupt-range requeue, AICH root retention, source
+resume snapshots, and versioned resume snapshots. `raria-core` now has
+`NativeEd2kResumeRow`, `NativeEd2kResumeSourceRow`, and an `ed2k_resume` redb
+table keyed by native task id.
+
+Verified: The RED checks failed before implementation because disk truth,
+corrupt requeue, resume snapshots, and native ED2K resume rows did not exist.
+After implementation, `cargo test -p raria-ed2k --test disk_resume --locked`,
+`cargo test -p raria-core ed2k_resume_rows_roundtrip_by_task --locked`, `cargo
+test -p raria-ed2k --locked`, `cargo fmt --all --check`, focused raria-core
+and raria-ed2k clippy with `-D warnings`, and `cargo check --workspace
+--locked` passed.
+
+Remaining: Start ED2K-018 Kad bootstrap and routing table.
+
+Blocked: none.

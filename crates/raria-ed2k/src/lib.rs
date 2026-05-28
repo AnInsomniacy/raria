@@ -8,6 +8,8 @@
 //! behavior. The current checkpoint intentionally exposes only module
 //! ownership boundaries and no runtime network behavior.
 
+/// ED2K disk integrity and resume ownership.
+pub mod disk;
 /// AICH and ED2K hash ownership.
 pub mod hash;
 /// Stable ED2K client identity ownership.
