@@ -205,3 +205,25 @@ and `cargo check --workspace --locked` passed.
 Remaining: Start ED2K-011 HighID LowID callback.
 
 Blocked: none.
+
+## 2026-05-28 ED2K-011 verified
+
+Changed: Added native HighID, LowID, and server-mediated callback state in
+`raria-ed2k`. The peer module now keeps HighID peers directly schedulable,
+blocks LowID direct scheduling until a server callback is accepted, constructs
+server callback request frames, parses callback endpoint payloads, and records
+requested, accepted, failed, timed-out, impossible, and completed states.
+Direct UDP callback, Kad buddy callback, and required-crypt callback remain
+unadvertised until native owners exist.
+
+Verified: The RED check failed before implementation because peer reachability,
+LowID callback states, callback request construction, endpoint parsing, and
+capability-limit helpers did not exist. After implementation, `cargo test -p
+raria-ed2k --test callback --locked`, `cargo test -p raria-ed2k --locked`,
+`cargo fmt --all --check`, `cargo clippy -p raria-ed2k --locked --all-targets
+-- -D warnings`, `cargo check --workspace --locked`, and `git diff --check`
+passed.
+
+Remaining: Start ED2K-012 peer handshake.
+
+Blocked: none.
