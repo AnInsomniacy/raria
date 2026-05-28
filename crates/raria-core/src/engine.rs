@@ -20,9 +20,10 @@ use crate::job::{Gid, Job, Status};
 use crate::limiter::SharedRateLimiter;
 use crate::logging::emit_structured_log;
 use crate::native::{
-    NativeEd2kSearchId, NativeEd2kSearchNetwork, NativeEd2kSearchResult, NativeEd2kSearchSummary,
-    NativeEvent, NativeEventData, NativeEventType, NativePeerSnapshot, NativeSourceHealth,
-    NativeTaskRow, NativeTaskSummary, NativeTrackerSnapshot, TaskId,
+    NativeEd2kKadBootstrapRow, NativeEd2kSearchId, NativeEd2kSearchNetwork, NativeEd2kSearchResult,
+    NativeEd2kSearchSummary, NativeEd2kServerBootstrapRow, NativeEvent, NativeEventData,
+    NativeEventType, NativePeerSnapshot, NativeSourceHealth, NativeTaskRow, NativeTaskSummary,
+    NativeTrackerSnapshot, TaskId,
 };
 use crate::persist::Store;
 use crate::progress::{DownloadEvent, EventBus, NativeEventBus};
@@ -383,6 +384,28 @@ impl Engine {
             .collect::<Vec<_>>();
         searches.sort_by(|left, right| left.search_id.as_str().cmp(right.search_id.as_str()));
         searches
+    }
+
+    /// Return a native ED2K server bootstrap row for a profile when persistence is enabled.
+    pub fn native_ed2k_server_bootstrap(
+        &self,
+        profile_id: &str,
+    ) -> Result<Option<NativeEd2kServerBootstrapRow>> {
+        let Some(store) = &self.store else {
+            return Ok(None);
+        };
+        store.get_ed2k_server_bootstrap(profile_id)
+    }
+
+    /// Return a native ED2K Kad bootstrap row for a profile when persistence is enabled.
+    pub fn native_ed2k_kad_bootstrap(
+        &self,
+        profile_id: &str,
+    ) -> Result<Option<NativeEd2kKadBootstrapRow>> {
+        let Some(store) = &self.store else {
+            return Ok(None);
+        };
+        store.get_ed2k_kad_bootstrap(profile_id)
     }
 
     /// Return a paged native ED2K search resource.

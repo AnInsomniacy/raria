@@ -676,3 +676,23 @@ task state, and native ED2K transfer status.
 Remaining: Start ED2K-033 daemon server, Kad, and search execution.
 
 Blocked: none.
+
+## 2026-05-28 ED2K-033 partially verified
+
+Changed: Connected daemon ED2K tasks to native server and Kad bootstrap rows
+for bounded local source discovery. Server bootstrap now drives live TCP
+source requests through `Ed2kServerRuntime`. Kad bootstrap now drives live UDP
+source lookup through `Ed2kKadRuntime`. Both paths publish native
+`task.ed2k.source.updated` discovered-source status.
+
+Verified: RED checks timed out while daemon ED2K runtime ignored bootstrap
+rows. After implementation, `cargo test -p raria-cli
+ed2k_runtime_discovers_sources_from_native_server_bootstrap --locked --
+--nocapture` and `cargo test -p raria-cli
+ed2k_runtime_discovers_sources_from_native_kad_bootstrap --locked --
+--nocapture` passed with local socket fixtures.
+
+Remaining: ED2K-033.3 native search execution and ED2K-033.4 discovery limits
+remain open.
+
+Blocked: none.
