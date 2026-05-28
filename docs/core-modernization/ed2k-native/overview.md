@@ -109,8 +109,10 @@ local-socket Kad UDP source, keyword, publish, firewall, and timeout handling,
 and bounded local-socket peer TCP handshake, queue, source exchange, part
 request, payload validation, timeout handling, local file disk completion,
 native resume snapshot restore, sharing-on-completion, verified upload serving,
-and UDP reask handling are present. Live ED2K network runtime remains open
-until final validation closes daemon wiring and manual smoke evidence.
+UDP reask handling, and daemon inline peer transfer to verified disk completion
+are present. Daemon server/Kad discovery scheduling, native search execution,
+daemon upload listeners, final validation, and manual smoke evidence remain
+open.
 
 ## Capability Scope
 

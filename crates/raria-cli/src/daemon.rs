@@ -15,13 +15,18 @@ use raria_core::job::Gid;
 use raria_core::native::{NativeEvent, NativeEventData, NativeEventType, TaskId};
 use raria_core::persist::Store;
 use raria_core::segment::SegmentStatus;
+use raria_ed2k::link::{Ed2kFileLink, Ed2kLink, parse_link};
+use raria_ed2k::peer::PeerIdentity;
 use raria_ed2k::runtime::{
-    Ed2kRuntimeConfig, Ed2kRuntimeContext, Ed2kRuntimeEventKind, Ed2kRuntimeStatus,
+    Ed2kDiskRuntime, Ed2kDiskRuntimeConfig, Ed2kPeerDownloadRequest, Ed2kPeerRuntime,
+    Ed2kPeerRuntimeConfig, Ed2kRuntimeConfig, Ed2kRuntimeContext, Ed2kRuntimeEventKind,
+    Ed2kRuntimeStatus,
 };
+use raria_ed2k::source::SourceRecord;
 use raria_range::backend::{ByteSourceBackend, Credentials, ProbeContext};
 use raria_range::executor::{ExecutorConfig, SegmentExecutor, apply_results};
 use raria_rpc::api::{NativeApiConfig, start_native_api_server};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -1106,6 +1111,16 @@ async fn run_ed2k_download(
         publish_ed2k_runtime_status(&engine, &task_id, status);
     }
 
+    if let Some(file) = ed2k_file_from_task(&engine, &task_id)? {
+        engine.set_native_segment_plan_metadata(&task_id, Some(file.size), 1)?;
+        if !file.sources.is_empty() {
+            run_ed2k_inline_peer_download(&engine, &task_id, &file).await?;
+            if engine.native_task_summary(&task_id)?.lifecycle.as_str() == "completed" {
+                return Ok(());
+            }
+        }
+    }
+
     let started_at = std::time::Instant::now();
     let mut interval = tokio::time::interval(Duration::from_secs(1));
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -1120,6 +1135,115 @@ async fn run_ed2k_download(
         }
     }
     Ok(())
+}
+
+fn ed2k_file_from_task(engine: &Engine, task_id: &TaskId) -> Result<Option<Ed2kFileLink>> {
+    let gid = engine
+        .gid_for_task_id(task_id)
+        .context("native ED2K task not found")?;
+    let Some(job) = engine.registry.get(gid) else {
+        return Ok(None);
+    };
+    for uri in &job.uris {
+        if let Ed2kLink::File(file) =
+            parse_link(uri).with_context(|| format!("invalid ED2K file link for {task_id}"))?
+        {
+            return Ok(Some(file));
+        }
+    }
+    Ok(None)
+}
+
+async fn run_ed2k_inline_peer_download(
+    engine: &Engine,
+    task_id: &TaskId,
+    file: &Ed2kFileLink,
+) -> Result<()> {
+    let gid = engine
+        .gid_for_task_id(task_id)
+        .context("native ED2K task not found")?;
+    let Some(job) = engine.registry.get(gid) else {
+        return Ok(());
+    };
+    let aich_root = file
+        .aich_root
+        .as_deref()
+        .map(raria_ed2k::hash::parse_aich_root_base32)
+        .transpose()
+        .context("invalid ED2K AICH root")?;
+    let mut disk = Ed2kDiskRuntime::new(Ed2kDiskRuntimeConfig {
+        path: job.out_path.clone(),
+        name: file.name.clone(),
+        file_size: file.size,
+        root_hash: file.root_hash,
+        part_hashes: file.part_hashes.clone(),
+        aich_root,
+        sharing_enabled: engine.config.ed2k_share_completed,
+        upload_slots: engine.config.ed2k_max_upload_slots as usize,
+        upload_waiting: usize::from(engine.config.ed2k_max_upload_slots).saturating_mul(16),
+        now_seconds: chrono::Utc::now().timestamp().max(0) as u64,
+    })?;
+    let mut peer_runtime = Ed2kPeerRuntime::new(Ed2kPeerRuntimeConfig {
+        local_identity: ed2k_local_peer_identity(&engine.config),
+        io_timeout: Duration::from_secs(5),
+        ..Default::default()
+    });
+    let mut completed_ranges = disk.verified_ranges().to_vec();
+    let mut retained_sources = Vec::<SourceRecord>::new();
+
+    for source in &file.sources {
+        engine.set_native_runtime_connections(task_id, 1)?;
+        let report = peer_runtime
+            .download_once(Ed2kPeerDownloadRequest {
+                endpoint_host: source.host.clone(),
+                endpoint_port: source.port,
+                file_hash: file.root_hash,
+                file_size: file.size,
+                local_part_status: vec![false; file.part_hashes.len().max(1)],
+                completed_ranges: completed_ranges.clone(),
+                globally_requested: Vec::new(),
+                hashset_required: !file.part_hashes.is_empty(),
+                max_new_ranges: 1,
+                request_source_exchange: true,
+                now_seconds: chrono::Utc::now().timestamp().max(0) as u64,
+            })
+            .await?;
+        retained_sources.extend(report.sources);
+        for part in report.received_parts {
+            let bytes = part.data.len() as u64;
+            let disk_report = disk.apply_part(part)?;
+            engine.update_native_progress(task_id, bytes)?;
+            completed_ranges = disk_report.verified_ranges;
+            if disk_report.completed {
+                engine.complete_native_task(task_id, file.size)?;
+                engine.set_native_runtime_connections(task_id, 0)?;
+                publish_ed2k_status(
+                    engine,
+                    task_id,
+                    NativeEventType::TaskEd2kTransferUpdated,
+                    "transfer",
+                    "completed",
+                    Some("ED2K inline peer transfer completed"),
+                    BTreeMap::from([("knownSources".to_string(), retained_sources.len() as u64)]),
+                );
+                return Ok(());
+            }
+        }
+    }
+    engine.set_native_runtime_connections(task_id, 0)?;
+    Ok(())
+}
+
+fn ed2k_local_peer_identity(config: &GlobalConfig) -> PeerIdentity {
+    PeerIdentity {
+        user_hash: [0x11; 16],
+        client_id: 0,
+        tcp_port: config.ed2k_listen_tcp_port,
+        udp_port: config.ed2k_listen_udp_port,
+        kad_udp_port: config.ed2k_listen_udp_port,
+        server: None,
+        name: "raria".to_string(),
+    }
 }
 
 fn publish_ed2k_runtime_status(engine: &Engine, task_id: &TaskId, status: Ed2kRuntimeStatus) {
@@ -1610,6 +1734,182 @@ mod tests {
         let job = engine.registry.get(handle.gid).expect("job");
         assert_eq!(job.status, Status::Active);
         assert!(job.error_msg.is_none());
+    }
+
+    #[tokio::test]
+    async fn ed2k_runtime_downloads_inline_peer_and_completes_task() {
+        use raria_ed2k::hash::ed2k_root_hash;
+        use raria_ed2k::opcode::PeerOpcode;
+        use raria_ed2k::packet::{PacketFrame, Protocol, decode_tcp_frame, encode_tcp_frame};
+        use raria_ed2k::peer::{
+            PeerIdentity, build_emule_info, build_file_status_answer, build_peer_hello_answer,
+        };
+        use raria_ed2k::transfer::{PartRange, parse_part_request};
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::{TcpListener, TcpStream};
+
+        const MAX_PACKET: usize = 16 * 1024;
+
+        async fn read_frame(stream: &mut TcpStream) -> PacketFrame {
+            let mut header = [0_u8; 6];
+            stream.read_exact(&mut header).await.expect("header");
+            let len = u32::from_le_bytes(header[1..5].try_into().expect("len")) as usize;
+            let mut payload = vec![0_u8; len - 1];
+            stream.read_exact(&mut payload).await.expect("payload");
+            let mut raw = header.to_vec();
+            raw.extend_from_slice(&payload);
+            decode_tcp_frame(&raw, MAX_PACKET).expect("frame")
+        }
+
+        async fn write_frame(stream: &mut TcpStream, frame: &PacketFrame) {
+            let bytes = encode_tcp_frame(frame, MAX_PACKET).expect("encode");
+            stream.write_all(&bytes).await.expect("write");
+        }
+
+        fn hex_hash(hash: [u8; 16]) -> String {
+            const HEX: &[u8; 16] = b"0123456789abcdef";
+            let mut out = String::with_capacity(32);
+            for byte in hash {
+                out.push(HEX[(byte >> 4) as usize] as char);
+                out.push(HEX[(byte & 0x0f) as usize] as char);
+            }
+            out
+        }
+
+        fn remote_identity() -> PeerIdentity {
+            PeerIdentity {
+                user_hash: [0x22; 16],
+                client_id: 0x0506_0708,
+                tcp_port: 4662,
+                udp_port: 4672,
+                kad_udp_port: 4672,
+                server: None,
+                name: "remote-test".to_string(),
+            }
+        }
+
+        fn peer_frame(opcode: PeerOpcode, payload: Vec<u8>) -> PacketFrame {
+            PacketFrame {
+                protocol: Protocol::Edonkey,
+                opcode: opcode.into(),
+                payload,
+            }
+        }
+
+        fn sending_part(file_hash: [u8; 16], range: PartRange, data: &[u8]) -> PacketFrame {
+            let mut payload = file_hash.to_vec();
+            payload.extend_from_slice(&(range.begin as u32).to_le_bytes());
+            payload.extend_from_slice(&(range.end as u32).to_le_bytes());
+            payload.extend_from_slice(data);
+            peer_frame(PeerOpcode::SendingPart, payload)
+        }
+
+        let payload = b"data";
+        let file_hash = ed2k_root_hash(payload);
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("listener");
+        let addr = listener.local_addr().expect("addr");
+        let peer = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.expect("accept");
+            assert_eq!(
+                read_frame(&mut stream).await.opcode,
+                u8::from(PeerOpcode::Hello)
+            );
+            write_frame(
+                &mut stream,
+                &build_peer_hello_answer(&remote_identity()).expect("hello answer"),
+            )
+            .await;
+            assert_eq!(read_frame(&mut stream).await.protocol, Protocol::Emule);
+            write_frame(
+                &mut stream,
+                &build_emule_info(remote_identity().udp_port, true).expect("info answer"),
+            )
+            .await;
+            assert_eq!(
+                read_frame(&mut stream).await.opcode,
+                u8::from(PeerOpcode::RequestSources)
+            );
+            write_frame(
+                &mut stream,
+                &raria_ed2k::source::build_source_exchange_answer(file_hash, 4, true, &[])
+                    .expect("source exchange"),
+            )
+            .await;
+            assert_eq!(
+                read_frame(&mut stream).await.opcode,
+                u8::from(PeerOpcode::SetRequestedFileId)
+            );
+            write_frame(
+                &mut stream,
+                &build_file_status_answer(file_hash, &[true]).expect("status"),
+            )
+            .await;
+            assert_eq!(
+                read_frame(&mut stream).await.opcode,
+                u8::from(PeerOpcode::StartUploadRequest)
+            );
+            write_frame(
+                &mut stream,
+                &peer_frame(PeerOpcode::AcceptUploadRequest, Vec::new()),
+            )
+            .await;
+            let part_request = read_frame(&mut stream).await;
+            let ranges = parse_part_request(&part_request.payload, file_hash, false).expect("part");
+            assert_eq!(ranges, vec![PartRange { begin: 0, end: 4 }]);
+            write_frame(
+                &mut stream,
+                &sending_part(file_hash, PartRange { begin: 0, end: 4 }, payload),
+            )
+            .await;
+        });
+
+        let dir = tempdir().expect("tempdir");
+        let engine = Arc::new(Engine::new(GlobalConfig {
+            ed2k_enabled: true,
+            ed2k_enable_servers: false,
+            ed2k_enable_kad: false,
+            ..Default::default()
+        }));
+        let link = format!(
+            "ed2k://|file|sample.bin|4|{}|sources,{}:{}|/",
+            hex_hash(file_hash),
+            addr.ip(),
+            addr.port()
+        );
+        let handle = engine
+            .add_uri(&AddUriSpec {
+                uris: vec![link],
+                dir: dir.path().to_path_buf(),
+                filename: Some("sample.bin".into()),
+                connections: 1,
+                headers: Vec::new(),
+                http_user: None,
+                http_password: None,
+                checksum: None,
+            })
+            .expect("add ED2K task");
+        let task_id = engine.task_id_for_gid(handle.gid).expect("task id");
+        let token = engine
+            .activate_native_task(&task_id)
+            .expect("activate")
+            .cancel;
+
+        tokio::time::timeout(
+            Duration::from_secs(2),
+            run_ed2k_download(Arc::clone(&engine), task_id, token),
+        )
+        .await
+        .expect("runtime should complete")
+        .expect("runtime result");
+        peer.await.expect("peer");
+
+        let job = engine.registry.get(handle.gid).expect("job");
+        assert_eq!(job.status, Status::Complete);
+        assert_eq!(job.downloaded, 4);
+        assert_eq!(
+            std::fs::read(dir.path().join("sample.bin")).expect("download"),
+            payload
+        );
     }
 
     #[test]

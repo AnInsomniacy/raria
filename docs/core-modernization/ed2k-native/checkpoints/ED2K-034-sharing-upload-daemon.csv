@@ -1,0 +1,5 @@
+id,status,area,target,acceptance,validation,evidence,notes
+ED2K-034.1,pending,sharing,shared file activation,"Completed or imported native ED2K shared files are visible to the daemon sharing service when sharing is enabled.","focused local sharing test","pending","No known.met import."
+ED2K-034.2,pending,upload,tcp upload listener,"The daemon can accept a local ED2K upload request and serve only verified shared ranges through the native upload queue.","focused local TCP upload test","pending","No chat preview collection or GUI behavior."
+ED2K-034.3,pending,upload,udp reask listener,"The daemon can answer local UDP reask requests from current native upload queue state.","focused local UDP reask test","pending","No public-network gate."
+ED2K-034.4,pending,credits,persistent fairness,"Upload/download credit counters persist through native rows and affect upload queue order in daemon-visible flows.","focused persistence and daemon test","pending","No secure-ident claim until signature flow exists."

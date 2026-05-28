@@ -658,3 +658,21 @@ passed.
 Remaining: Start ED2K-032 final validation and smoke evidence.
 
 Blocked: none.
+
+## 2026-05-28 ED2K-032 verified
+
+Changed: Connected daemon ED2K tasks to inline peer sources. The daemon now
+parses native ED2K file links, projects file identity into runtime metadata,
+opens bounded peer TCP exchanges for inline sources, writes received parts
+through ED2K disk integrity, updates native progress, and completes the task
+only after verified disk truth.
+
+Verified: The RED check timed out while `run_ed2k_download` only emitted
+status ticks. After implementation, `cargo test -p raria-cli
+ed2k_runtime_downloads_inline_peer_and_completes_task --locked --
+--nocapture` passed with a local TCP peer, verified output bytes, completed
+task state, and native ED2K transfer status.
+
+Remaining: Start ED2K-033 daemon server, Kad, and search execution.
+
+Blocked: none.
