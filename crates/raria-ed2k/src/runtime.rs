@@ -20,6 +20,7 @@ use crate::kad::{
     build_kad_publish_source_request, build_kad_source_search_request, dedupe_kad_search_entries,
     extract_kad_source_entries, parse_kad_search_result,
 };
+use crate::obfuscation::{decrypt_server_response, encrypt_server_request};
 use crate::opcode::{KadOpcode, ServerOpcode};
 use crate::packet::{
     PacketFrame, Protocol, decode_tcp_frame, decode_udp_datagram, encode_tcp_frame,
@@ -33,12 +34,12 @@ use crate::peer::{
 };
 use crate::search::{
     Ed2kServerSearchQuery, Ed2kServerSearchResult, build_server_search_request,
-    parse_server_search_results,
+    parse_server_search_results, parse_udp_global_search_results,
 };
 use crate::server::{
     FoundSource, ServerTcpState, ServerUdpState, ServerUdpStatus, build_get_sources_request,
-    build_global_get_sources_request, build_login_request, build_udp_status_request,
-    parse_udp_found_sources_payloads,
+    build_global_get_sources_request, build_global_search_request, build_login_request,
+    build_udp_status_request, parse_udp_found_sources_payloads,
 };
 use crate::sharing::{
     SharedFileInput, SharedFileOrigin, SharedFileStore, SharedPartError, SharedUploadRequest,
@@ -360,6 +361,10 @@ pub struct Ed2kServerEndpoint {
     pub tcp_port: u16,
     /// UDP server port.
     pub udp_port: u16,
+    /// Optional UDP obfuscation key from server bootstrap metadata.
+    pub udp_key: Option<u32>,
+    /// Optional UDP capability flags from server bootstrap metadata.
+    pub udp_flags: Option<u32>,
 }
 
 impl Ed2kServerEndpoint {
@@ -369,7 +374,21 @@ impl Ed2kServerEndpoint {
             host: host.into(),
             tcp_port,
             udp_port,
+            udp_key: None,
+            udp_flags: None,
         }
+    }
+
+    /// Attach a UDP obfuscation key.
+    pub fn with_udp_key(mut self, udp_key: Option<u32>) -> Self {
+        self.udp_key = udp_key.filter(|key| *key != 0);
+        self
+    }
+
+    /// Attach UDP capability flags.
+    pub fn with_udp_flags(mut self, udp_flags: Option<u32>) -> Self {
+        self.udp_flags = udp_flags;
+        self
     }
 }
 
@@ -455,10 +474,23 @@ impl Ed2kServerRuntime {
             self.config.emule_version,
         )?;
         write_tcp_frame(&mut stream, &login, self.config.max_packet_size).await?;
+
+        let mut state = ServerTcpState::new(endpoint.host, endpoint.tcp_port);
+        for _ in 0..8 {
+            let frame = read_tcp_frame(
+                &mut stream,
+                self.config.max_packet_size,
+                self.config.io_timeout,
+            )
+            .await?;
+            state.apply_frame(&frame)?;
+            if state.reachability.is_some() {
+                break;
+            }
+        }
         let source_request = build_get_sources_request(query.file_hash, query.file_size, false)?;
         write_tcp_frame(&mut stream, &source_request, self.config.max_packet_size).await?;
 
-        let mut state = ServerTcpState::new(endpoint.host, endpoint.tcp_port);
         let mut sources = Vec::new();
         for _ in 0..8 {
             let frame = read_tcp_frame(
@@ -503,6 +535,23 @@ impl Ed2kServerRuntime {
             self.config.emule_version,
         )?;
         write_tcp_frame(&mut stream, &login, self.config.max_packet_size).await?;
+
+        let mut state = ServerTcpState::new(endpoint.host, endpoint.tcp_port);
+        for _ in 0..8 {
+            let Some(frame) = read_tcp_frame_optional(
+                &mut stream,
+                self.config.max_packet_size,
+                self.config.io_timeout,
+            )
+            .await?
+            else {
+                break;
+            };
+            state.apply_frame(&frame)?;
+            if state.reachability.is_some() {
+                break;
+            }
+        }
         let search = PacketFrame {
             protocol: Protocol::Edonkey,
             opcode: ServerOpcode::SearchRequest.into(),
@@ -547,19 +596,21 @@ impl Ed2kServerRuntime {
             .context("ED2K UDP bind failed")?;
         let server_addr = resolve_udp_endpoint(&endpoint).await?;
         let status_request = build_udp_status_request(challenge);
-        write_udp_frame(
+        write_server_udp_frame(
             &socket,
             server_addr,
             &status_request,
+            endpoint.udp_key,
             self.config.max_packet_size,
         )
         .await?;
         let source_request =
             build_global_get_sources_request(query.file_hash, query.file_size, true);
-        write_udp_frame(
+        write_server_udp_frame(
             &socket,
             server_addr,
             &source_request,
+            endpoint.udp_key,
             self.config.max_packet_size,
         )
         .await?;
@@ -567,9 +618,13 @@ impl Ed2kServerRuntime {
         let mut state = ServerUdpState::new(challenge);
         let mut sources = Vec::new();
         for _ in 0..4 {
-            let frame =
-                read_udp_frame(&socket, self.config.max_packet_size, self.config.io_timeout)
-                    .await?;
+            let frame = read_server_udp_frame(
+                &socket,
+                endpoint.udp_key,
+                self.config.max_packet_size,
+                self.config.io_timeout,
+            )
+            .await?;
             match ServerOpcode::from_byte(frame.opcode) {
                 Some(ServerOpcode::GlobalServerStatusResponse) => {
                     state.apply_status_response(&frame.payload)?;
@@ -587,6 +642,49 @@ impl Ed2kServerRuntime {
         Ok(Ed2kUdpServerReport {
             status: state.status,
             sources,
+        })
+    }
+
+    /// Run one UDP global server keyword-search exchange.
+    pub async fn query_udp_search(
+        &self,
+        endpoint: Ed2kServerEndpoint,
+        query: Ed2kServerSearchQuery,
+    ) -> anyhow::Result<Ed2kServerSearchReport> {
+        let socket = UdpSocket::bind(&self.config.udp_bind_addr)
+            .await
+            .context("ED2K UDP bind failed")?;
+        let server_addr = resolve_udp_endpoint(&endpoint).await?;
+        let search_request = build_global_search_request(&query, endpoint.udp_flags)?;
+        write_server_udp_frame(
+            &socket,
+            server_addr,
+            &search_request,
+            endpoint.udp_key,
+            self.config.max_packet_size,
+        )
+        .await?;
+
+        let mut results = Vec::new();
+        for _ in 0..4 {
+            let frame = read_server_udp_frame(
+                &socket,
+                endpoint.udp_key,
+                self.config.max_packet_size,
+                self.config.io_timeout,
+            )
+            .await?;
+            if ServerOpcode::from_byte(frame.opcode) == Some(ServerOpcode::GlobalSearchResponse) {
+                let parsed = parse_udp_global_search_results(&frame.payload, "server-udp")?;
+                results.extend(parsed.entries);
+                if !results.is_empty() {
+                    break;
+                }
+            }
+        }
+        Ok(Ed2kServerSearchReport {
+            results,
+            more_results: false,
         })
     }
 }
@@ -1633,16 +1731,42 @@ async fn write_udp_frame(
     Ok(())
 }
 
-async fn read_udp_frame(
+async fn write_server_udp_frame(
     socket: &UdpSocket,
+    server_addr: SocketAddr,
+    frame: &PacketFrame,
+    udp_key: Option<u32>,
+    max_packet_size: usize,
+) -> anyhow::Result<()> {
+    let bytes = encode_udp_datagram(frame, max_packet_size)?;
+    let bytes = if let Some(key) = udp_key {
+        encrypt_server_request(&bytes, key, rand::random::<u16>(), rand::random::<u8>())
+    } else {
+        bytes
+    };
+    socket
+        .send_to(&bytes, server_addr)
+        .await
+        .context("ED2K UDP send failed")?;
+    Ok(())
+}
+
+async fn read_server_udp_frame(
+    socket: &UdpSocket,
+    udp_key: Option<u32>,
     max_packet_size: usize,
     timeout: Duration,
 ) -> anyhow::Result<PacketFrame> {
-    let mut buffer = vec![0_u8; max_packet_size + 2];
+    let mut buffer = vec![0_u8; max_packet_size + 16];
     let (len, _) = tokio::time::timeout(timeout, socket.recv_from(&mut buffer))
         .await
         .context("ED2K UDP read timed out")?
         .context("ED2K UDP read failed")?;
+    if let Some(key) = udp_key
+        && let Ok(frame) = decrypt_server_response(&buffer[..len], key, max_packet_size)
+    {
+        return Ok(frame);
+    }
     Ok(decode_udp_datagram(&buffer[..len], max_packet_size)?)
 }
 

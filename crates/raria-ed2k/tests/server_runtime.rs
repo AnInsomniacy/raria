@@ -1,3 +1,4 @@
+use raria_ed2k::obfuscation::{decrypt_server_request, encrypt_server_response};
 use raria_ed2k::opcode::ServerOpcode;
 use raria_ed2k::packet::{
     PacketFrame, Protocol, decode_tcp_frame, decode_udp_datagram, encode_tcp_frame,
@@ -5,6 +6,9 @@ use raria_ed2k::packet::{
 };
 use raria_ed2k::runtime::{
     Ed2kServerEndpoint, Ed2kServerRuntime, Ed2kServerRuntimeConfig, Ed2kSourceQuery,
+};
+use raria_ed2k::search::{
+    Ed2kServerSearchQuery, Ed2kServerSearchResult, build_server_search_result_payload,
 };
 use raria_ed2k::server::{ServerReachability, ServerStatus};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -21,8 +25,6 @@ async fn tcp_server_runtime_logs_in_and_collects_sources_from_local_server() {
         let (mut socket, _) = listener.accept().await.expect("accept");
         let login = read_tcp_frame(&mut socket).await;
         assert_eq!(login.opcode, u8::from(ServerOpcode::LoginRequest));
-        let source_request = read_tcp_frame(&mut socket).await;
-        assert_eq!(source_request.opcode, u8::from(ServerOpcode::GetSources));
 
         let mut id_change = Vec::new();
         id_change.extend_from_slice(&0x0102_0304_u32.to_le_bytes());
@@ -30,6 +32,9 @@ async fn tcp_server_runtime_logs_in_and_collects_sources_from_local_server() {
             .write_all(&tcp_frame(ServerOpcode::IdChange, id_change))
             .await
             .expect("idchange");
+        let source_request = read_tcp_frame(&mut socket).await;
+        assert_eq!(source_request.opcode, u8::from(ServerOpcode::GetSources));
+
         socket
             .write_all(&tcp_frame(
                 ServerOpcode::ServerStatus,
@@ -138,6 +143,60 @@ async fn udp_server_runtime_collects_status_and_sources_from_local_server() {
     assert_eq!(report.sources[0].tcp_port, 4663);
 }
 
+#[tokio::test]
+async fn udp_server_search_uses_obfuscation_key_when_endpoint_requires_it() {
+    let socket = UdpSocket::bind("127.0.0.1:0").await.expect("udp server");
+    let addr = socket.local_addr().expect("addr");
+    let udp_key = 0x1122_3344;
+    let server = tokio::spawn(async move {
+        let mut buf = [0_u8; 4096];
+        let (len, peer) = socket.recv_from(&mut buf).await.expect("search request");
+        assert_ne!(buf[0], u8::from(Protocol::Edonkey));
+        let search_request =
+            decrypt_server_request(&buf[..len], udp_key, MAX_PACKET).expect("obfuscated request");
+        assert_eq!(
+            search_request.opcode,
+            u8::from(ServerOpcode::GlobalSearchRequest)
+        );
+
+        let payload = udp_search_payload(Ed2kServerSearchResult {
+            hash: [0x25; 16],
+            name: "udp-obfuscated.iso".to_string(),
+            size: 4096,
+            source_count: 2,
+            complete_source_count: 1,
+            file_type: None,
+            extension: None,
+            source_network: "server-udp".to_string(),
+            sources: Vec::new(),
+            ed2k_uri: String::new(),
+        });
+        let response = udp_frame(ServerOpcode::GlobalSearchResponse, payload);
+        let response = encrypt_server_response(&response, udp_key, 0x7788, 0x01);
+        socket
+            .send_to(&response, peer)
+            .await
+            .expect("send search result");
+    });
+
+    let runtime = Ed2kServerRuntime::new(Ed2kServerRuntimeConfig::default());
+    let report = runtime
+        .query_udp_search(
+            Ed2kServerEndpoint::new("127.0.0.1", addr.port(), addr.port())
+                .with_udp_key(Some(udp_key)),
+            Ed2kServerSearchQuery {
+                keyword: "test".to_string(),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("udp search report");
+
+    server.await.expect("server task");
+    assert_eq!(report.results.len(), 1);
+    assert_eq!(report.results[0].name, "udp-obfuscated.iso");
+}
+
 async fn read_tcp_frame(socket: &mut TcpStream) -> PacketFrame {
     let mut header = [0_u8; 6];
     socket.read_exact(&mut header).await.expect("header");
@@ -147,6 +206,10 @@ async fn read_tcp_frame(socket: &mut TcpStream) -> PacketFrame {
     let mut raw = header.to_vec();
     raw.extend_from_slice(&payload);
     decode_tcp_frame(&raw, MAX_PACKET).expect("tcp frame")
+}
+
+fn udp_search_payload(entry: Ed2kServerSearchResult) -> Vec<u8> {
+    build_server_search_result_payload(&[entry]).expect("search result")[4..].to_vec()
 }
 
 fn tcp_frame(opcode: ServerOpcode, payload: Vec<u8>) -> Vec<u8> {

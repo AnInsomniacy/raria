@@ -3201,6 +3201,7 @@ version = "1.0.0"
 dependencies = [
  "anyhow",
  "flate2",
+ "md-5",
  "md4",
  "rand 0.9.2",
  "raria-core",

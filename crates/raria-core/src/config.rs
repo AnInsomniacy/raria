@@ -240,7 +240,7 @@ impl Default for GlobalConfig {
             bt_dht_config_file: None,
             bt_enable_pex: true,
             bt_piece_strategy: BtPieceStrategy::RarestFirst,
-            ed2k_enabled: false,
+            ed2k_enabled: true,
             ed2k_enable_servers: true,
             ed2k_enable_kad: true,
             ed2k_listen_tcp_port: 4662,

@@ -509,7 +509,6 @@ fn load_ed2k_server_bootstrap(config: &GlobalConfig, store: &Store) -> Result<us
         })?;
         merge_server_bootstrap(&mut servers, parsed);
     }
-
     if servers.is_empty() {
         return Ok(0);
     }
@@ -530,16 +529,19 @@ fn load_ed2k_kad_bootstrap(config: &GlobalConfig, store: &Store) -> Result<usize
         .get_ed2k_kad_bootstrap(ED2K_PROFILE_ID)?
         .map(|row| row.contacts)
         .unwrap_or_default();
-
     let paths = config
         .ed2k_nodes_dat_paths
         .iter()
         .cloned()
         .chain(local_amule_nodes_dat_paths(config.ed2k_use_local_nodes_dat))
         .collect::<Vec<_>>();
-
     for path in paths {
-        if !path.is_file() {
+        if !path.exists()
+            && !config
+                .ed2k_nodes_dat_paths
+                .iter()
+                .any(|configured| configured == &path)
+        {
             continue;
         }
         let payload = std::fs::read(&path).with_context(|| {
@@ -1965,7 +1967,13 @@ async fn run_ed2k_server_discovery(
             break;
         }
         let discovery = runtime.query_tcp_sources(
-            Ed2kServerEndpoint::new(&server.host, server.port, server.port),
+            ed2k_server_endpoint(
+                &server.host,
+                server.port,
+                server.udp_obfuscation_port,
+                server.udp_key,
+                server.udp_flags,
+            ),
             query.clone(),
         );
         let result = tokio::select! {
@@ -2127,16 +2135,51 @@ async fn run_ed2k_server_keyword_search(
         ..Default::default()
     });
     let mut results = Vec::new();
-    for server in row.servers.iter().take(3) {
+    let mut candidates = row.servers.clone();
+    candidates.sort_by_key(|server| {
+        (
+            server.udp_key.is_none(),
+            server.udp_obfuscation_port.is_none(),
+            std::cmp::Reverse(server.files.unwrap_or_default()),
+        )
+    });
+    for server in candidates.iter().take(5) {
+        let endpoint = ed2k_server_endpoint(
+            &server.host,
+            server.port,
+            server.udp_obfuscation_port,
+            server.udp_key,
+            server.udp_flags,
+        );
+        let query = Ed2kServerSearchQuery {
+            keyword: query.to_string(),
+            ..Default::default()
+        };
         let report = runtime
-            .query_tcp_search(
-                Ed2kServerEndpoint::new(&server.host, server.port, server.port),
-                Ed2kServerSearchQuery {
-                    keyword: query.to_string(),
-                    ..Default::default()
-                },
-            )
+            .query_udp_search(endpoint.clone(), query.clone())
             .await;
+        match report {
+            Ok(report) => {
+                results.extend(
+                    report
+                        .results
+                        .into_iter()
+                        .map(native_search_result_from_server),
+                );
+                if !results.is_empty() {
+                    break;
+                }
+            }
+            Err(error) => {
+                tracing::debug!(
+                    server = %server.host,
+                    port = server.port,
+                    error = %error,
+                    "ED2K UDP server search failed"
+                );
+            }
+        }
+        let report = runtime.query_tcp_search(endpoint, query).await;
         match report {
             Ok(report) => {
                 results.extend(
@@ -2160,6 +2203,24 @@ async fn run_ed2k_server_keyword_search(
         }
     }
     Ok(results)
+}
+
+fn ed2k_server_endpoint(
+    host: &str,
+    tcp_port: u16,
+    udp_obfuscation_port: Option<u16>,
+    udp_key: Option<u32>,
+    udp_flags: Option<u32>,
+) -> Ed2kServerEndpoint {
+    Ed2kServerEndpoint::new(
+        host,
+        tcp_port,
+        udp_obfuscation_port
+            .filter(|port| *port != 0)
+            .unwrap_or_else(|| tcp_port.saturating_add(4)),
+    )
+    .with_udp_key(udp_key)
+    .with_udp_flags(udp_flags)
 }
 
 async fn run_ed2k_kad_keyword_search(

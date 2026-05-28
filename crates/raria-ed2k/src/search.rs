@@ -4,6 +4,7 @@ use crate::hash::Ed2kHash;
 use crate::tag::{Tag, TagName, TagValue, decode_tag_prefix, encode_tag};
 use crate::wire::{Cursor, ipv4_from_server_met};
 
+const TAG_SERVER_UDPSEARCH_FLAGS: u8 = 0x0e;
 const TAG_FILE_NAME: u8 = 0x01;
 const TAG_FILE_SIZE: u8 = 0x02;
 const TAG_FILE_TYPE: u8 = 0x03;
@@ -13,6 +14,7 @@ const TAG_COMPLETE_SOURCES: u8 = 0x30;
 const TAG_FILE_SIZE_HI: u8 = 0x3a;
 const MAX_SEARCH_TERMS: usize = 30;
 const MAX_SEARCH_RESULTS: u32 = 10_000;
+const SRVCAP_UDP_NEWTAGS_LARGEFILES: u8 = 0x01;
 
 /// Native server search query.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -157,6 +159,33 @@ pub fn build_server_search_request(
     Ok(payload)
 }
 
+/// Build an ED2K server global UDP keyword-search request payload and opcode.
+pub fn build_udp_server_search_request(
+    query: &Ed2kServerSearchQuery,
+    udp_flags: Option<u32>,
+) -> Result<(crate::opcode::ServerOpcode, Vec<u8>), Ed2kServerSearchError> {
+    let payload = build_server_search_request(query)?;
+    let flags = udp_flags.unwrap_or_default();
+    let supports_extended_search = flags & 0x0000_0002 != 0;
+    let supports_large_files = flags & 0x0000_0100 != 0;
+    if supports_extended_search && supports_large_files {
+        let tag = encode_tag(&Tag::new(
+            TagName::Id(TAG_SERVER_UDPSEARCH_FLAGS),
+            TagValue::UInt8(SRVCAP_UDP_NEWTAGS_LARGEFILES),
+        ))
+        .map_err(|_| Ed2kServerSearchError::InvalidTag)?;
+        let mut extended = Vec::with_capacity(4 + tag.len() + payload.len());
+        extended.extend_from_slice(&1_u32.to_le_bytes());
+        extended.extend_from_slice(&tag);
+        extended.extend_from_slice(&payload);
+        Ok((crate::opcode::ServerOpcode::GlobalSearchRequest3, extended))
+    } else if supports_extended_search {
+        Ok((crate::opcode::ServerOpcode::GlobalSearchRequest2, payload))
+    } else {
+        Ok((crate::opcode::ServerOpcode::GlobalSearchRequest, payload))
+    }
+}
+
 /// Parse ED2K server search result payloads.
 pub fn parse_server_search_results(
     payload: &[u8],
@@ -171,35 +200,10 @@ pub fn parse_server_search_results(
     }
     let mut entries = Vec::with_capacity(count as usize);
     for _ in 0..count {
-        let hash = cursor
-            .read_hash16()
+        let (result, consumed) = parse_one_search_result(cursor.remaining_bytes(), source_network)?;
+        cursor
+            .read_exact(consumed)
             .ok_or(Ed2kServerSearchError::InvalidPayload)?;
-        let client_id = cursor
-            .read_u32()
-            .ok_or(Ed2kServerSearchError::InvalidPayload)?;
-        let client_port = cursor
-            .read_u16()
-            .ok_or(Ed2kServerSearchError::InvalidPayload)?;
-        let tag_count = cursor
-            .read_u32()
-            .ok_or(Ed2kServerSearchError::InvalidPayload)?;
-        let mut tags = Vec::new();
-        for _ in 0..tag_count {
-            let (tag, consumed) = decode_tag_prefix(cursor.remaining_bytes())
-                .map_err(|_| Ed2kServerSearchError::InvalidTag)?;
-            cursor
-                .read_exact(consumed)
-                .ok_or(Ed2kServerSearchError::InvalidPayload)?;
-            tags.push(tag);
-        }
-        let mut result = search_result_from_tags(hash, tags, source_network)?;
-        if client_id > 0x00ff_ffff && client_port != 0 {
-            result.sources.push(SearchResultSource {
-                host: ipv4_from_server_met(client_id),
-                port: client_port,
-            });
-        }
-        result.ed2k_uri = file_link_for_result(&result);
         entries.push(result);
     }
     let more_results = match cursor.remaining() {
@@ -210,6 +214,33 @@ pub fn parse_server_search_results(
     Ok(Ed2kServerSearchResults {
         entries,
         more_results,
+    })
+}
+
+/// Parse one or more packed UDP global-search result payloads.
+pub fn parse_udp_global_search_results(
+    payload: &[u8],
+    source_network: &str,
+) -> Result<Ed2kServerSearchResults, Ed2kServerSearchError> {
+    let mut offset = 0_usize;
+    let mut entries = Vec::new();
+    while offset < payload.len() {
+        let (entry, consumed) = parse_one_search_result(&payload[offset..], source_network)?;
+        entries.push(entry);
+        offset = offset
+            .checked_add(consumed)
+            .ok_or(Ed2kServerSearchError::InvalidPayload)?;
+        if offset == payload.len() {
+            break;
+        }
+        if payload.len() - offset < 2 || payload[offset] != 0xe3 || payload[offset + 1] != 0x99 {
+            return Err(Ed2kServerSearchError::InvalidPayload);
+        }
+        offset += 2;
+    }
+    Ok(Ed2kServerSearchResults {
+        entries,
+        more_results: false,
     })
 }
 
@@ -277,6 +308,43 @@ pub fn build_server_search_result_payload(
         }
     }
     Ok(payload)
+}
+
+fn parse_one_search_result(
+    payload: &[u8],
+    source_network: &str,
+) -> Result<(Ed2kServerSearchResult, usize), Ed2kServerSearchError> {
+    let mut cursor = Cursor::new(payload);
+    let hash = cursor
+        .read_hash16()
+        .ok_or(Ed2kServerSearchError::InvalidPayload)?;
+    let client_id = cursor
+        .read_u32()
+        .ok_or(Ed2kServerSearchError::InvalidPayload)?;
+    let client_port = cursor
+        .read_u16()
+        .ok_or(Ed2kServerSearchError::InvalidPayload)?;
+    let tag_count = cursor
+        .read_u32()
+        .ok_or(Ed2kServerSearchError::InvalidPayload)?;
+    let mut tags = Vec::new();
+    for _ in 0..tag_count {
+        let (tag, consumed) = decode_tag_prefix(cursor.remaining_bytes())
+            .map_err(|_| Ed2kServerSearchError::InvalidTag)?;
+        cursor
+            .read_exact(consumed)
+            .ok_or(Ed2kServerSearchError::InvalidPayload)?;
+        tags.push(tag);
+    }
+    let mut result = search_result_from_tags(hash, tags, source_network)?;
+    if client_id > 0x00ff_ffff && client_port != 0 {
+        result.sources.push(SearchResultSource {
+            host: ipv4_from_server_met(client_id),
+            port: client_port,
+        });
+    }
+    result.ed2k_uri = file_link_for_result(&result);
+    Ok((result, cursor.position()))
 }
 
 enum SearchTerm {

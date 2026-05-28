@@ -3,6 +3,9 @@
 use crate::hash::Ed2kHash;
 use crate::opcode::ServerOpcode;
 use crate::packet::{PacketFrame, Protocol};
+use crate::search::{
+    Ed2kServerSearchError, Ed2kServerSearchQuery, build_udp_server_search_request,
+};
 use crate::tag::{Tag, TagName, TagValue, decode_tag_prefix, encode_tag};
 use crate::wire::{Cursor, ipv4_from_server_met};
 use serde::{Deserialize, Serialize};
@@ -569,6 +572,19 @@ pub fn build_global_get_sources_request(
         },
         payload,
     }
+}
+
+/// Build a UDP global server keyword-search request.
+pub fn build_global_search_request(
+    query: &Ed2kServerSearchQuery,
+    udp_flags: Option<u32>,
+) -> Result<PacketFrame, Ed2kServerSearchError> {
+    let (opcode, payload) = build_udp_server_search_request(query, udp_flags)?;
+    Ok(PacketFrame {
+        protocol: Protocol::Edonkey,
+        opcode: opcode.into(),
+        payload,
+    })
 }
 
 /// Parse one or more packed UDP found-source payloads for the expected hash.

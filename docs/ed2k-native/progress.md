@@ -865,7 +865,36 @@ Verified: `cargo fmt --all --check`, `cargo test -p raria-cli ed2k_search
 clippy -p raria-cli --all-targets --locked -- -D warnings`, ED2K CSV
 validation for 46 files, and `git diff --check` passed.
 
-Remaining: Start ED2K-041 public search e2e under
-`/Users/sekiro/Desktop/raria-test`.
+Remaining: Close ED2K public readiness as limited after manual public search
+attempts.
 
-Blocked: none.
+Blocked: Public ED2K search did not return raria results in the tested manual
+windows.
+
+## 2026-05-28 ED2K public-readiness limited closeout
+
+Changed: Stopped public ED2K search chasing and closed ED2K-041 through
+ED2K-043 as limited. Manual desktop runs built release binaries, started fresh
+native daemons, loaded bootstrap inputs, and executed query `test` through
+`/api/v1/ed2k/searches`. raria returned zero public results in the tested
+windows. aMule could return results on the same network, so the remaining gap
+is public interaction parity rather than a lack of local protocol ownership.
+
+Changed: Retained useful independent Rust work for UDP server search,
+obfuscated UDP server datagrams, bootstrap metadata, and native daemon search
+execution. Removed public-window-driven Kad contact limits, environment
+dependent local `server.met` loading, and heavy or duplicate tests added during
+debugging.
+
+Verified: `cargo fmt --all`, `cargo check --workspace --locked`, `cargo test
+-p raria-ed2k --lib obfuscation --locked`, `cargo test -p raria-ed2k --test
+server_runtime --locked`, `cargo test -p raria-cli ed2k_search --locked`,
+`cargo clippy -p raria-ed2k --all-targets --locked -- -D warnings`, `cargo
+clippy -p raria-cli --all-targets --locked -- -D warnings`, `cargo clippy
+--workspace --all-targets --locked -- -D warnings`, CSV validation for 71
+tracker files, and `git diff --check` passed.
+
+Remaining: Commit the limited public-readiness closeout and cleanup.
+
+Blocked: Public-network ED2K search remains limited and is no longer treated
+as a goal completion gate.

@@ -213,7 +213,7 @@ mod tests {
         assert_eq!(global.default_segments, 7);
         assert_eq!(global.min_segment_size, 2097152);
         assert_eq!(global.retry_attempts, 4);
-        assert!(!global.ed2k_enabled);
+        assert!(global.ed2k_enabled);
         assert!(global.ed2k_enable_servers);
         assert!(global.ed2k_enable_kad);
         assert_eq!(global.ed2k_listen_tcp_port, 4662);
@@ -349,11 +349,13 @@ mod tests {
         let config = RariaConfig::default();
         let global = config.to_global_config().expect("convert to global config");
 
+        assert!(config.ed2k.enabled);
         assert!(config.ed2k.use_default_servers);
         assert!(config.ed2k.servers.is_empty());
         assert!(config.ed2k.server_met_paths.is_empty());
         assert!(config.ed2k.nodes_dat_paths.is_empty());
         assert!(config.ed2k.use_local_nodes_dat);
+        assert!(global.ed2k_enabled);
         assert!(global.ed2k_use_default_servers);
         assert!(global.ed2k_servers.is_empty());
         assert!(global.ed2k_server_met_paths.is_empty());

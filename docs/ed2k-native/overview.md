@@ -114,18 +114,13 @@ disk completion, daemon server and Kad discovery scheduling, native search
 execution, daemon upload listeners, credit persistence, local smoke evidence,
 and local final validation are verified through ED2K-035.
 
-Public usability is still open. A fresh raria daemon must be able to bootstrap
-useful public ED2K contacts, run server and Kad search through
-`/api/v1/ed2k/searches`, return non-empty results for query `test` within 60
-seconds during manual public smoke, and turn useful search or discovery
-results into download-capable native ED2K tasks. ED2K-036 through ED2K-043 own
-that public-readiness closeout.
-
-Current public-readiness boundary: native bootstrap inputs, bootstrap loading,
-server search codecs, and daemon server/Kad search execution are verified
-through ED2K-040 with deterministic local fixtures. Public-network search
-evidence, search-result source scheduling, and final public-readiness
-validation remain open in ED2K-041 through ED2K-043.
+Public-network usability is limited. A fresh raria daemon can load native
+bootstrap inputs and execute native server/Kad search resources, and useful
+UDP server-search and UDP obfuscation support has been retained. Manual public
+search runs for query `test` still returned zero raria results in the tested
+windows while aMule could return results on the same network. ED2K-041 through
+ED2K-043 close this as an unresolved public interaction parity limit, not as
+complete public ED2K readiness.
 
 ED2K bootstrap policy is native configuration, not legacy import. The `[ed2k]`
 section owns `use_default_servers`, `servers`, `server_met_paths`,
@@ -153,7 +148,7 @@ In scope:
 | Upload and credits | Upload queue, UDP reask responses, ranks, slots, and practical credit counters are implemented truthfully |
 | Search | Server and Kad search expose native search resources, merge results, and return startable ED2K links from a fresh daemon |
 | Integration | API, events, CLI, config, docs, persistence, logs, and final validation match raria-native contracts |
-| Public readiness | Release binary, daemon API, bootstrap, search, source loop, and manual public smoke produce durable evidence under `/Users/sekiro/Desktop/raria-test` |
+| Public readiness | Local protocol and daemon behavior are verified; public-network search remains limited and is not a release gate |
 
 Prune:
 
@@ -193,12 +188,12 @@ cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 ```
 
-Manual public ED2K smoke is a separate e2e validation, not a Rust test. Build
-the release binary to `/Users/sekiro/Desktop/raria-test/bin/raria`, store raw
-run evidence under `/Users/sekiro/Desktop/raria-test/runs/<batch>`, and commit
-only concise tracker conclusions. Final public acceptance requires native
-`/api/v1/ed2k/searches` for query `test` to return `resultCount > 0` within 60
-seconds and the daemon to shut down cleanly.
+Manual public ED2K smoke is a separate e2e signal, not a Rust test and not a
+release gate. Store raw run evidence under `/Users/sekiro/Desktop/raria-test`
+when such runs are requested, and commit only concise tracker conclusions.
+Current public search evidence is limited: raria did not return public results
+for query `test` in the tested windows, so documentation must not claim full
+public ED2K usability.
 
 ## Update Rules
 

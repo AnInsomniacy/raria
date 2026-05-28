@@ -17,6 +17,8 @@ pub mod identity;
 pub mod kad;
 /// ED2K link parsing ownership.
 pub mod link;
+/// ED2K UDP obfuscation for server datagrams.
+pub mod obfuscation;
 /// Retained ED2K, eMule, and Kad opcode names.
 pub mod opcode;
 /// ED2K, eMule, and Kad packet framing.

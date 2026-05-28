@@ -260,7 +260,7 @@ pub struct Ed2kConfig {
 impl Default for Ed2kConfig {
     fn default() -> Self {
         Self {
-            enabled: false,
+            enabled: true,
             enable_servers: true,
             enable_kad: true,
             listen_tcp_port: 4662,
