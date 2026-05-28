@@ -20,6 +20,7 @@ use crate::job::{Gid, Job, Status};
 use crate::limiter::SharedRateLimiter;
 use crate::logging::emit_structured_log;
 use crate::native::{
+    NativeEd2kSearchId, NativeEd2kSearchNetwork, NativeEd2kSearchResult, NativeEd2kSearchSummary,
     NativeEvent, NativeEventData, NativeEventType, NativePeerSnapshot, NativeSourceHealth,
     NativeTaskRow, NativeTaskSummary, NativeTrackerSnapshot, TaskId,
 };
@@ -162,6 +163,8 @@ pub struct Engine {
     job_rate_limiters: Mutex<HashMap<Gid, Arc<SharedRateLimiter>>>,
     /// Per-job progress sampling state used to project native range speed.
     job_speed_samples: Mutex<HashMap<Gid, SpeedSample>>,
+    /// Native ED2K search resources retained for the current daemon session.
+    ed2k_searches: Mutex<HashMap<NativeEd2kSearchId, NativeEd2kSearchSummary>>,
     /// Unique session identifier (random hex, persisted for lifetime of process).
     pub session_id: String,
     store: Option<Arc<Store>>,
@@ -194,6 +197,7 @@ impl Engine {
             global_upload_limit: AtomicU64::new(global_upload_limit),
             job_rate_limiters: Mutex::new(HashMap::new()),
             job_speed_samples: Mutex::new(HashMap::new()),
+            ed2k_searches: Mutex::new(HashMap::new()),
             session_id: format!("{:016x}", rand::random::<u64>()),
             store: None,
             shutdown: CancellationToken::new(),
@@ -218,6 +222,7 @@ impl Engine {
             global_upload_limit: AtomicU64::new(global_upload_limit),
             job_rate_limiters: Mutex::new(HashMap::new()),
             job_speed_samples: Mutex::new(HashMap::new()),
+            ed2k_searches: Mutex::new(HashMap::new()),
             session_id: format!("{:016x}", rand::random::<u64>()),
             store: Some(store),
             shutdown: CancellationToken::new(),
@@ -349,6 +354,72 @@ impl Engine {
             .iter()
             .map(|job| self.native_task_summary_from_job(job))
             .collect()
+    }
+
+    /// Create a native ED2K search resource.
+    pub fn create_native_ed2k_search(
+        &self,
+        query: impl Into<String>,
+        networks: Vec<NativeEd2kSearchNetwork>,
+    ) -> Result<NativeEd2kSearchSummary> {
+        let query = query.into().trim().to_string();
+        anyhow::ensure!(!query.is_empty(), "ED2K search query is empty");
+        anyhow::ensure!(!networks.is_empty(), "ED2K search network list is empty");
+
+        let summary = NativeEd2kSearchSummary::queued(query, networks);
+        self.ed2k_searches
+            .lock()
+            .insert(summary.search_id.clone(), summary.clone());
+        Ok(summary)
+    }
+
+    /// Return all native ED2K search resources without result payloads.
+    pub fn native_ed2k_searches(&self) -> Vec<NativeEd2kSearchSummary> {
+        let mut searches = self
+            .ed2k_searches
+            .lock()
+            .values()
+            .map(NativeEd2kSearchSummary::list_item)
+            .collect::<Vec<_>>();
+        searches.sort_by(|left, right| left.search_id.as_str().cmp(right.search_id.as_str()));
+        searches
+    }
+
+    /// Return a paged native ED2K search resource.
+    pub fn native_ed2k_search_summary(
+        &self,
+        search_id: &NativeEd2kSearchId,
+        cursor: usize,
+        limit: usize,
+    ) -> Result<NativeEd2kSearchSummary> {
+        let searches = self.ed2k_searches.lock();
+        let search = searches
+            .get(search_id)
+            .context("native ED2K search not found")?;
+        Ok(search.page(cursor, limit.max(1)))
+    }
+
+    /// Append native ED2K search results from a runtime search backend.
+    pub fn record_native_ed2k_search_results(
+        &self,
+        search_id: &NativeEd2kSearchId,
+        results: Vec<NativeEd2kSearchResult>,
+    ) -> Result<NativeEd2kSearchSummary> {
+        let mut searches = self.ed2k_searches.lock();
+        let search = searches
+            .get_mut(search_id)
+            .context("native ED2K search not found")?;
+        for result in results {
+            if !search
+                .results
+                .iter()
+                .any(|existing| existing.result_id == result.result_id)
+            {
+                search.results.push(result);
+            }
+        }
+        search.result_count = search.results.len();
+        Ok(search.page(0, search.results.len().max(1)))
     }
 
     /// Return native BitTorrent peer snapshots for a task.

@@ -26,8 +26,10 @@ The current tree provides:
 - shell completion for retained native CLI commands
 - structured JSON file logging for high-value runtime surfaces
 
-Native ED2K/eMule support is planned in the engineering tracker. It is not part
-of the implemented runtime listed above until the ED2K checkpoints close.
+Native ED2K/eMule support is in progress. Current ED2K work includes native
+link parsing, protocol primitives, persistence rows, task creation, status
+projection, events, and search resources. Full ED2K network transfer runtime is
+not complete until the ED2K tracker closes.
 
 ## Implemented Capabilities
 
@@ -72,6 +74,9 @@ Current native routes include:
 - `GET /api/v1/health`
 - `GET /api/v1/config`
 - `GET /api/v1/stats`
+- `GET /api/v1/ed2k/searches`
+- `POST /api/v1/ed2k/searches`
+- `GET /api/v1/ed2k/searches/{searchId}`
 - `GET /api/v1/transfer`
 - `PATCH /api/v1/transfer`
 - `GET /api/v1/tasks`
@@ -104,9 +109,9 @@ Task creation accepts direct `sources`, a `metalink` object with `bytesBase64` o
 
 Mutation routes use native field names. Global transfer policy uses `downloadBytesPerSecondLimit`, `uploadBytesPerSecondLimit`, and `maxActiveTasks`. Task transfer policy uses `downloadBytesPerSecondLimit`, `uploadBytesPerSecondLimit`, and `segments`. Queue placement uses absolute `position`. Source replacement uses `sources`. File selection uses `selectedFileIds`. Tracker policy uses `trackerUris`, `excludedTrackerUris`, `connectTimeoutSeconds`, `timeoutSeconds`, and `intervalSeconds`. BitTorrent seeding policy uses `targetRatio`, `stopAfterMinutes`, and `idleDownloadTimeoutSeconds`.
 
-API errors use a native JSON envelope with `code` and `message`. Current stable codes include `invalid_request`, `invalid_task_id`, `task_not_found`, `auth_required`, and `session_store_unavailable`.
+API errors use a native JSON envelope with `code` and `message`. Current stable codes include `invalid_request`, `invalid_task_id`, `invalid_ed2k_search_id`, `task_not_found`, `ed2k_search_not_found`, `auth_required`, and `session_store_unavailable`.
 
-The event stream sends one JSON object per WebSocket message with `version`, `sequence`, `time`, `type`, `taskId`, and `data`. Stable raria event names include `task.created`, `task.started`, `task.resumed`, `task.progress`, `task.paused`, `task.completed`, `task.failed`, `task.removed`, `task.source.failed`, `task.bt.metadata.resolved`, `task.bt.seeding.started`, `task.bt.peer.updated`, and `task.bt.tracker.updated`.
+The event stream sends one JSON object per WebSocket message with `version`, `sequence`, `time`, `type`, `taskId`, and `data`. Stable raria event names include `task.created`, `task.started`, `task.resumed`, `task.progress`, `task.paused`, `task.completed`, `task.failed`, `task.removed`, `task.source.failed`, `task.bt.metadata.resolved`, `task.bt.seeding.started`, `task.bt.peer.updated`, `task.bt.tracker.updated`, and `task.ed2k.*` status updates.
 
 ## Structured Logging
 

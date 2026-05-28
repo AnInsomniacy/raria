@@ -635,6 +635,138 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn ed2k_search_create_and_list_use_native_resources() {
+        let engine = Arc::new(Engine::new(GlobalConfig::default()));
+        let cancel = CancellationToken::new();
+        let addrs = start_native_api_server(
+            Arc::clone(&engine),
+            &NativeApiConfig {
+                listen_addr: SocketAddr::from(([127, 0, 0, 1], 0)),
+                ..NativeApiConfig::default()
+            },
+            cancel.clone(),
+        )
+        .await
+        .expect("start native api");
+        let client = reqwest::Client::new();
+
+        let created: serde_json::Value = client
+            .post(format!("http://{}/api/v1/ed2k/searches", addrs.http))
+            .json(&serde_json::json!({
+                "query": "small linux iso",
+                "networks": ["server", "kad"],
+                "limit": 25
+            }))
+            .send()
+            .await
+            .expect("create search request")
+            .json()
+            .await
+            .expect("create search json");
+
+        let search_id = created["searchId"].as_str().expect("search id");
+        assert!(search_id.starts_with("search_"));
+        assert_eq!(created["query"], "small linux iso");
+        assert_eq!(created["networks"], serde_json::json!(["server", "kad"]));
+        assert_eq!(created["lifecycle"], "queued");
+        assert_eq!(created["resultCount"], 0);
+        assert!(created["nextCursor"].is_null());
+        assert!(created.get("gid").is_none());
+        assert!(created.get("method").is_none());
+
+        let searches: serde_json::Value = client
+            .get(format!("http://{}/api/v1/ed2k/searches", addrs.http))
+            .send()
+            .await
+            .expect("list searches request")
+            .json()
+            .await
+            .expect("list searches json");
+        assert_eq!(searches["searches"][0]["searchId"], search_id);
+        assert_eq!(searches["searches"][0]["resultCount"], 0);
+
+        cancel.cancel();
+    }
+
+    #[tokio::test]
+    async fn ed2k_search_detail_paginates_startable_result_links() {
+        use raria_core::native::{NativeEd2kSearchId, NativeEd2kSearchResult};
+
+        let engine = Arc::new(Engine::new(GlobalConfig::default()));
+        let cancel = CancellationToken::new();
+        let addrs = start_native_api_server(
+            Arc::clone(&engine),
+            &NativeApiConfig {
+                listen_addr: SocketAddr::from(([127, 0, 0, 1], 0)),
+                ..NativeApiConfig::default()
+            },
+            cancel.clone(),
+        )
+        .await
+        .expect("start native api");
+        let client = reqwest::Client::new();
+
+        let created: serde_json::Value = client
+            .post(format!("http://{}/api/v1/ed2k/searches", addrs.http))
+            .json(&serde_json::json!({
+                "query": "sample iso"
+            }))
+            .send()
+            .await
+            .expect("create search request")
+            .json()
+            .await
+            .expect("create search json");
+        let search_id =
+            NativeEd2kSearchId::parse(created["searchId"].as_str().expect("search id").to_string())
+                .expect("valid search id");
+
+        engine
+            .record_native_ed2k_search_results(
+                &search_id,
+                vec![
+                    NativeEd2kSearchResult::new(
+                        "sample-a.iso",
+                        1234,
+                        "ed2k://|file|sample-a.iso|1234|0123456789abcdef0123456789abcdef|/",
+                    ),
+                    NativeEd2kSearchResult::new(
+                        "sample-b.iso",
+                        5678,
+                        "ed2k://|file|sample-b.iso|5678|fedcba9876543210fedcba9876543210|/",
+                    ),
+                ],
+            )
+            .expect("record search results");
+
+        let detail: serde_json::Value = client
+            .get(format!(
+                "http://{}/api/v1/ed2k/searches/{}?cursor=0&limit=1",
+                addrs.http, search_id
+            ))
+            .send()
+            .await
+            .expect("search detail request")
+            .json()
+            .await
+            .expect("search detail json");
+
+        assert_eq!(detail["searchId"], search_id.as_str());
+        assert_eq!(detail["resultCount"], 2);
+        assert_eq!(detail["nextCursor"], 1);
+        assert_eq!(detail["results"][0]["name"], "sample-a.iso");
+        assert_eq!(detail["results"][0]["size"], 1234);
+        assert_eq!(
+            detail["results"][0]["ed2kUri"],
+            "ed2k://|file|sample-a.iso|1234|0123456789abcdef0123456789abcdef|/"
+        );
+        assert!(detail["results"][0].get("gid").is_none());
+        assert!(detail.get("method").is_none());
+
+        cancel.cancel();
+    }
+
+    #[tokio::test]
     async fn task_creation_metalink_bytes_creates_native_tasks() {
         let engine = Arc::new(Engine::new(GlobalConfig {
             metalink_preferred_locations: vec!["us".into()],

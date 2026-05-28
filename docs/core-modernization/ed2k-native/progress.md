@@ -512,3 +512,23 @@ reported a local address-in-use failure.
 Remaining: Start ED2K-025 search API, status docs, and stale-surface scans.
 
 Blocked: none.
+
+## 2026-05-28 ED2K-025 verified
+
+Changed: Added native ED2K search resources. `/api/v1/ed2k/searches` now
+creates and lists opaque search resources with native server/Kad network
+selection. `/api/v1/ed2k/searches/{searchId}` returns paged results with
+startable `ed2kUri` links. README and the ED2K overview now describe the
+implemented ED2K surface accurately: task creation, status projection, events,
+search resources, protocol primitives, and persistence are present, while full
+ED2K network transfer runtime remains open until final tracker closure.
+
+Verified: The RED checks failed before implementation because the native search
+routes, search ids, result model, and result-recording hook did not exist. After
+implementation, `cargo test -p raria-rpc --test native_api ed2k_search
+--locked` passed. CSV validation and stale-surface scans found no legacy public
+search method, JSON-RPC revival, or false full-runtime claim.
+
+Remaining: Start ED2K-026 final validation and smoke evidence.
+
+Blocked: none.

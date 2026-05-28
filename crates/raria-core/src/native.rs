@@ -51,6 +51,50 @@ impl fmt::Display for TaskId {
     }
 }
 
+/// Public native identifier for an ED2K search resource.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct NativeEd2kSearchId(String);
+
+impl NativeEd2kSearchId {
+    /// Generate a new opaque native ED2K search identifier.
+    pub fn new() -> Self {
+        let mut rng = rand::rng();
+        let value: u128 = rng.random();
+        Self(format!("search_{value:032x}"))
+    }
+
+    /// Borrow the string representation.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    /// Parse a search identifier received from a native public surface.
+    pub fn parse(value: impl Into<String>) -> Result<Self, NativeModelError> {
+        let value = value.into();
+        let suffix = value
+            .strip_prefix("search_")
+            .ok_or(NativeModelError::InvalidEd2kSearchId)?;
+        if suffix.len() == 32 && suffix.chars().all(|ch| ch.is_ascii_hexdigit()) {
+            Ok(Self(value))
+        } else {
+            Err(NativeModelError::InvalidEd2kSearchId)
+        }
+    }
+}
+
+impl Default for NativeEd2kSearchId {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl fmt::Display for NativeEd2kSearchId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
 /// Native lifecycle state for a task.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -1265,6 +1309,113 @@ pub struct NativeEd2kTaskStatus {
     pub kad_enabled: bool,
 }
 
+/// ED2K search network selected by a native search resource.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum NativeEd2kSearchNetwork {
+    /// ED2K server search.
+    Server,
+    /// eMule Kad search.
+    Kad,
+}
+
+/// Lifecycle of a native ED2K search resource.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum NativeEd2kSearchLifecycle {
+    /// Search is queued for the ED2K runtime.
+    Queued,
+    /// Search is actively querying server or Kad resources.
+    Running,
+    /// Search finished and retained its current result set.
+    Completed,
+    /// Search failed.
+    Failed,
+}
+
+/// Native ED2K search result that can be started as a normal ED2K task source.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeEd2kSearchResult {
+    /// Stable result identifier derived from the ED2K URI.
+    pub result_id: String,
+    /// Display name from the ED2K result.
+    pub name: String,
+    /// File size in bytes.
+    pub size: u64,
+    /// Startable ED2K file link.
+    pub ed2k_uri: String,
+}
+
+impl NativeEd2kSearchResult {
+    /// Create a native ED2K search result.
+    pub fn new(name: impl Into<String>, size: u64, ed2k_uri: impl Into<String>) -> Self {
+        let ed2k_uri = ed2k_uri.into();
+        Self {
+            result_id: search_result_id(&ed2k_uri),
+            name: name.into(),
+            size,
+            ed2k_uri,
+        }
+    }
+}
+
+/// Native ED2K search resource projection.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeEd2kSearchSummary {
+    /// Opaque native search id.
+    pub search_id: NativeEd2kSearchId,
+    /// Search query text.
+    pub query: String,
+    /// Selected ED2K networks.
+    pub networks: Vec<NativeEd2kSearchNetwork>,
+    /// Search lifecycle.
+    pub lifecycle: NativeEd2kSearchLifecycle,
+    /// Total retained result count.
+    pub result_count: usize,
+    /// Next result cursor, when more results are available.
+    pub next_cursor: Option<usize>,
+    /// Current result page.
+    pub results: Vec<NativeEd2kSearchResult>,
+}
+
+impl NativeEd2kSearchSummary {
+    /// Create a queued native ED2K search.
+    pub fn queued(query: impl Into<String>, networks: Vec<NativeEd2kSearchNetwork>) -> Self {
+        Self {
+            search_id: NativeEd2kSearchId::new(),
+            query: query.into(),
+            networks,
+            lifecycle: NativeEd2kSearchLifecycle::Queued,
+            result_count: 0,
+            next_cursor: None,
+            results: Vec::new(),
+        }
+    }
+
+    /// Return a result page projection.
+    pub fn page(&self, cursor: usize, limit: usize) -> Self {
+        let total = self.results.len();
+        let start = cursor.min(total);
+        let end = start.saturating_add(limit).min(total);
+        let mut page = self.clone();
+        page.result_count = total;
+        page.next_cursor = (end < total).then_some(end);
+        page.results = self.results[start..end].to_vec();
+        page
+    }
+
+    /// Return a compact list projection without result payloads.
+    pub fn list_item(&self) -> Self {
+        let mut item = self.clone();
+        item.result_count = self.results.len();
+        item.next_cursor = None;
+        item.results.clear();
+        item
+    }
+}
+
 impl NativeTaskSummary {
     /// Build a native projection from the current runtime job model.
     pub fn from_runtime_job(job: &crate::job::Job) -> Self {
@@ -1467,9 +1618,17 @@ pub enum NativeModelError {
     /// Native task id is malformed.
     #[error("invalid native task id")]
     InvalidTaskId,
+    /// Native ED2K search id is malformed.
+    #[error("invalid native ED2K search id")]
+    InvalidEd2kSearchId,
 }
 
 fn source_id(uri: &str) -> String {
     let digest = Sha256::digest(uri.as_bytes());
     format!("src_{}", hex::encode(&digest[..8]))
+}
+
+fn search_result_id(uri: &str) -> String {
+    let digest = Sha256::digest(uri.as_bytes());
+    format!("ed2k_result_{}", hex::encode(&digest[..8]))
 }

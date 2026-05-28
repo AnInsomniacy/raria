@@ -49,9 +49,9 @@ ED2K support must be exposed through raria-native surfaces:
 | --- | --- |
 | Configuration | `raria.toml` `[ed2k]` section with native field names |
 | Task creation | `POST /api/v1/tasks` with ED2K sources and native ED2K options |
-| Task state | `GET /api/v1/tasks/{taskId}` plus `GET /api/v1/tasks/{taskId}/ed2k` |
+| Task state | `GET /api/v1/tasks/{taskId}` with an `ed2k` status object |
 | Search | Native `/api/v1/ed2k/searches` resources |
-| Events | `/api/v1/events` messages with `task.ed2k.*` and `ed2k.search.*` names |
+| Events | `/api/v1/events` messages with `task.ed2k.*` status names |
 | CLI | Natural native CLI behavior for ED2K links and concise status output |
 | Persistence | Versioned redb schemas owned by raria |
 | Logs | Structured tracing fields with native task correlation |

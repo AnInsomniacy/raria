@@ -6,15 +6,15 @@ use crate::metalink_tasks::{
 };
 use anyhow::{Context, Result};
 use axum::extract::ws::{Message as WsMessage, WebSocket, WebSocketUpgrade};
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use raria_core::engine::{AddUriSpec, Engine};
 use raria_core::native::{
-    NativePeerSnapshot, NativeTaskFile, NativeTaskSummary, NativeTrackerSnapshot, TaskId,
-    TaskSource,
+    NativeEd2kSearchId, NativeEd2kSearchNetwork, NativeEd2kSearchSummary, NativePeerSnapshot,
+    NativeTaskFile, NativeTaskSummary, NativeTrackerSnapshot, TaskId, TaskSource,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -93,6 +93,14 @@ pub fn native_api_router(engine: Arc<Engine>, auth_token: Option<String>) -> Rou
         .route("/api/v1/events", get(handle_events_ws))
         .route("/api/v1/session/save", post(handle_save_session))
         .route("/api/v1/stats", get(handle_stats))
+        .route(
+            "/api/v1/ed2k/searches",
+            get(handle_list_ed2k_searches).post(handle_create_ed2k_search),
+        )
+        .route(
+            "/api/v1/ed2k/searches/:search_id",
+            get(handle_get_ed2k_search),
+        )
         .route(
             "/api/v1/transfer",
             get(handle_global_transfer).patch(handle_patch_global_transfer),
@@ -326,6 +334,27 @@ struct DaemonShutdownResponse {
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+struct Ed2kSearchListResponse {
+    searches: Vec<NativeEd2kSearchSummary>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CreateEd2kSearchRequest {
+    query: String,
+    networks: Option<Vec<NativeEd2kSearchNetwork>>,
+    limit: Option<usize>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Ed2kSearchPageQuery {
+    cursor: Option<usize>,
+    limit: Option<usize>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 struct GlobalTransferPolicyResponse {
     download_bytes_per_second_limit: u64,
     upload_bytes_per_second_limit: u64,
@@ -444,6 +473,51 @@ async fn handle_daemon_shutdown(
     Ok(Json(DaemonShutdownResponse {
         status: "shuttingDown",
     }))
+}
+
+async fn handle_list_ed2k_searches(
+    headers: HeaderMap,
+    State(state): State<NativeApiState>,
+) -> Result<Json<Ed2kSearchListResponse>, NativeApiError> {
+    require_auth(&state, &headers)?;
+    Ok(Json(Ed2kSearchListResponse {
+        searches: state.engine.native_ed2k_searches(),
+    }))
+}
+
+async fn handle_create_ed2k_search(
+    headers: HeaderMap,
+    State(state): State<NativeApiState>,
+    Json(request): Json<CreateEd2kSearchRequest>,
+) -> Result<Json<NativeEd2kSearchSummary>, NativeApiError> {
+    require_auth(&state, &headers)?;
+    let networks = request
+        .networks
+        .unwrap_or_else(|| default_ed2k_search_networks(&state.engine.config));
+    let search = state
+        .engine
+        .create_native_ed2k_search(request.query, networks)
+        .map_err(|_| NativeApiError::InvalidRequest)?;
+    Ok(Json(search.page(0, normalize_search_limit(request.limit))))
+}
+
+async fn handle_get_ed2k_search(
+    headers: HeaderMap,
+    State(state): State<NativeApiState>,
+    Path(search_id): Path<String>,
+    Query(query): Query<Ed2kSearchPageQuery>,
+) -> Result<Json<NativeEd2kSearchSummary>, NativeApiError> {
+    require_auth(&state, &headers)?;
+    let search_id = parse_ed2k_search_id(&search_id)?;
+    let search = state
+        .engine
+        .native_ed2k_search_summary(
+            &search_id,
+            query.cursor.unwrap_or(0),
+            normalize_search_limit(query.limit),
+        )
+        .map_err(|_| NativeApiError::Ed2kSearchNotFound)?;
+    Ok(Json(search))
 }
 
 #[derive(Debug, Deserialize)]
@@ -1112,7 +1186,9 @@ struct ErrorResponse {
 #[derive(Debug)]
 enum NativeApiError {
     TaskNotFound,
+    Ed2kSearchNotFound,
     InvalidTaskId,
+    InvalidEd2kSearchId,
     InvalidRequest,
     AuthRequired,
     SessionStoreUnavailable,
@@ -1122,10 +1198,20 @@ impl IntoResponse for NativeApiError {
     fn into_response(self) -> axum::response::Response {
         let (status, code, message) = match self {
             Self::TaskNotFound => (StatusCode::NOT_FOUND, "task_not_found", "task not found"),
+            Self::Ed2kSearchNotFound => (
+                StatusCode::NOT_FOUND,
+                "ed2k_search_not_found",
+                "ED2K search not found",
+            ),
             Self::InvalidTaskId => (
                 StatusCode::BAD_REQUEST,
                 "invalid_task_id",
                 "invalid task id",
+            ),
+            Self::InvalidEd2kSearchId => (
+                StatusCode::BAD_REQUEST,
+                "invalid_ed2k_search_id",
+                "invalid ED2K search id",
             ),
             Self::InvalidRequest => (
                 StatusCode::BAD_REQUEST,
@@ -1174,6 +1260,28 @@ fn task_summary_by_id(engine: &Engine, task_id: &str) -> Result<NativeTaskSummar
 fn parse_task_id(task_id: &str) -> Result<TaskId, NativeApiError> {
     let task_id = TaskId::parse(task_id.to_string()).map_err(|_| NativeApiError::InvalidTaskId)?;
     Ok(task_id)
+}
+
+fn parse_ed2k_search_id(search_id: &str) -> Result<NativeEd2kSearchId, NativeApiError> {
+    NativeEd2kSearchId::parse(search_id.to_string())
+        .map_err(|_| NativeApiError::InvalidEd2kSearchId)
+}
+
+fn default_ed2k_search_networks(
+    config: &raria_core::config::GlobalConfig,
+) -> Vec<NativeEd2kSearchNetwork> {
+    let mut networks = Vec::new();
+    if config.ed2k_enable_servers {
+        networks.push(NativeEd2kSearchNetwork::Server);
+    }
+    if config.ed2k_enable_kad {
+        networks.push(NativeEd2kSearchNetwork::Kad);
+    }
+    networks
+}
+
+fn normalize_search_limit(limit: Option<usize>) -> usize {
+    limit.unwrap_or(50).clamp(1, 100)
 }
 
 fn parse_file_id(id: &str) -> Result<usize, NativeApiError> {
