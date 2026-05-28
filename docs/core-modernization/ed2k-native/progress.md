@@ -587,3 +587,23 @@ raria-ed2k --locked` passed.
 Remaining: Start ED2K-029 Kad UDP runtime source discovery and publish.
 
 Blocked: none.
+
+## 2026-05-28 ED2K-029 verified
+
+Changed: Added live Kad UDP exchange ownership inside `raria-ed2k`.
+`Ed2kKadRuntime` now performs bounded local UDP hello, source lookup, keyword
+lookup, source publish, and firewall observation. Silent Kad contacts are
+skipped through transaction expiry and routing failure handling instead of
+failing the whole lookup.
+
+Verified: The RED check failed before timeout handling because a silent local
+UDP contact caused source lookup to return `ED2K UDP read timed out`. After
+implementation, `cargo test -p raria-ed2k --test kad_runtime --locked`,
+`cargo test -p raria-ed2k --test kad_search --locked`, `cargo test -p
+raria-ed2k --test kad_routing --locked`, `cargo test -p raria-ed2k --test
+kad_firewall --locked`, `cargo test -p raria-ed2k --test runtime --locked`,
+and `cargo test -p raria-ed2k --locked` passed.
+
+Remaining: Start ED2K-030 peer TCP download runtime.
+
+Blocked: none.

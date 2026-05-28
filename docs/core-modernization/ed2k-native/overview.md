@@ -104,9 +104,10 @@ generated smoke output under `var/`.
 
 Current completion boundary: ED2K protocol primitives, native task projection,
 events, search resources, persistence rows, runtime context, bounded scheduler
-status ticks, and local-socket server TCP/UDP exchange ownership are present.
-Live ED2K network runtime remains open until the daemon owns Kad, peer, disk,
-sharing, upload, and full server-list scheduling loops.
+status ticks, local-socket server TCP/UDP exchange ownership, and bounded
+local-socket Kad UDP source, keyword, publish, firewall, and timeout handling
+are present. Live ED2K network runtime remains open until the daemon owns peer,
+disk, sharing, upload, and full server-list scheduling loops.
 
 ## Capability Scope
 

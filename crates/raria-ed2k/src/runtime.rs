@@ -10,15 +10,24 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpStream, UdpSocket};
 
 use crate::hash::Ed2kHash;
-use crate::opcode::ServerOpcode;
-use crate::packet::{
-    PacketFrame, decode_tcp_frame, decode_udp_datagram, encode_tcp_frame, encode_udp_datagram,
+use crate::kad::{
+    KadContact, KadFirewallObservation, KadFirewallState, KadRoutingTable, KadSearchEntry,
+    KadTransactionPurpose, KadTransactionTable, build_kad_keyword_search_request,
+    build_kad_publish_source_request, build_kad_source_search_request, dedupe_kad_search_entries,
+    extract_kad_source_entries, parse_kad_search_result,
 };
+use crate::opcode::{KadOpcode, ServerOpcode};
+use crate::packet::{
+    PacketFrame, Protocol, decode_tcp_frame, decode_udp_datagram, encode_tcp_frame,
+    encode_udp_datagram,
+};
+use crate::peer::PeerEndpoint;
 use crate::server::{
     FoundSource, ServerTcpState, ServerUdpState, ServerUdpStatus, build_get_sources_request,
     build_global_get_sources_request, build_login_request, build_udp_status_request,
     parse_udp_found_sources_payloads,
 };
+use crate::source::SourceExchangeEntry;
 
 /// Native ED2K runtime configuration projected from `raria.toml`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -521,6 +530,401 @@ pub struct Ed2kUdpServerReport {
     pub sources: Vec<FoundSource>,
 }
 
+/// Live Kad runtime configuration.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Ed2kKadRuntimeConfig {
+    /// Local Kad id.
+    pub self_id: Ed2kHash,
+    /// Useful routing bucket size.
+    pub bucket_size: usize,
+    /// Maximum accepted packet payload size.
+    pub max_packet_size: usize,
+    /// Per-operation network timeout.
+    pub io_timeout: Duration,
+    /// Local UDP bind address.
+    pub udp_bind_addr: String,
+    /// Whether to start from a firewalled assumption.
+    pub assume_firewalled: bool,
+}
+
+impl Default for Ed2kKadRuntimeConfig {
+    fn default() -> Self {
+        Self {
+            self_id: [0x22; 16],
+            bucket_size: crate::kad::DEFAULT_KAD_BUCKET_SIZE,
+            max_packet_size: 1024 * 1024,
+            io_timeout: Duration::from_secs(5),
+            udp_bind_addr: "0.0.0.0:0".to_string(),
+            assume_firewalled: false,
+        }
+    }
+}
+
+/// Source lookup request for the Kad runtime.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Ed2kKadSourceLookup {
+    /// Target ED2K file id.
+    pub target_id: Ed2kHash,
+    /// Target file size.
+    pub file_size: u64,
+    /// Seed contacts used by this bounded lookup.
+    pub seeds: Vec<KadContact>,
+}
+
+/// Keyword lookup request for the Kad runtime.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Ed2kKeywordLookup {
+    /// Kad keyword target id.
+    pub target_id: Ed2kHash,
+    /// Contacts used by this bounded lookup.
+    pub contacts: Vec<KadContact>,
+}
+
+/// Source publish request for the Kad runtime.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Ed2kKadSourcePublish {
+    /// ED2K file id being published.
+    pub file_id: Ed2kHash,
+    /// File size.
+    pub file_size: u64,
+    /// Source endpoint to publish.
+    pub source: PeerEndpoint,
+    /// Source Kad id.
+    pub source_id: Ed2kHash,
+    /// Remote Kad contact that receives the publish.
+    pub contact: KadContact,
+    /// Whether sharing policy allows publishing.
+    pub sharing_enabled: bool,
+}
+
+/// Kad source lookup result.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Ed2kKadSourceLookupReport {
+    /// Contacts confirmed by live UDP responses.
+    pub confirmed_contacts: usize,
+    /// Sources returned by Kad search responses.
+    pub sources: Vec<SourceExchangeEntry>,
+}
+
+/// Kad keyword lookup result.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Ed2kKeywordLookupReport {
+    /// Deduplicated keyword result entries.
+    pub results: Vec<KadSearchEntry>,
+}
+
+/// Kad source publish result.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Ed2kKadSourcePublishReport {
+    /// Whether a source publish payload was sent and acknowledged.
+    pub published: bool,
+    /// Whether UDP reachability was observed.
+    pub udp_reachable: bool,
+}
+
+/// Live Kad UDP runtime owner.
+#[derive(Debug, Clone)]
+pub struct Ed2kKadRuntime {
+    config: Ed2kKadRuntimeConfig,
+    routing: KadRoutingTable,
+    firewall: KadFirewallState,
+    transactions: KadTransactionTable,
+}
+
+impl Ed2kKadRuntime {
+    /// Create a Kad runtime.
+    pub fn new(config: Ed2kKadRuntimeConfig) -> Self {
+        Self {
+            routing: KadRoutingTable::new(config.self_id, config.bucket_size),
+            firewall: KadFirewallState::new(config.assume_firewalled),
+            transactions: KadTransactionTable::default(),
+            config,
+        }
+    }
+
+    /// Borrow current routing table state.
+    pub fn routing(&self) -> &KadRoutingTable {
+        &self.routing
+    }
+
+    /// Borrow current firewall state.
+    pub fn firewall(&self) -> &KadFirewallState {
+        &self.firewall
+    }
+
+    /// Run one bounded Kad source lookup over UDP.
+    pub async fn lookup_sources(
+        &mut self,
+        lookup: Ed2kKadSourceLookup,
+        now_seconds: u64,
+    ) -> anyhow::Result<Ed2kKadSourceLookupReport> {
+        let socket = self.bind_udp().await?;
+        let mut confirmed_contacts = 0;
+        let mut sources = Vec::new();
+        for contact in lookup.seeds {
+            let endpoint = crate::kad::KadEndpoint::new(contact.host.clone(), contact.udp_port);
+            let addr = resolve_kad_contact(&contact).await?;
+            let hello = PacketFrame {
+                protocol: Protocol::Kad,
+                opcode: KadOpcode::HelloRequestV2.into(),
+                payload: self.config.self_id.to_vec(),
+            };
+            write_udp_frame(&socket, addr, &hello, self.config.max_packet_size).await?;
+            self.transactions.add(
+                endpoint.clone(),
+                KadOpcode::HelloRequestV2,
+                None,
+                KadTransactionPurpose::Hello,
+                now_seconds,
+            );
+            let Some(hello_response) = read_kad_udp_frame_optional(
+                &socket,
+                self.config.max_packet_size,
+                self.config.io_timeout,
+            )
+            .await?
+            else {
+                self.expire_stale_transactions(now_seconds);
+                self.routing.node_failed(&contact.id, now_seconds);
+                continue;
+            };
+            if KadOpcode::from_byte(hello_response.opcode) != Some(KadOpcode::HelloResponseV2) {
+                self.transactions
+                    .complete(&endpoint, KadOpcode::HelloRequestV2);
+                self.routing.node_failed(&contact.id, now_seconds);
+                continue;
+            }
+            self.transactions
+                .complete(&endpoint, KadOpcode::HelloRequestV2);
+            self.routing.node_seen(contact.clone(), now_seconds)?;
+            confirmed_contacts += 1;
+
+            let search = PacketFrame {
+                protocol: Protocol::Kad,
+                opcode: KadOpcode::SearchSourceRequestV2.into(),
+                payload: build_kad_source_search_request(lookup.target_id, 0, lookup.file_size),
+            };
+            write_udp_frame(&socket, addr, &search, self.config.max_packet_size).await?;
+            self.transactions.add(
+                endpoint.clone(),
+                KadOpcode::SearchSourceRequestV2,
+                Some(lookup.target_id),
+                KadTransactionPurpose::Search,
+                now_seconds,
+            );
+            let Some(search_response) = read_kad_udp_frame_optional(
+                &socket,
+                self.config.max_packet_size,
+                self.config.io_timeout,
+            )
+            .await?
+            else {
+                self.expire_stale_transactions(now_seconds);
+                self.routing.node_failed(&contact.id, now_seconds);
+                continue;
+            };
+            if KadOpcode::from_byte(search_response.opcode) != Some(KadOpcode::SearchResponseV2) {
+                self.transactions.complete_with_target(
+                    &endpoint,
+                    KadOpcode::SearchSourceRequestV2,
+                    &lookup.target_id,
+                );
+                self.routing.node_failed(&contact.id, now_seconds);
+                continue;
+            }
+            self.transactions.complete_with_target(
+                &endpoint,
+                KadOpcode::SearchSourceRequestV2,
+                &lookup.target_id,
+            );
+            let result = parse_kad_search_result(&search_response.payload)?;
+            if result.target_id == lookup.target_id {
+                sources.extend(extract_kad_source_entries(&result));
+            }
+        }
+        Ok(Ed2kKadSourceLookupReport {
+            confirmed_contacts,
+            sources,
+        })
+    }
+
+    /// Run one bounded Kad keyword lookup over UDP.
+    pub async fn lookup_keyword(
+        &self,
+        lookup: Ed2kKeywordLookup,
+        now_seconds: u64,
+    ) -> anyhow::Result<Ed2kKeywordLookupReport> {
+        let socket = self.bind_udp().await?;
+        let mut results = Vec::new();
+        let mut transactions = KadTransactionTable::default();
+        for contact in lookup.contacts {
+            let endpoint = crate::kad::KadEndpoint::new(contact.host.clone(), contact.udp_port);
+            let addr = resolve_kad_contact(&contact).await?;
+            let search = PacketFrame {
+                protocol: Protocol::Kad,
+                opcode: KadOpcode::SearchKeyRequestV2.into(),
+                payload: build_kad_keyword_search_request(lookup.target_id, 0),
+            };
+            write_udp_frame(&socket, addr, &search, self.config.max_packet_size).await?;
+            transactions.add(
+                endpoint.clone(),
+                KadOpcode::SearchKeyRequestV2,
+                Some(lookup.target_id),
+                KadTransactionPurpose::Search,
+                now_seconds,
+            );
+            let Some(response) = read_kad_udp_frame_optional(
+                &socket,
+                self.config.max_packet_size,
+                self.config.io_timeout,
+            )
+            .await?
+            else {
+                transactions.expire(now_seconds.saturating_add(1), 1);
+                continue;
+            };
+            if KadOpcode::from_byte(response.opcode) != Some(KadOpcode::SearchResponseV2) {
+                transactions.complete_with_target(
+                    &endpoint,
+                    KadOpcode::SearchKeyRequestV2,
+                    &lookup.target_id,
+                );
+                continue;
+            }
+            transactions.complete_with_target(
+                &endpoint,
+                KadOpcode::SearchKeyRequestV2,
+                &lookup.target_id,
+            );
+            let result = parse_kad_search_result(&response.payload)?;
+            if result.target_id == lookup.target_id {
+                results.extend(result.entries);
+            }
+        }
+        Ok(Ed2kKeywordLookupReport {
+            results: dedupe_kad_search_entries(results),
+        })
+    }
+
+    /// Run one bounded Kad source publish and firewall check over UDP.
+    pub async fn publish_source(
+        &mut self,
+        publish: Ed2kKadSourcePublish,
+        now_seconds: u64,
+    ) -> anyhow::Result<Ed2kKadSourcePublishReport> {
+        let Some(payload) = build_kad_publish_source_request(
+            publish.file_id,
+            publish.source,
+            publish.source_id,
+            publish.file_size,
+            publish.sharing_enabled,
+        )?
+        else {
+            return Ok(Ed2kKadSourcePublishReport {
+                published: false,
+                udp_reachable: self.firewall.udp_reachable(),
+            });
+        };
+        let socket = self.bind_udp().await?;
+        let endpoint =
+            crate::kad::KadEndpoint::new(publish.contact.host.clone(), publish.contact.udp_port);
+        let addr = resolve_kad_contact(&publish.contact).await?;
+        let request = PacketFrame {
+            protocol: Protocol::Kad,
+            opcode: KadOpcode::PublishSourceRequestV2.into(),
+            payload,
+        };
+        write_udp_frame(&socket, addr, &request, self.config.max_packet_size).await?;
+        self.transactions.add(
+            endpoint.clone(),
+            KadOpcode::PublishSourceRequestV2,
+            Some(publish.file_id),
+            KadTransactionPurpose::Publish,
+            now_seconds,
+        );
+        let publish_response = read_kad_udp_frame_optional(
+            &socket,
+            self.config.max_packet_size,
+            self.config.io_timeout,
+        )
+        .await?;
+        let mut published = false;
+        if publish_response
+            .as_ref()
+            .and_then(|frame| KadOpcode::from_byte(frame.opcode))
+            == Some(KadOpcode::PublishResponseV2)
+        {
+            self.transactions.complete_with_target(
+                &endpoint,
+                KadOpcode::PublishSourceRequestV2,
+                &publish.file_id,
+            );
+            published = true;
+        } else {
+            self.expire_stale_transactions(now_seconds);
+            self.routing.node_failed(&publish.contact.id, now_seconds);
+        }
+
+        let firewall_request = PacketFrame {
+            protocol: Protocol::Kad,
+            opcode: KadOpcode::FirewalledRequestV2.into(),
+            payload: self.config.self_id.to_vec(),
+        };
+        write_udp_frame(
+            &socket,
+            addr,
+            &firewall_request,
+            self.config.max_packet_size,
+        )
+        .await?;
+        self.firewall.record_check_started(now_seconds);
+        self.transactions.add(
+            endpoint.clone(),
+            KadOpcode::FirewalledRequestV2,
+            None,
+            KadTransactionPurpose::Firewall,
+            now_seconds,
+        );
+        let firewall_response = read_kad_udp_frame_optional(
+            &socket,
+            self.config.max_packet_size,
+            self.config.io_timeout,
+        )
+        .await?;
+        if firewall_response
+            .as_ref()
+            .and_then(|frame| KadOpcode::from_byte(frame.opcode))
+            == Some(KadOpcode::FirewalledResponse)
+        {
+            self.transactions
+                .complete(&endpoint, KadOpcode::FirewalledRequestV2);
+            self.firewall
+                .record_observation(KadFirewallObservation::UdpOpen, now_seconds);
+        } else {
+            self.expire_stale_transactions(now_seconds);
+            self.firewall
+                .record_observation(KadFirewallObservation::UdpFirewalled, now_seconds);
+        }
+
+        Ok(Ed2kKadSourcePublishReport {
+            published,
+            udp_reachable: self.firewall.udp_reachable(),
+        })
+    }
+
+    async fn bind_udp(&self) -> anyhow::Result<UdpSocket> {
+        UdpSocket::bind(&self.config.udp_bind_addr)
+            .await
+            .context("Kad UDP bind failed")
+    }
+
+    fn expire_stale_transactions(&mut self, now_seconds: u64) {
+        let timeout_seconds = self.config.io_timeout.as_secs().max(1);
+        self.transactions
+            .expire(now_seconds.saturating_add(timeout_seconds), timeout_seconds);
+    }
+}
+
 async fn write_tcp_frame(
     stream: &mut TcpStream,
     frame: &PacketFrame,
@@ -583,6 +987,27 @@ async fn read_udp_frame(
     Ok(decode_udp_datagram(&buffer[..len], max_packet_size)?)
 }
 
+async fn read_kad_udp_frame_optional(
+    socket: &UdpSocket,
+    max_packet_size: usize,
+    timeout: Duration,
+) -> anyhow::Result<Option<PacketFrame>> {
+    let mut buffer = vec![0_u8; max_packet_size + 2];
+    let Some(result) = tokio::time::timeout(timeout, socket.recv_from(&mut buffer))
+        .await
+        .ok()
+    else {
+        return Ok(None);
+    };
+    let (len, _) = result.context("Kad UDP read failed")?;
+    let frame = decode_udp_datagram(&buffer[..len], max_packet_size)?;
+    anyhow::ensure!(
+        matches!(frame.protocol, Protocol::Kad | Protocol::KadPacked),
+        "unexpected Kad UDP protocol"
+    );
+    Ok(Some(frame))
+}
+
 async fn resolve_udp_endpoint(endpoint: &Ed2kServerEndpoint) -> anyhow::Result<SocketAddr> {
     let mut addrs = tokio::net::lookup_host((endpoint.host.as_str(), endpoint.udp_port))
         .await
@@ -590,4 +1015,13 @@ async fn resolve_udp_endpoint(endpoint: &Ed2kServerEndpoint) -> anyhow::Result<S
     addrs
         .next()
         .context("ED2K UDP host resolution returned no addresses")
+}
+
+async fn resolve_kad_contact(contact: &KadContact) -> anyhow::Result<SocketAddr> {
+    let mut addrs = tokio::net::lookup_host((contact.host.as_str(), contact.udp_port))
+        .await
+        .context("Kad UDP host resolution failed")?;
+    addrs
+        .next()
+        .context("Kad UDP host resolution returned no addresses")
 }
