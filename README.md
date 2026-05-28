@@ -146,6 +146,7 @@ The binary is emitted at `target/release/raria`.
 raria download https://example.com/file.iso --segments 16
 raria download https://example.com/file.iso --download-dir ~/Downloads --filename file.iso
 raria download https://example.com/file.iso --checksum sha-256=<hex>
+raria download 'ed2k://|file|example.bin|1234|0123456789ABCDEF0123456789ABCDEF|/' --download-dir ~/Downloads
 ```
 
 ### Daemon

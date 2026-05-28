@@ -898,3 +898,24 @@ Remaining: Commit the limited public-readiness closeout and cleanup.
 
 Blocked: Public-network ED2K search remains limited and is no longer treated
 as a goal completion gate.
+
+## 2026-05-28 ED2K foreground CLI entry verified
+
+Changed: Connected `raria download ed2k://...` to the native ED2K task
+runtime instead of the range-download backend. The foreground CLI path now
+creates a native ED2K task, loads native ED2K bootstrap state, runs the same
+runtime owner used by daemon tasks, derives the output filename from the ED2K
+file link, handles Ctrl+C/SIGTERM through the task cancellation token, and
+returns concise foreground status.
+
+Verified: `cargo test -p raria-cli --test single_download
+single_download_supports_ed2k_inline_peer --locked -- --nocapture` and `cargo
+test -p raria-cli download_accepts_ed2k_links_as_native_urls --locked` passed.
+Manual foreground execution of the public eMule installer ED2K link no longer
+fails with `unsupported or unrecognized URI scheme`; it enters the ED2K runtime
+and reports a running native task when interrupted.
+
+Remaining: Public ED2K network search and source scheduling remain limited as
+recorded in ED2K-041 through ED2K-043.
+
+Blocked: none for the CLI entry point.

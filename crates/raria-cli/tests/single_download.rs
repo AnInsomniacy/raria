@@ -1713,6 +1713,147 @@ async fn single_download_supports_explicit_ftps_with_custom_ca() {
     );
 }
 
+#[tokio::test]
+async fn single_download_supports_ed2k_inline_peer() {
+    use raria_ed2k::hash::ed2k_root_hash;
+    use raria_ed2k::opcode::PeerOpcode;
+    use raria_ed2k::packet::{PacketFrame, Protocol, decode_tcp_frame, encode_tcp_frame};
+    use raria_ed2k::peer::{
+        PeerIdentity, build_emule_info, build_file_status_answer, build_peer_hello_answer,
+    };
+    use raria_ed2k::transfer::{PartRange, parse_part_request};
+
+    const MAX_PACKET: usize = 16 * 1024;
+
+    async fn read_frame(stream: &mut TcpStream) -> PacketFrame {
+        let mut header = [0_u8; 6];
+        stream.read_exact(&mut header).await.expect("header");
+        let len = u32::from_le_bytes(header[1..5].try_into().expect("len")) as usize;
+        let mut payload = vec![0_u8; len - 1];
+        stream.read_exact(&mut payload).await.expect("payload");
+        let mut raw = header.to_vec();
+        raw.extend_from_slice(&payload);
+        decode_tcp_frame(&raw, MAX_PACKET).expect("frame")
+    }
+
+    async fn write_frame(stream: &mut TcpStream, frame: &PacketFrame) {
+        let bytes = encode_tcp_frame(frame, MAX_PACKET).expect("encode");
+        stream.write_all(&bytes).await.expect("write");
+    }
+
+    fn remote_identity() -> PeerIdentity {
+        PeerIdentity {
+            user_hash: [0x22; 16],
+            client_id: 0x0506_0708,
+            tcp_port: 4662,
+            udp_port: 4672,
+            kad_udp_port: 4672,
+            server: None,
+            name: "remote-test".to_string(),
+        }
+    }
+
+    fn peer_frame(opcode: PeerOpcode, payload: Vec<u8>) -> PacketFrame {
+        PacketFrame {
+            protocol: Protocol::Edonkey,
+            opcode: opcode.into(),
+            payload,
+        }
+    }
+
+    fn sending_part(file_hash: [u8; 16], range: PartRange, data: &[u8]) -> PacketFrame {
+        let mut payload = file_hash.to_vec();
+        payload.extend_from_slice(&(range.begin as u32).to_le_bytes());
+        payload.extend_from_slice(&(range.end as u32).to_le_bytes());
+        payload.extend_from_slice(data);
+        peer_frame(PeerOpcode::SendingPart, payload)
+    }
+
+    fn hex_hash(hash: [u8; 16]) -> String {
+        const HEX: &[u8; 16] = b"0123456789abcdef";
+        let mut out = String::with_capacity(32);
+        for byte in hash {
+            out.push(HEX[(byte >> 4) as usize] as char);
+            out.push(HEX[(byte & 0x0f) as usize] as char);
+        }
+        out
+    }
+
+    let payload = b"data";
+    let file_hash = ed2k_root_hash(payload);
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("listener");
+    let addr = listener.local_addr().expect("addr");
+    let peer = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.expect("accept");
+        read_frame(&mut stream).await;
+        write_frame(
+            &mut stream,
+            &build_peer_hello_answer(&remote_identity()).expect("hello answer"),
+        )
+        .await;
+        read_frame(&mut stream).await;
+        write_frame(
+            &mut stream,
+            &build_emule_info(remote_identity().udp_port, true).expect("info answer"),
+        )
+        .await;
+        read_frame(&mut stream).await;
+        write_frame(
+            &mut stream,
+            &raria_ed2k::source::build_source_exchange_answer(file_hash, 4, true, &[])
+                .expect("source exchange"),
+        )
+        .await;
+        read_frame(&mut stream).await;
+        write_frame(
+            &mut stream,
+            &build_file_status_answer(file_hash, &[true]).expect("status"),
+        )
+        .await;
+        read_frame(&mut stream).await;
+        write_frame(
+            &mut stream,
+            &peer_frame(PeerOpcode::AcceptUploadRequest, Vec::new()),
+        )
+        .await;
+        let part_request = read_frame(&mut stream).await;
+        let ranges = parse_part_request(&part_request.payload, file_hash, false).expect("part");
+        write_frame(&mut stream, &sending_part(file_hash, ranges[0], payload)).await;
+    });
+
+    let tmp = tempdir().expect("tempdir");
+    let link = format!(
+        "ed2k://|file|sample.bin|4|{}|sources,{}:{}|/",
+        hex_hash(file_hash),
+        addr.ip(),
+        addr.port()
+    );
+    let download_dir = tmp.path().to_path_buf();
+    let output = tokio::task::spawn_blocking(move || {
+        Command::new(cargo_bin("raria"))
+            .arg("download")
+            .arg(link)
+            .arg("--download-dir")
+            .arg(&download_dir)
+            .output()
+            .expect("run raria")
+    })
+    .await
+    .expect("join ED2K download");
+
+    assert!(
+        output.status.success(),
+        "stdout:\n{}\n\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    peer.await.expect("peer");
+    assert_eq!(
+        fs::read(tmp.path().join("sample.bin")).expect("read ED2K download"),
+        payload
+    );
+}
+
 #[cfg(unix)]
 #[tokio::test]
 async fn single_download_sigterm_shuts_down_gracefully_while_throttled() {

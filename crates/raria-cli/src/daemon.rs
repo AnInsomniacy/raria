@@ -400,12 +400,12 @@ pub(crate) async fn run_daemon_with_config(
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct Ed2kBootstrapLoadReport {
-    servers_loaded: usize,
-    kad_contacts_loaded: usize,
+pub(crate) struct Ed2kBootstrapLoadReport {
+    pub(crate) servers_loaded: usize,
+    pub(crate) kad_contacts_loaded: usize,
 }
 
-fn load_ed2k_bootstrap_state(
+pub(crate) fn load_ed2k_bootstrap_state(
     config: &GlobalConfig,
     store: &Store,
 ) -> Result<Ed2kBootstrapLoadReport> {
@@ -1729,8 +1729,7 @@ async fn write_ed2k_tcp_frame(
         .context("ED2K TCP write failed")
 }
 
-#[cfg(test)]
-async fn run_ed2k_download(
+pub(crate) async fn run_ed2k_download(
     engine: Arc<Engine>,
     task_id: TaskId,
     cancel: CancellationToken,

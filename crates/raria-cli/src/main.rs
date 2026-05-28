@@ -694,6 +694,7 @@ async fn main() -> Result<()> {
             sftp_private_key_passphrase,
         } => {
             single::run_download(single::SingleDownloadOptions {
+                config: base_config.clone(),
                 url,
                 dir,
                 filename: out,
@@ -709,7 +710,7 @@ async fn main() -> Result<()> {
                 save_cookies,
                 checksum_spec: checksum,
                 proxy,
-                check_certificate: check_certificate.unwrap_or(true),
+                check_certificate,
                 ca_certificate,
                 certificate,
                 private_key,

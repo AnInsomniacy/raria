@@ -1,4 +1,5 @@
 use crate::backend_factory::create_backend_with_config;
+use crate::daemon::{load_ed2k_bootstrap_state, run_ed2k_download};
 use crate::executor_config::apply_global_retry_policy;
 use crate::util::{
     build_conditional_get_probe_headers, format_bytes, parse_header_args, redact_url_for_logs,
@@ -7,8 +8,12 @@ use anyhow::{Context, Result};
 use raria_core::checksum;
 use raria_core::config::GlobalConfig;
 use raria_core::engine::{AddUriSpec, Engine};
+use raria_core::job::JobKind;
 use raria_core::limiter::SharedRateLimiter;
+use raria_core::native::{TaskId, TaskLifecycle};
+use raria_core::persist::Store;
 use raria_core::segment::{SegmentStatus, init_segment_states, plan_segments};
+use raria_ed2k::link::{Ed2kLink, parse_link};
 use raria_range::backend::{ByteSourceBackend, Credentials, ProbeContext};
 use raria_range::executor::{ExecutorConfig, SegmentExecutor, apply_results, total_downloaded};
 use std::path::PathBuf;
@@ -16,6 +21,7 @@ use std::sync::Arc;
 use tracing::{error, info};
 
 pub(crate) struct SingleDownloadOptions {
+    pub config: GlobalConfig,
     pub url: String,
     pub dir: PathBuf,
     pub filename: Option<String>,
@@ -30,7 +36,7 @@ pub(crate) struct SingleDownloadOptions {
     pub max_not_found: Option<u32>,
     pub checksum_spec: Option<String>,
     pub proxy: Option<String>,
-    pub check_certificate: bool,
+    pub check_certificate: Option<bool>,
     pub ca_certificate: Option<PathBuf>,
     pub user_agent: Option<String>,
     pub http_user: Option<String>,
@@ -54,35 +60,12 @@ pub(crate) struct SingleDownloadOptions {
 }
 
 pub(crate) async fn run_download(options: SingleDownloadOptions) -> Result<()> {
+    if is_native_foreground_protocol(&options.url) {
+        return run_native_foreground_download(options).await;
+    }
+
     let headers = parse_header_args(&options.header_args)?;
-    let config = GlobalConfig {
-        max_concurrent_downloads: options.max_concurrent,
-        proxy: options.proxy.clone(),
-        check_certificate: options.check_certificate,
-        ca_certificate: options.ca_certificate.clone(),
-        user_agent: options.user_agent.clone(),
-        max_redirects: options.max_redirect,
-        netrc_path: options.netrc_path.clone(),
-        no_netrc: options.no_netrc,
-        timeout: options.timeout_secs,
-        connect_timeout: options.connect_timeout_secs,
-        conditional_get: options.conditional_get,
-        resume: options.resume,
-        retry_attempts: options.retry_attempts.unwrap_or(5),
-        retry_delay_seconds: options.retry_delay_seconds.unwrap_or(0),
-        min_segment_size: options.min_segment_size.unwrap_or(0),
-        min_speed: options.min_speed.unwrap_or(0),
-        max_not_found: options.max_not_found.unwrap_or(0),
-        allow_overwrite: options.allow_overwrite || options.resume,
-        sftp_strict_host_key_check: options.sftp_strict_host_key_check,
-        sftp_known_hosts: options.sftp_known_hosts.clone(),
-        sftp_private_key: options.sftp_private_key.clone(),
-        sftp_private_key_passphrase: options.sftp_private_key_passphrase.clone(),
-        cookie_store_file: options.save_cookies.clone(),
-        certificate: options.certificate.clone(),
-        private_key: options.private_key.clone(),
-        ..Default::default()
-    };
+    let config = global_config_for_single_download(&options);
     let engine = Arc::new(Engine::new(config.clone()));
     raria_core::logging::replace_structured_log_context([(
         "session_id",
@@ -415,4 +398,262 @@ pub(crate) async fn run_download(options: SingleDownloadOptions) -> Result<()> {
     }
 
     Ok(())
+}
+
+fn is_native_foreground_protocol(uri: &str) -> bool {
+    uri.starts_with("ed2k://")
+}
+
+async fn run_native_foreground_download(options: SingleDownloadOptions) -> Result<()> {
+    let mut config = global_config_for_single_download(&options);
+    config.session_file = options.dir.join(".raria-download.session.redb");
+    std::fs::create_dir_all(&options.dir).context("failed to create download directory")?;
+
+    let store = Arc::new(Store::open(&config.session_file)?);
+    let engine = Arc::new(Engine::with_store(config.clone(), Arc::clone(&store)));
+    if options.url.starts_with("ed2k://") {
+        load_ed2k_bootstrap_state(&config, store.as_ref())?;
+    }
+
+    raria_core::logging::replace_structured_log_context([(
+        "session_id",
+        engine.session_id.clone(),
+    )])?;
+
+    let created = engine.add_native_task(&AddUriSpec {
+        uris: vec![options.url.clone()],
+        dir: options.dir.clone(),
+        filename: native_foreground_filename(&options),
+        connections: options.connections,
+        headers: parse_header_args(&options.header_args)?,
+        http_user: options.http_user.clone(),
+        http_password: options.http_password.clone(),
+        checksum: options.checksum_spec.clone(),
+    })?;
+    let activation = engine.activate_native_task(&created.task_id)?;
+    let task_id = activation.task_id.clone();
+
+    let signal_token = activation.cancel.clone();
+    tokio::spawn(async move {
+        tokio::signal::ctrl_c().await.ok();
+        signal_token.cancel();
+    });
+
+    #[cfg(unix)]
+    {
+        let signal_token = activation.cancel.clone();
+        tokio::spawn(async move {
+            use tokio::signal::unix::{SignalKind, signal};
+
+            let Ok(mut sigterm) = signal(SignalKind::terminate()) else {
+                return;
+            };
+            sigterm.recv().await;
+            signal_token.cancel();
+        });
+    }
+
+    match activation.kind {
+        JobKind::Ed2k => {
+            let runtime = tokio::spawn(run_ed2k_download(
+                Arc::clone(&engine),
+                task_id.clone(),
+                activation.cancel.clone(),
+            ));
+            if !options.quiet {
+                println!("Started ED2K task: {}", task_id);
+            }
+            wait_for_native_foreground_task(
+                Arc::clone(&engine),
+                task_id.clone(),
+                activation.cancel.clone(),
+                options.quiet,
+            )
+            .await?;
+            runtime.await.context("ED2K runtime task panicked")??;
+        }
+        JobKind::Range | JobKind::Bt => unreachable!("only ED2K uses the native foreground path"),
+    }
+
+    finish_native_foreground_download(&engine, &task_id, options.quiet)
+}
+
+async fn wait_for_native_foreground_task(
+    engine: Arc<Engine>,
+    task_id: TaskId,
+    cancel: tokio_util::sync::CancellationToken,
+    quiet: bool,
+) -> Result<()> {
+    let mut interval = tokio::time::interval(std::time::Duration::from_secs(2));
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    loop {
+        tokio::select! {
+            _ = cancel.cancelled() => return Ok(()),
+            _ = interval.tick() => {
+                let summary = engine.native_task_summary(&task_id)?;
+                if !quiet {
+                    print_native_foreground_status(&summary);
+                }
+                if matches!(
+                    summary.lifecycle,
+                    TaskLifecycle::Completed
+                        | TaskLifecycle::Failed
+                        | TaskLifecycle::Removed
+                        | TaskLifecycle::Seeding
+                ) {
+                    return Ok(());
+                }
+            }
+        }
+    }
+}
+
+fn print_native_foreground_status(summary: &raria_core::native::NativeTaskSummary) {
+    let total = summary
+        .total_bytes
+        .map(format_bytes)
+        .unwrap_or_else(|| "unknown".to_string());
+    if let Some(ed2k) = &summary.ed2k {
+        println!(
+            "{}: {} ({}/{}, sources {}, peers {})",
+            summary.task_id,
+            summary.lifecycle.as_str(),
+            format_bytes(summary.completed_bytes),
+            total,
+            ed2k.known_sources,
+            ed2k.connected_peers
+        );
+    } else {
+        println!(
+            "{}: {} ({}/{})",
+            summary.task_id,
+            summary.lifecycle.as_str(),
+            format_bytes(summary.completed_bytes),
+            total
+        );
+    }
+}
+
+fn global_config_for_single_download(options: &SingleDownloadOptions) -> GlobalConfig {
+    let mut config = options.config.clone();
+    config.download_dir = options.dir.clone();
+    config.max_concurrent_downloads = options.max_concurrent;
+    config.global_download_limit = options.max_download_limit;
+    if let Some(proxy) = options.proxy.clone() {
+        config.proxy = Some(proxy);
+    }
+    if let Some(check_certificate) = options.check_certificate {
+        config.check_certificate = check_certificate;
+    }
+    if options.ca_certificate.is_some() {
+        config.ca_certificate = options.ca_certificate.clone();
+    }
+    if options.user_agent.is_some() {
+        config.user_agent = options.user_agent.clone();
+    }
+    if options.max_redirect.is_some() {
+        config.max_redirects = options.max_redirect;
+    }
+    if options.netrc_path.is_some() {
+        config.netrc_path = options.netrc_path.clone();
+    }
+    config.no_netrc = options.no_netrc;
+    config.timeout = options.timeout_secs;
+    config.connect_timeout = options.connect_timeout_secs;
+    config.conditional_get = options.conditional_get;
+    config.resume = options.resume;
+    if let Some(retry_attempts) = options.retry_attempts {
+        config.retry_attempts = retry_attempts;
+    }
+    if let Some(retry_delay_seconds) = options.retry_delay_seconds {
+        config.retry_delay_seconds = retry_delay_seconds;
+    }
+    if let Some(min_segment_size) = options.min_segment_size {
+        config.min_segment_size = min_segment_size;
+    }
+    if let Some(min_speed) = options.min_speed {
+        config.min_speed = min_speed;
+    }
+    if let Some(max_not_found) = options.max_not_found {
+        config.max_not_found = max_not_found;
+    }
+    config.allow_overwrite = options.allow_overwrite || options.resume;
+    config.sftp_strict_host_key_check = options.sftp_strict_host_key_check;
+    if options.sftp_known_hosts.is_some() {
+        config.sftp_known_hosts = options.sftp_known_hosts.clone();
+    }
+    if options.sftp_private_key.is_some() {
+        config.sftp_private_key = options.sftp_private_key.clone();
+    }
+    if options.sftp_private_key_passphrase.is_some() {
+        config.sftp_private_key_passphrase = options.sftp_private_key_passphrase.clone();
+    }
+    if options.save_cookies.is_some() {
+        config.cookie_store_file = options.save_cookies.clone();
+    }
+    if options.certificate.is_some() {
+        config.certificate = options.certificate.clone();
+    }
+    if options.private_key.is_some() {
+        config.private_key = options.private_key.clone();
+    }
+    config
+}
+
+fn native_foreground_filename(options: &SingleDownloadOptions) -> Option<String> {
+    options.filename.clone().or_else(|| {
+        if let Ok(Ed2kLink::File(file)) = parse_link(&options.url) {
+            Some(file.name)
+        } else {
+            None
+        }
+    })
+}
+
+fn finish_native_foreground_download(engine: &Engine, task_id: &TaskId, quiet: bool) -> Result<()> {
+    let summary = engine.native_task_summary(task_id)?;
+    match summary.lifecycle {
+        TaskLifecycle::Completed => {
+            if !quiet {
+                println!(
+                    "Download complete: {} ({})",
+                    summary.output_path.display(),
+                    format_bytes(summary.completed_bytes)
+                );
+            }
+            Ok(())
+        }
+        TaskLifecycle::Failed => {
+            anyhow::bail!(
+                "{}",
+                summary
+                    .error_message
+                    .unwrap_or_else(|| "download failed".to_string())
+            );
+        }
+        TaskLifecycle::Running | TaskLifecycle::Queued | TaskLifecycle::Paused => {
+            if !quiet {
+                println!(
+                    "Download still running: {} ({}/{})",
+                    summary.task_id,
+                    format_bytes(summary.completed_bytes),
+                    summary
+                        .total_bytes
+                        .map(format_bytes)
+                        .unwrap_or_else(|| "unknown".to_string())
+                );
+            }
+            Ok(())
+        }
+        TaskLifecycle::Seeding => {
+            if !quiet {
+                println!(
+                    "Download complete: {} (seeding)",
+                    summary.output_path.display()
+                );
+            }
+            Ok(())
+        }
+        TaskLifecycle::Removed => anyhow::bail!("download was removed"),
+    }
 }
