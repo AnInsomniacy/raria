@@ -107,9 +107,10 @@ events, search resources, persistence rows, runtime context, bounded scheduler
 status ticks, local-socket server TCP/UDP exchange ownership, bounded
 local-socket Kad UDP source, keyword, publish, firewall, and timeout handling,
 and bounded local-socket peer TCP handshake, queue, source exchange, part
-request, payload validation, and timeout handling are present. Live ED2K
-network runtime remains open until the daemon owns disk, sharing, upload, and
-full server-list scheduling loops.
+request, payload validation, timeout handling, local file disk completion,
+native resume snapshot restore, sharing-on-completion, verified upload serving,
+and UDP reask handling are present. Live ED2K network runtime remains open
+until final validation closes daemon wiring and manual smoke evidence.
 
 ## Capability Scope
 

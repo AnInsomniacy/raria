@@ -639,3 +639,22 @@ source_exchange --locked` passed.
 Remaining: Start ED2K-031 disk completion, resume, sharing, and upload runtime.
 
 Blocked: none.
+
+## 2026-05-28 ED2K-031 verified
+
+Changed: Added local disk, resume, sharing, and upload runtime glue inside
+`raria-ed2k`. `Ed2kDiskRuntime` writes received parts to the output file,
+advances MD4-gated verified-byte state, requeues corrupt parts, restores native
+resume snapshots with sources, credits, and transfer status, shares completed
+files when enabled, and serves upload responses only from verified shared data.
+
+Verified: RED checks failed before disk runtime types existed. After
+implementation, `cargo test -p raria-ed2k --test disk_runtime --locked`,
+`cargo test -p raria-ed2k --test disk_resume --locked`, `cargo test -p
+raria-ed2k --test sharing_store --locked`, `cargo test -p raria-ed2k --test
+upload_queue --locked`, and `cargo test -p raria-ed2k --test credits --locked`
+passed.
+
+Remaining: Start ED2K-032 final validation and smoke evidence.
+
+Blocked: none.

@@ -4,12 +4,16 @@ use anyhow::Context;
 use raria_core::config::GlobalConfig;
 use raria_core::native::TaskId;
 use std::collections::BTreeMap;
+use std::fs::OpenOptions;
+use std::io::{Seek, SeekFrom, Write};
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpStream, UdpSocket};
 
-use crate::hash::Ed2kHash;
+use crate::disk::{Ed2kDiskState, Ed2kResumeSnapshot, Ed2kResumeSource};
+use crate::hash::{ED2K_PART_SIZE, Ed2kHash};
 use crate::kad::{
     KadContact, KadFirewallObservation, KadFirewallState, KadRoutingTable, KadSearchEntry,
     KadTransactionPurpose, KadTransactionTable, build_kad_keyword_search_request,
@@ -31,6 +35,10 @@ use crate::server::{
     FoundSource, ServerTcpState, ServerUdpState, ServerUdpStatus, build_get_sources_request,
     build_global_get_sources_request, build_login_request, build_udp_status_request,
     parse_udp_found_sources_payloads,
+};
+use crate::sharing::{
+    SharedFileInput, SharedFileOrigin, SharedFileStore, SharedPartError, SharedUploadRequest,
+    UdpReaskResponse, UploadQueue, build_shared_part_frame, build_upload_response_frame,
 };
 use crate::source::{
     SourceEndpoint, SourceExchangeEntry, SourceLifecycle, SourceOrigin,
@@ -849,6 +857,242 @@ impl Ed2kPeerRuntime {
     }
 }
 
+/// Live disk, resume, sharing, and upload runtime configuration.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Ed2kDiskRuntimeConfig {
+    /// Local output path.
+    pub path: PathBuf,
+    /// Public file name used for native sharing.
+    pub name: String,
+    /// Target file size.
+    pub file_size: u64,
+    /// ED2K root hash.
+    pub root_hash: Ed2kHash,
+    /// ED2K part hashset for multi-part files.
+    pub part_hashes: Vec<Ed2kHash>,
+    /// Optional AICH root.
+    pub aich_root: Option<crate::hash::AichHash>,
+    /// Whether completed files should enter the native shared store.
+    pub sharing_enabled: bool,
+    /// Upload queue active slot cap.
+    pub upload_slots: usize,
+    /// Upload queue waiting cap.
+    pub upload_waiting: usize,
+    /// Caller-owned timestamp.
+    pub now_seconds: u64,
+}
+
+impl Default for Ed2kDiskRuntimeConfig {
+    fn default() -> Self {
+        Self {
+            path: PathBuf::new(),
+            name: String::new(),
+            file_size: 0,
+            root_hash: [0; 16],
+            part_hashes: Vec::new(),
+            aich_root: None,
+            sharing_enabled: false,
+            upload_slots: 3,
+            upload_waiting: 64,
+            now_seconds: 0,
+        }
+    }
+}
+
+/// Native ED2K disk runtime report.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Ed2kDiskRuntimeReport {
+    /// Verified ranges after the operation.
+    pub verified_ranges: Vec<PartRange>,
+    /// Ranges rejected and queued for re-download.
+    pub requeue_ranges: Vec<PartRange>,
+    /// Whether the file is complete by verified disk truth.
+    pub completed: bool,
+}
+
+/// Versioned runtime snapshot for native ED2K task resume.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Ed2kDiskRuntimeSnapshot {
+    /// Disk integrity and source snapshot.
+    pub disk: Ed2kResumeSnapshot,
+    /// Compact credit snapshot retained by the native runtime.
+    pub credits: Vec<(Ed2kHash, u64, u64)>,
+    /// Last transfer status retained for task state projection.
+    pub transfer_status: TransferStatus,
+}
+
+/// Live ED2K disk, resume, sharing, and upload runtime owner.
+#[derive(Debug, Clone)]
+pub struct Ed2kDiskRuntime {
+    config: Ed2kDiskRuntimeConfig,
+    disk: Ed2kDiskState,
+    shared_store: SharedFileStore,
+    upload_queue: UploadQueue,
+    credits: Vec<(Ed2kHash, u64, u64)>,
+    transfer_status: TransferStatus,
+}
+
+impl Ed2kDiskRuntime {
+    /// Create a disk runtime from native file identity metadata.
+    pub fn new(config: Ed2kDiskRuntimeConfig) -> anyhow::Result<Self> {
+        let disk = Ed2kDiskState::new(
+            config.file_size,
+            config.root_hash,
+            config.part_hashes.clone(),
+            config.aich_root,
+        )?;
+        Ok(Self {
+            upload_queue: UploadQueue::new(config.upload_slots, config.upload_waiting),
+            config,
+            disk,
+            shared_store: SharedFileStore::default(),
+            credits: Vec::new(),
+            transfer_status: TransferStatus::Idle,
+        })
+    }
+
+    /// Restore a disk runtime from a native snapshot.
+    pub fn from_snapshot(
+        config: Ed2kDiskRuntimeConfig,
+        snapshot: Ed2kDiskRuntimeSnapshot,
+    ) -> anyhow::Result<Self> {
+        let disk = Ed2kDiskState::from_resume_snapshot(snapshot.disk)?;
+        let mut runtime = Self {
+            upload_queue: UploadQueue::new(config.upload_slots, config.upload_waiting),
+            config,
+            disk,
+            shared_store: SharedFileStore::default(),
+            credits: snapshot.credits,
+            transfer_status: snapshot.transfer_status,
+        };
+        runtime.share_if_completed()?;
+        Ok(runtime)
+    }
+
+    /// Write a received part to disk and advance verified-byte state.
+    pub fn apply_part(&mut self, part: ReceivedPart) -> anyhow::Result<Ed2kDiskRuntimeReport> {
+        write_part_to_disk(
+            &self.config.path,
+            self.config.file_size,
+            part.range,
+            &part.data,
+        )?;
+        self.disk.stage_write(part.range, &part.data)?;
+        let part_index = part.range.begin / ED2K_PART_SIZE;
+        match self.disk.flush_part(part_index) {
+            Ok(_) => {
+                self.transfer_status = TransferStatus::Downloading;
+                self.share_if_completed()?;
+            }
+            Err(crate::disk::Ed2kDiskStateError::PartHashMismatch { .. }) => {
+                self.transfer_status = TransferStatus::BackingOff {
+                    retry_at: self.config.now_seconds.saturating_add(5),
+                };
+            }
+            Err(crate::disk::Ed2kDiskStateError::IncompletePart) => {
+                self.transfer_status = TransferStatus::Downloading;
+            }
+            Err(error) => return Err(error.into()),
+        }
+        Ok(self.report())
+    }
+
+    /// Build a native resume snapshot.
+    pub fn snapshot(
+        &self,
+        sources: Vec<Ed2kResumeSource>,
+        credits: Vec<(Ed2kHash, u64, u64)>,
+        transfer_status: TransferStatus,
+    ) -> Ed2kDiskRuntimeSnapshot {
+        Ed2kDiskRuntimeSnapshot {
+            disk: self.disk.to_resume_snapshot(sources),
+            credits,
+            transfer_status,
+        }
+    }
+
+    /// Return verified ranges.
+    pub fn verified_ranges(&self) -> &[PartRange] {
+        self.disk.verified_ranges()
+    }
+
+    /// Return restored resume sources.
+    pub fn resume_sources(&self) -> &[Ed2kResumeSource] {
+        self.disk.resume_sources()
+    }
+
+    /// Return the current transfer status.
+    pub fn transfer_status(&self) -> TransferStatus {
+        self.transfer_status
+    }
+
+    /// Return compact credit snapshot.
+    pub fn credit_snapshot(&self) -> Vec<(Ed2kHash, u64, u64)> {
+        self.credits.clone()
+    }
+
+    /// Borrow the shared store.
+    pub fn shared_store(&self) -> &SharedFileStore {
+        &self.shared_store
+    }
+
+    /// Request an upload slot and return the native TCP response frame.
+    pub fn request_upload(&mut self, request: SharedUploadRequest) -> PacketFrame {
+        build_upload_response_frame(
+            self.upload_queue
+                .request_upload(&self.shared_store, request),
+        )
+    }
+
+    /// Build a verified shared-part upload frame.
+    pub fn build_upload_part(
+        &self,
+        file_hash: Ed2kHash,
+        range: PartRange,
+        use_i64_offsets: bool,
+    ) -> Result<PacketFrame, SharedPartError> {
+        build_shared_part_frame(&self.shared_store, file_hash, range, use_i64_offsets)
+    }
+
+    /// Handle a UDP reask from current native upload state.
+    pub fn handle_udp_reask(
+        &self,
+        endpoint: PeerEndpoint,
+        file_hash: Ed2kHash,
+    ) -> UdpReaskResponse {
+        self.upload_queue
+            .handle_udp_reask(&self.shared_store, endpoint, file_hash)
+    }
+
+    fn report(&self) -> Ed2kDiskRuntimeReport {
+        Ed2kDiskRuntimeReport {
+            verified_ranges: self.disk.verified_ranges().to_vec(),
+            requeue_ranges: self.disk.requeue_ranges().to_vec(),
+            completed: ranges_cover_file(self.disk.verified_ranges(), self.config.file_size),
+        }
+    }
+
+    fn share_if_completed(&mut self) -> anyhow::Result<()> {
+        if !self.config.sharing_enabled
+            || !ranges_cover_file(self.disk.verified_ranges(), self.config.file_size)
+        {
+            return Ok(());
+        }
+        self.shared_store.add_or_replace(SharedFileInput {
+            path: self.config.path.clone(),
+            name: self.config.name.clone(),
+            size: self.config.file_size,
+            root_hash: self.config.root_hash,
+            part_hashes: self.config.part_hashes.clone(),
+            aich_root: self.config.aich_root,
+            origin: SharedFileOrigin::CompletedDownload,
+            verified_ranges: self.disk.verified_ranges().to_vec(),
+            now_seconds: self.config.now_seconds,
+        })?;
+        Ok(())
+    }
+}
+
 /// Live Kad runtime configuration.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Ed2kKadRuntimeConfig {
@@ -1385,6 +1629,49 @@ fn plan_peer_ranges(
         remote_part_status: peer_state.part_status.clone(),
         max_new_ranges: request.max_new_ranges,
     })
+}
+
+fn write_part_to_disk(
+    path: &PathBuf,
+    file_size: u64,
+    range: PartRange,
+    data: &[u8],
+) -> anyhow::Result<()> {
+    let mut file = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .read(true)
+        .open(path)
+        .with_context(|| format!("open ED2K output file {}", path.display()))?;
+    file.set_len(file_size)
+        .with_context(|| format!("size ED2K output file {}", path.display()))?;
+    file.seek(SeekFrom::Start(range.begin))
+        .with_context(|| format!("seek ED2K output file {}", path.display()))?;
+    file.write_all(data)
+        .with_context(|| format!("write ED2K output file {}", path.display()))?;
+    file.sync_data()
+        .with_context(|| format!("sync ED2K output file {}", path.display()))?;
+    Ok(())
+}
+
+fn ranges_cover_file(ranges: &[PartRange], file_size: u64) -> bool {
+    if file_size == 0 {
+        return false;
+    }
+    let mut ranges = ranges.to_vec();
+    ranges.sort_by_key(|range| range.begin);
+    let mut covered = 0;
+    for range in ranges {
+        if range.begin > covered {
+            return false;
+        }
+        covered = covered.max(range.end);
+        if covered >= file_size {
+            return true;
+        }
+    }
+    false
 }
 
 async fn resolve_peer_endpoint(request: &Ed2kPeerDownloadRequest) -> anyhow::Result<SocketAddr> {
