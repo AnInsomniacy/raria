@@ -682,6 +682,34 @@ pub struct NativeEd2kResumeSourceRow {
     pub queue_rank: Option<u16>,
 }
 
+/// Versioned native ED2K credit persistence row.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeEd2kCreditRow {
+    /// Row schema version.
+    pub row_version: u32,
+    /// Native ED2K profile id.
+    pub profile_id: String,
+    /// Remote peer credit entries.
+    pub entries: Vec<NativeEd2kCreditEntry>,
+    /// Creation timestamp.
+    pub created_at: DateTime<Utc>,
+    /// Last update timestamp.
+    pub updated_at: DateTime<Utc>,
+}
+
+/// Native ED2K credit entry.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeEd2kCreditEntry {
+    /// Remote ED2K user hash.
+    pub user_hash: [u8; ED2K_CLIENT_IDENTITY_BYTES],
+    /// Bytes uploaded to this peer.
+    pub uploaded_bytes: u64,
+    /// Bytes downloaded from this peer.
+    pub downloaded_bytes: u64,
+}
+
 impl NativeEd2kIdentityRow {
     /// Current native ED2K identity row schema version.
     pub const CURRENT_ROW_VERSION: u32 = 1;
@@ -836,6 +864,31 @@ impl NativeEd2kResumeRow {
             if range.is_empty() || range.end > self.file_size {
                 return Err(NativeModelError::InvalidByteRange);
             }
+        }
+        Ok(())
+    }
+}
+
+impl NativeEd2kCreditRow {
+    /// Current native ED2K credit row schema version.
+    pub const CURRENT_ROW_VERSION: u32 = 1;
+
+    /// Create a native ED2K credit row.
+    pub fn new(profile_id: impl Into<String>, entries: Vec<NativeEd2kCreditEntry>) -> Self {
+        let now = Utc::now();
+        Self {
+            row_version: Self::CURRENT_ROW_VERSION,
+            profile_id: profile_id.into(),
+            entries,
+            created_at: now,
+            updated_at: now,
+        }
+    }
+
+    /// Validate that this row can be read by the current binary.
+    pub fn validate_version(&self) -> Result<(), NativeModelError> {
+        if self.row_version > Self::CURRENT_ROW_VERSION {
+            return Err(NativeModelError::UnsupportedEd2kCreditRowVersion);
         }
         Ok(())
     }
@@ -1321,6 +1374,9 @@ pub enum NativeModelError {
     /// Native ED2K resume row version is newer than this binary understands.
     #[error("unsupported native ED2K resume row version")]
     UnsupportedEd2kResumeRowVersion,
+    /// Native ED2K credit row version is newer than this binary understands.
+    #[error("unsupported native ED2K credit row version")]
+    UnsupportedEd2kCreditRowVersion,
     /// Native task id is malformed.
     #[error("invalid native task id")]
     InvalidTaskId,

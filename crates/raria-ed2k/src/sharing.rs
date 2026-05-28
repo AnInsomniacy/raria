@@ -193,6 +193,31 @@ pub enum SharedPartError {
     OffsetTooLarge,
 }
 
+/// Native ED2K peer credit counters.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PeerCredit {
+    /// Remote ED2K user hash.
+    pub user_hash: Ed2kHash,
+    /// Bytes uploaded to the peer.
+    pub uploaded_bytes: u64,
+    /// Bytes downloaded from the peer.
+    pub downloaded_bytes: u64,
+}
+
+/// Native ED2K credit store error.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum PeerCreditError {
+    /// Snapshot contains duplicate user hashes.
+    #[error("duplicate ED2K credit entry")]
+    DuplicateEntry,
+}
+
+/// Native ED2K peer credit store.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PeerCreditStore {
+    credits: Vec<PeerCredit>,
+}
+
 /// Retained upload-queue peer state.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UploadPeer {
@@ -219,6 +244,7 @@ pub struct UploadPeer {
 pub struct UploadQueue {
     max_slots: usize,
     max_waiting: usize,
+    credits: PeerCreditStore,
     peers: Vec<UploadPeer>,
 }
 
@@ -286,6 +312,7 @@ impl UploadQueue {
         Self {
             max_slots: max_slots.max(1),
             max_waiting,
+            credits: PeerCreditStore::default(),
             peers: Vec::new(),
         }
     }
@@ -378,6 +405,36 @@ impl UploadQueue {
         &self.peers
     }
 
+    /// Return immutable peer credit state.
+    pub fn credits(&self) -> &PeerCreditStore {
+        &self.credits
+    }
+
+    /// Return mutable peer credit state.
+    pub fn credits_mut(&mut self) -> &mut PeerCreditStore {
+        &mut self.credits
+    }
+
+    /// Record uploaded bytes for an active peer.
+    pub fn note_uploaded(&mut self, endpoint: PeerEndpoint, bytes: u64) {
+        let Some(peer) = self.peers.iter_mut().find(|peer| peer.endpoint == endpoint) else {
+            return;
+        };
+        if bytes == 0 {
+            return;
+        }
+        peer.session_uploaded = peer.session_uploaded.saturating_add(bytes);
+        if let Some(user_hash) = peer.user_hash {
+            self.credits.add_uploaded(user_hash, bytes);
+        }
+    }
+
+    /// Record downloaded bytes from a remote ED2K identity.
+    pub fn note_downloaded(&mut self, user_hash: Ed2kHash, bytes: u64) {
+        self.credits.add_downloaded(user_hash, bytes);
+        self.sort_waiting();
+    }
+
     /// Select a truthful UDP reask response.
     pub fn handle_udp_reask(
         &self,
@@ -441,17 +498,20 @@ impl UploadQueue {
     }
 
     fn sort_waiting(&mut self) {
-        self.peers.sort_by_key(|peer| {
-            (
-                !peer.uploading,
-                if peer.uploading {
-                    peer.upload_start_seconds
-                } else {
-                    peer.wait_start_seconds
-                },
-                peer.endpoint.ip,
-                peer.endpoint.port,
-            )
+        self.peers.sort_by(|lhs, rhs| {
+            (!lhs.uploading)
+                .cmp(&!rhs.uploading)
+                .then_with(|| {
+                    if lhs.uploading {
+                        lhs.upload_start_seconds.cmp(&rhs.upload_start_seconds)
+                    } else {
+                        rhs.credit_score(&self.credits)
+                            .total_cmp(&lhs.credit_score(&self.credits))
+                            .then_with(|| lhs.wait_start_seconds.cmp(&rhs.wait_start_seconds))
+                    }
+                })
+                .then_with(|| lhs.endpoint.ip.cmp(&rhs.endpoint.ip))
+                .then_with(|| lhs.endpoint.port.cmp(&rhs.endpoint.port))
         });
         let mut rank = 1_u16;
         for peer in &mut self.peers {
@@ -462,6 +522,96 @@ impl UploadQueue {
                 rank = rank.saturating_add(1);
             }
         }
+    }
+}
+
+impl UploadPeer {
+    fn credit_score(&self, credits: &PeerCreditStore) -> f64 {
+        self.user_hash
+            .as_ref()
+            .map_or(1.0, |user_hash| credits.score_ratio(user_hash))
+    }
+}
+
+impl PeerCreditStore {
+    /// Record bytes uploaded to a peer.
+    pub fn add_uploaded(&mut self, user_hash: Ed2kHash, bytes: u64) {
+        if bytes == 0 {
+            return;
+        }
+        let credit = self.get_or_create(user_hash);
+        credit.uploaded_bytes = credit.uploaded_bytes.saturating_add(bytes);
+    }
+
+    /// Record bytes downloaded from a peer.
+    pub fn add_downloaded(&mut self, user_hash: Ed2kHash, bytes: u64) {
+        if bytes == 0 {
+            return;
+        }
+        let credit = self.get_or_create(user_hash);
+        credit.downloaded_bytes = credit.downloaded_bytes.saturating_add(bytes);
+    }
+
+    /// Return the bounded eMule-style queue score ratio.
+    pub fn score_ratio(&self, user_hash: &Ed2kHash) -> f64 {
+        let Some(credit) = self
+            .credits
+            .iter()
+            .find(|credit| &credit.user_hash == user_hash)
+        else {
+            return 1.0;
+        };
+        if credit.downloaded_bytes < 1_000_000 {
+            return 1.0;
+        }
+        let ratio = if credit.uploaded_bytes == 0 {
+            10.0
+        } else {
+            credit.downloaded_bytes as f64 * 2.0 / credit.uploaded_bytes as f64
+        };
+        let limit = (credit.downloaded_bytes as f64 / 1_048_576.0 + 2.0).sqrt();
+        ratio.min(limit).clamp(1.0, 10.0)
+    }
+
+    /// Return all retained credit entries.
+    pub fn list(&self) -> &[PeerCredit] {
+        &self.credits
+    }
+
+    /// Return a native serializable snapshot.
+    pub fn snapshot(&self) -> Vec<PeerCredit> {
+        self.credits.clone()
+    }
+
+    /// Restore a credit store from a native snapshot.
+    pub fn from_snapshot(snapshot: Vec<PeerCredit>) -> Result<Self, PeerCreditError> {
+        let mut credits = Vec::new();
+        for credit in snapshot {
+            if credits
+                .iter()
+                .any(|existing: &PeerCredit| existing.user_hash == credit.user_hash)
+            {
+                return Err(PeerCreditError::DuplicateEntry);
+            }
+            credits.push(credit);
+        }
+        Ok(Self { credits })
+    }
+
+    fn get_or_create(&mut self, user_hash: Ed2kHash) -> &mut PeerCredit {
+        if let Some(index) = self
+            .credits
+            .iter()
+            .position(|credit| credit.user_hash == user_hash)
+        {
+            return &mut self.credits[index];
+        }
+        self.credits.push(PeerCredit {
+            user_hash,
+            uploaded_bytes: 0,
+            downloaded_bytes: 0,
+        });
+        self.credits.last_mut().expect("credit was inserted")
     }
 }
 

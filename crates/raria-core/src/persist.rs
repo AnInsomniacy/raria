@@ -1,8 +1,9 @@
 // raria-core: Native persistence layer using redb.
 
 use crate::native::{
-    NativeEd2kIdentityRow, NativeEd2kKadBootstrapRow, NativeEd2kKadRoutingRow, NativeEd2kResumeRow,
-    NativeEd2kServerBootstrapRow, NativeSegmentRow, NativeStoreMetadata, NativeTaskRow, TaskId,
+    NativeEd2kCreditRow, NativeEd2kIdentityRow, NativeEd2kKadBootstrapRow, NativeEd2kKadRoutingRow,
+    NativeEd2kResumeRow, NativeEd2kServerBootstrapRow, NativeSegmentRow, NativeStoreMetadata,
+    NativeTaskRow, TaskId,
 };
 use crate::segment::SegmentState;
 use anyhow::{Context, Result};
@@ -41,6 +42,9 @@ const ED2K_KAD_ROUTING_TABLE: TableDefinition<&str, &str> =
 /// Table: ed2k_resume — stores versioned native ED2K resume rows.
 const ED2K_RESUME_TABLE: TableDefinition<&str, &str> = TableDefinition::new("ed2k_resume");
 
+/// Table: ed2k_credits — stores versioned native ED2K credit rows.
+const ED2K_CREDITS_TABLE: TableDefinition<&str, &str> = TableDefinition::new("ed2k_credits");
+
 /// Persistent storage for raria state.
 #[derive(Clone)]
 pub struct Store {
@@ -69,6 +73,7 @@ impl Store {
             let _ = write_txn.open_table(ED2K_KAD_BOOTSTRAP_TABLE)?;
             let _ = write_txn.open_table(ED2K_KAD_ROUTING_TABLE)?;
             let _ = write_txn.open_table(ED2K_RESUME_TABLE)?;
+            let _ = write_txn.open_table(ED2K_CREDITS_TABLE)?;
         }
         write_txn.commit()?;
 
@@ -393,6 +398,35 @@ impl Store {
             None => Ok(None),
         }
     }
+
+    /// Insert or update native ED2K credit state.
+    pub fn put_ed2k_credits(&self, row: &NativeEd2kCreditRow) -> Result<()> {
+        row.validate_version()
+            .context("unsupported native ED2K credit row version")?;
+        let json = serde_json::to_string(row)?;
+        let write_txn = self.db.begin_write()?;
+        {
+            let mut table = write_txn.open_table(ED2K_CREDITS_TABLE)?;
+            table.insert(row.profile_id.as_str(), json.as_str())?;
+        }
+        write_txn.commit()?;
+        Ok(())
+    }
+
+    /// Retrieve native ED2K credit state by profile id.
+    pub fn get_ed2k_credits(&self, profile_id: &str) -> Result<Option<NativeEd2kCreditRow>> {
+        let read_txn = self.db.begin_read()?;
+        let table = read_txn.open_table(ED2K_CREDITS_TABLE)?;
+        match table.get(profile_id)? {
+            Some(guard) => {
+                let row: NativeEd2kCreditRow = serde_json::from_str(guard.value())?;
+                row.validate_version()
+                    .context("unsupported native ED2K credit row version")?;
+                Ok(Some(row))
+            }
+            None => Ok(None),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -647,6 +681,32 @@ mod tests {
         assert_eq!(
             loaded.row_version,
             crate::native::NativeEd2kKadRoutingRow::CURRENT_ROW_VERSION
+        );
+    }
+
+    #[test]
+    fn ed2k_credit_rows_roundtrip_by_profile() {
+        let (store, _dir) = temp_store();
+        let row = crate::native::NativeEd2kCreditRow::new(
+            "default",
+            vec![crate::native::NativeEd2kCreditEntry {
+                user_hash: [0x42; crate::native::ED2K_CLIENT_IDENTITY_BYTES],
+                uploaded_bytes: 1234,
+                downloaded_bytes: 5678,
+            }],
+        );
+
+        store.put_ed2k_credits(&row).unwrap();
+        let loaded = store
+            .get_ed2k_credits("default")
+            .unwrap()
+            .expect("ED2K credit row");
+
+        assert_eq!(loaded.profile_id, "default");
+        assert_eq!(loaded.entries, row.entries);
+        assert_eq!(
+            loaded.row_version,
+            crate::native::NativeEd2kCreditRow::CURRENT_ROW_VERSION
         );
     }
 

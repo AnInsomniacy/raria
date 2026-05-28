@@ -464,3 +464,26 @@ upload_queue --locked`, `cargo test -p raria-ed2k --locked`, `cargo fmt --all
 Remaining: Start ED2K-023 credits and secure-ident truth.
 
 Blocked: none.
+
+## 2026-05-28 ED2K-023 verified
+
+Changed: Added native ED2K credit ownership. `raria-ed2k` now has
+`PeerCreditStore` for uploaded and downloaded byte counters, native snapshot
+roundtrip, and bounded eMule-style score ratios. `UploadQueue` owns the credit
+store and uses score ratios only for waiting-peer ordering, preserving active
+slot priority and deterministic endpoint tie breaks. `raria-core` now stores
+versioned `NativeEd2kCreditRow` records in the `ed2k_credits` redb table.
+Secure identification remains unadvertised because no public-key and signature
+flow exists.
+
+Verified: The RED checks failed before implementation because credit counters,
+queue score ordering, and native credit persistence did not exist. After
+implementation, `cargo test -p raria-ed2k --test credits --locked`, `cargo
+test -p raria-core ed2k_credit_rows_roundtrip_by_profile --locked`, `cargo
+test -p raria-ed2k --locked`, `cargo fmt --all --check`, focused raria-core
+and raria-ed2k clippy with `-D warnings`, and `cargo check --workspace
+--locked` passed.
+
+Remaining: Start ED2K-024 native API, events, CLI, and daemon integration.
+
+Blocked: none.
