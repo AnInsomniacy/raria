@@ -12,19 +12,24 @@ use raria_core::engine::{
 };
 use raria_core::input_file::InputFileEntry;
 use raria_core::job::Gid;
-use raria_core::native::{NativeEvent, NativeEventData, NativeEventType, TaskId};
+use raria_core::native::{
+    NativeEd2kSearchLifecycle, NativeEd2kSearchNetwork, NativeEd2kSearchResult, NativeEvent,
+    NativeEventData, NativeEventType, TaskId,
+};
 use raria_core::persist::Store;
 use raria_core::segment::SegmentStatus;
-use raria_ed2k::kad::KadContact;
+use raria_ed2k::kad::{KadContact, KadSearchEntry, kad_keyword_target};
 use raria_ed2k::link::{Ed2kFileLink, Ed2kLink, parse_link};
 use raria_ed2k::peer::PeerIdentity;
 use raria_ed2k::runtime::{
     Ed2kDiskRuntime, Ed2kDiskRuntimeConfig, Ed2kKadRuntime, Ed2kKadRuntimeConfig,
-    Ed2kKadSourceLookup, Ed2kPeerDownloadRequest, Ed2kPeerRuntime, Ed2kPeerRuntimeConfig,
-    Ed2kRuntimeConfig, Ed2kRuntimeContext, Ed2kRuntimeEventKind, Ed2kRuntimeStatus,
-    Ed2kServerEndpoint, Ed2kServerRuntime, Ed2kServerRuntimeConfig, Ed2kSourceQuery,
+    Ed2kKadSourceLookup, Ed2kKeywordLookup, Ed2kPeerDownloadRequest, Ed2kPeerRuntime,
+    Ed2kPeerRuntimeConfig, Ed2kRuntimeConfig, Ed2kRuntimeContext, Ed2kRuntimeEventKind,
+    Ed2kRuntimeStatus, Ed2kServerEndpoint, Ed2kServerRuntime, Ed2kServerRuntimeConfig,
+    Ed2kSourceQuery,
 };
 use raria_ed2k::source::SourceRecord;
+use raria_ed2k::tag::{TagName, TagValue};
 use raria_range::backend::{ByteSourceBackend, Credentials, ProbeContext};
 use raria_range::executor::{ExecutorConfig, SegmentExecutor, apply_results};
 use raria_rpc::api::{NativeApiConfig, start_native_api_server};
@@ -298,6 +303,10 @@ pub(crate) async fn run_daemon_with_config(
                     });
                 }
             }
+        }
+
+        if let Err(error) = run_ed2k_search_once(&engine).await {
+            warn!(error = %error, "failed to run ED2K search worker");
         }
 
         tokio::select! {
@@ -1299,19 +1308,7 @@ async fn run_ed2k_kad_discovery(engine: &Engine, file: &Ed2kFileLink) -> Result<
     let Some(row) = engine.native_ed2k_kad_bootstrap("default")? else {
         return Ok(0);
     };
-    let seeds = row
-        .contacts
-        .into_iter()
-        .map(|contact| KadContact {
-            id: contact.id,
-            host: contact.host,
-            udp_port: contact.udp_port,
-            tcp_port: contact.tcp_port,
-            version: contact.version,
-            udp_key: None,
-            verified: contact.verified,
-        })
-        .collect::<Vec<_>>();
+    let seeds = kad_contacts_from_bootstrap(row.contacts);
     if seeds.is_empty() {
         return Ok(0);
     }
@@ -1333,6 +1330,177 @@ async fn run_ed2k_kad_discovery(engine: &Engine, file: &Ed2kFileLink) -> Result<
         )
         .await?;
     Ok(report.sources.len())
+}
+
+async fn run_ed2k_search_once(engine: &Engine) -> Result<usize> {
+    let searches = engine.queued_native_ed2k_searches();
+    let mut executed = 0_usize;
+    for search in searches {
+        engine.set_native_ed2k_search_lifecycle(
+            &search.search_id,
+            NativeEd2kSearchLifecycle::Running,
+        )?;
+        let result = run_ed2k_search(engine, &search.query, &search.networks).await;
+        match result {
+            Ok(results) => {
+                let summary =
+                    engine.record_native_ed2k_search_results(&search.search_id, results)?;
+                publish_ed2k_search_status(
+                    engine,
+                    "completed",
+                    Some("ED2K search completed"),
+                    BTreeMap::from([("resultCount".to_string(), summary.result_count as u64)]),
+                );
+                executed = executed.saturating_add(1);
+            }
+            Err(error) => {
+                engine.set_native_ed2k_search_lifecycle(
+                    &search.search_id,
+                    NativeEd2kSearchLifecycle::Failed,
+                )?;
+                tracing::debug!(
+                    search_id = %search.search_id,
+                    error = %error,
+                    "ED2K search execution failed"
+                );
+            }
+        }
+    }
+    Ok(executed)
+}
+
+fn publish_ed2k_search_status(
+    engine: &Engine,
+    state: &str,
+    message: Option<&str>,
+    metrics: BTreeMap<String, u64>,
+) {
+    engine.native_event_bus.publish(NativeEvent::new(
+        0,
+        NativeEventType::TaskEd2kSearchUpdated,
+        None,
+        NativeEventData::Ed2kStatus {
+            category: "search".to_string(),
+            state: state.to_string(),
+            message: message.map(ToOwned::to_owned),
+            metrics,
+        },
+    ));
+}
+
+async fn run_ed2k_search(
+    engine: &Engine,
+    query: &str,
+    networks: &[NativeEd2kSearchNetwork],
+) -> Result<Vec<NativeEd2kSearchResult>> {
+    let mut results = Vec::new();
+    if networks.contains(&NativeEd2kSearchNetwork::Kad) && engine.config.ed2k_enable_kad {
+        results.extend(run_ed2k_kad_keyword_search(engine, query).await?);
+    }
+    Ok(results)
+}
+
+async fn run_ed2k_kad_keyword_search(
+    engine: &Engine,
+    query: &str,
+) -> Result<Vec<NativeEd2kSearchResult>> {
+    let Some(row) = engine.native_ed2k_kad_bootstrap("default")? else {
+        return Ok(Vec::new());
+    };
+    let contacts = kad_contacts_from_bootstrap(row.contacts);
+    if contacts.is_empty() {
+        return Ok(Vec::new());
+    }
+    let target_id = kad_keyword_target(query).context("invalid ED2K Kad search query")?;
+    let runtime = Ed2kKadRuntime::new(Ed2kKadRuntimeConfig {
+        self_id: [0x12; 16],
+        udp_bind_addr: "0.0.0.0:0".to_string(),
+        assume_firewalled: engine.config.ed2k_assume_firewalled,
+        io_timeout: Duration::from_secs(2),
+        ..Default::default()
+    });
+    let report = runtime
+        .lookup_keyword(
+            Ed2kKeywordLookup {
+                target_id,
+                contacts,
+            },
+            chrono::Utc::now().timestamp().max(0) as u64,
+        )
+        .await?;
+    Ok(report
+        .results
+        .into_iter()
+        .filter_map(native_search_result_from_kad_entry)
+        .collect())
+}
+
+fn kad_contacts_from_bootstrap(
+    contacts: Vec<raria_core::native::NativeEd2kKadBootstrapContact>,
+) -> Vec<KadContact> {
+    contacts
+        .into_iter()
+        .map(|contact| KadContact {
+            id: contact.id,
+            host: contact.host,
+            udp_port: contact.udp_port,
+            tcp_port: contact.tcp_port,
+            version: contact.version,
+            udp_key: None,
+            verified: contact.verified,
+        })
+        .collect()
+}
+
+fn native_search_result_from_kad_entry(entry: KadSearchEntry) -> Option<NativeEd2kSearchResult> {
+    let name = kad_string_tag(&entry, 0x01)?;
+    let size = kad_u64_tag(&entry, 0x02).or_else(|| kad_u64_tag(&entry, 0xd3))?;
+    let uri = format!(
+        "ed2k://|file|{}|{}|{}|/",
+        name.replace('|', "_"),
+        size,
+        hex_hash(entry.id)
+    );
+    Some(NativeEd2kSearchResult::new(name, size, uri))
+}
+
+fn kad_string_tag(entry: &KadSearchEntry, id: u8) -> Option<String> {
+    entry
+        .tags
+        .iter()
+        .find_map(|tag| match (&tag.name, &tag.value) {
+            (TagName::Id(tag_id), TagValue::String(value)) if *tag_id == id => Some(value.clone()),
+            _ => None,
+        })
+}
+
+fn kad_u64_tag(entry: &KadSearchEntry, id: u8) -> Option<u64> {
+    entry
+        .tags
+        .iter()
+        .find_map(|tag| match (&tag.name, &tag.value) {
+            (TagName::Id(tag_id), TagValue::UInt8(value)) if *tag_id == id => {
+                Some(u64::from(*value))
+            }
+            (TagName::Id(tag_id), TagValue::UInt16(value)) if *tag_id == id => {
+                Some(u64::from(*value))
+            }
+            (TagName::Id(tag_id), TagValue::UInt32(value)) if *tag_id == id => {
+                Some(u64::from(*value))
+            }
+            (TagName::Id(tag_id), TagValue::UInt64(value)) if *tag_id == id => Some(*value),
+            _ => None,
+        })
+}
+
+fn hex_hash(hash: [u8; 16]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(32);
+    for byte in hash {
+        out.push(HEX[(byte >> 4) as usize] as char);
+        out.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    out
 }
 
 fn ed2k_local_peer_identity(config: &GlobalConfig) -> PeerIdentity {
@@ -2326,6 +2494,124 @@ mod tests {
         token.cancel();
         runtime.await.expect("join").expect("runtime");
         kad_task.await.expect("kad");
+    }
+
+    #[tokio::test]
+    async fn ed2k_search_worker_records_kad_keyword_results() {
+        use raria_core::native::{
+            NativeEd2kKadBootstrapContact, NativeEd2kKadBootstrapRow, NativeEd2kSearchLifecycle,
+            NativeEd2kSearchNetwork,
+        };
+        use raria_ed2k::kad::{KadSearchEntry, build_kad_search_result, kad_keyword_target};
+        use raria_ed2k::opcode::KadOpcode;
+        use raria_ed2k::packet::{PacketFrame, Protocol, decode_udp_datagram, encode_udp_datagram};
+        use raria_ed2k::tag::{Tag, TagName, TagValue};
+        use tokio::net::UdpSocket;
+
+        const MAX_PACKET: usize = 16 * 1024;
+
+        async fn recv_frame(socket: &UdpSocket) -> (PacketFrame, std::net::SocketAddr) {
+            let mut buf = [0_u8; 2048];
+            let (len, peer) = socket.recv_from(&mut buf).await.expect("recv");
+            (
+                decode_udp_datagram(&buf[..len], MAX_PACKET).expect("frame"),
+                peer,
+            )
+        }
+
+        async fn send_frame(
+            socket: &UdpSocket,
+            peer: std::net::SocketAddr,
+            opcode: KadOpcode,
+            payload: Vec<u8>,
+        ) {
+            let bytes = encode_udp_datagram(
+                &PacketFrame {
+                    protocol: Protocol::Kad,
+                    opcode: opcode.into(),
+                    payload,
+                },
+                MAX_PACKET,
+            )
+            .expect("encode");
+            socket.send_to(&bytes, peer).await.expect("send");
+        }
+
+        fn id(value: u8) -> [u8; 16] {
+            let mut id = [0; 16];
+            id[0] = value;
+            id
+        }
+
+        let target = kad_keyword_target("small linux iso").expect("target");
+        let kad = UdpSocket::bind("127.0.0.1:0").await.expect("kad");
+        let kad_addr = kad.local_addr().expect("kad addr");
+        let remote_id = id(0x44);
+        let kad_task = tokio::spawn(async move {
+            let (search, peer) = recv_frame(&kad).await;
+            assert_eq!(search.opcode, u8::from(KadOpcode::SearchKeyRequestV2));
+            assert_eq!(&search.payload[..16], &target);
+            let entry = KadSearchEntry {
+                id: id(0xbb),
+                tags: vec![
+                    Tag::new(TagName::Id(0x01), TagValue::String("file.iso".to_string())),
+                    Tag::new(TagName::Id(0x02), TagValue::UInt32(1024)),
+                ],
+            };
+            send_frame(
+                &kad,
+                peer,
+                KadOpcode::SearchResponseV2,
+                build_kad_search_result(remote_id, target, &[entry]).expect("result"),
+            )
+            .await;
+        });
+
+        let dir = tempdir().expect("tempdir");
+        let store_path = dir.path().join("session.redb");
+        let store = Arc::new(Store::open(&store_path).expect("store"));
+        store
+            .put_ed2k_kad_bootstrap(&NativeEd2kKadBootstrapRow::new(
+                "default",
+                vec![NativeEd2kKadBootstrapContact {
+                    id: remote_id,
+                    host: "127.0.0.1".to_string(),
+                    udp_port: kad_addr.port(),
+                    tcp_port: 4662,
+                    version: 8,
+                    verified: true,
+                }],
+            ))
+            .expect("kad bootstrap");
+        let engine = Arc::new(Engine::with_store(
+            GlobalConfig {
+                ed2k_enabled: true,
+                ed2k_enable_servers: false,
+                ed2k_enable_kad: true,
+                ..Default::default()
+            },
+            store,
+        ));
+        let search = engine
+            .create_native_ed2k_search("small linux iso", vec![NativeEd2kSearchNetwork::Kad])
+            .expect("search");
+
+        let executed = run_ed2k_search_once(&engine).await.expect("search worker");
+
+        kad_task.await.expect("kad");
+        assert_eq!(executed, 1);
+        let summary = engine
+            .native_ed2k_search_summary(&search.search_id, 0, 10)
+            .expect("summary");
+        assert_eq!(summary.lifecycle, NativeEd2kSearchLifecycle::Completed);
+        assert_eq!(summary.result_count, 1);
+        assert_eq!(summary.results[0].name, "file.iso");
+        assert_eq!(summary.results[0].size, 1024);
+        assert!(
+            summary.results[0]
+                .ed2k_uri
+                .starts_with("ed2k://|file|file.iso|1024|")
+        );
     }
 
     #[test]

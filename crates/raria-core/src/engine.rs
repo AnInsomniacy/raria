@@ -20,9 +20,10 @@ use crate::job::{Gid, Job, Status};
 use crate::limiter::SharedRateLimiter;
 use crate::logging::emit_structured_log;
 use crate::native::{
-    NativeEd2kKadBootstrapRow, NativeEd2kSearchId, NativeEd2kSearchNetwork, NativeEd2kSearchResult,
-    NativeEd2kSearchSummary, NativeEd2kServerBootstrapRow, NativeEvent, NativeEventData,
-    NativeEventType, NativePeerSnapshot, NativeSourceHealth, NativeTaskRow, NativeTaskSummary,
+    NativeEd2kKadBootstrapRow, NativeEd2kSearchId, NativeEd2kSearchLifecycle,
+    NativeEd2kSearchNetwork, NativeEd2kSearchResult, NativeEd2kSearchSummary,
+    NativeEd2kServerBootstrapRow, NativeEvent, NativeEventData, NativeEventType,
+    NativePeerSnapshot, NativeSourceHealth, NativeTaskRow, NativeTaskSummary,
     NativeTrackerSnapshot, TaskId,
 };
 use crate::persist::Store;
@@ -386,6 +387,33 @@ impl Engine {
         searches
     }
 
+    /// Return queued native ED2K searches for runtime execution.
+    pub fn queued_native_ed2k_searches(&self) -> Vec<NativeEd2kSearchSummary> {
+        let mut searches = self
+            .ed2k_searches
+            .lock()
+            .values()
+            .filter(|search| search.lifecycle == NativeEd2kSearchLifecycle::Queued)
+            .cloned()
+            .collect::<Vec<_>>();
+        searches.sort_by(|left, right| left.search_id.as_str().cmp(right.search_id.as_str()));
+        searches
+    }
+
+    /// Mark a native ED2K search lifecycle for runtime execution.
+    pub fn set_native_ed2k_search_lifecycle(
+        &self,
+        search_id: &NativeEd2kSearchId,
+        lifecycle: NativeEd2kSearchLifecycle,
+    ) -> Result<NativeEd2kSearchSummary> {
+        let mut searches = self.ed2k_searches.lock();
+        let search = searches
+            .get_mut(search_id)
+            .context("native ED2K search not found")?;
+        search.lifecycle = lifecycle;
+        Ok(search.clone())
+    }
+
     /// Return a native ED2K server bootstrap row for a profile when persistence is enabled.
     pub fn native_ed2k_server_bootstrap(
         &self,
@@ -441,6 +469,7 @@ impl Engine {
                 search.results.push(result);
             }
         }
+        search.lifecycle = NativeEd2kSearchLifecycle::Completed;
         search.result_count = search.results.len();
         Ok(search.page(0, search.results.len().max(1)))
     }

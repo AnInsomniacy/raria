@@ -692,7 +692,18 @@ ed2k_runtime_discovers_sources_from_native_server_bootstrap --locked --
 ed2k_runtime_discovers_sources_from_native_kad_bootstrap --locked --
 --nocapture` passed with local socket fixtures.
 
-Remaining: ED2K-033.3 native search execution and ED2K-033.4 discovery limits
-remain open.
+## 2026-05-28 ED2K-033.3 verified
+
+Changed: Added a daemon ED2K search worker for queued native search resources.
+Kad search resources now move from queued to running, execute a bounded local
+Kad keyword lookup through native bootstrap contacts, record native ED2K result
+rows, emit a native search status event, and finish as completed.
+
+Verified: The RED check failed because no daemon search worker existed. After
+implementation, `cargo test -p raria-cli
+ed2k_search_worker_records_kad_keyword_results --locked -- --nocapture` passed
+with a local UDP Kad fixture and a completed native search result.
+
+Remaining: ED2K-033.4 discovery limits remain open.
 
 Blocked: none.
