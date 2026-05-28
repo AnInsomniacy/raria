@@ -184,3 +184,24 @@ passed.
 Remaining: Start ED2K-010 server UDP.
 
 Blocked: none.
+
+## 2026-05-28 ED2K-010 verified
+
+Changed: Added native server UDP status and source-discovery payload handling
+in `raria-ed2k`. The server module now builds UDP status requests, validates
+challenge-bound status replies, records users, files, max users, soft/hard file
+limits, UDP flags, LowID users, UDP key, and TCP/UDP obfuscation ports. It also
+builds hash-only and extended hash-size UDP source requests, parses packed
+FoundSources payloads while filtering unrelated hashes, stops safely at bogus
+tails, and exposes bounded UDP status/source cadence policy.
+
+Verified: The RED check failed before implementation because UDP status state,
+UDP source request builders, packed source parsing, and bounded cadence helpers
+did not exist. After implementation, `cargo test -p raria-ed2k --test
+server_udp --locked`, `cargo test -p raria-ed2k --locked`, `cargo fmt --all
+--check`, `cargo clippy -p raria-ed2k --locked --all-targets -- -D warnings`,
+and `cargo check --workspace --locked` passed.
+
+Remaining: Start ED2K-011 HighID LowID callback.
+
+Blocked: none.

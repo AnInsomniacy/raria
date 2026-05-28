@@ -118,6 +118,33 @@ pub struct ServerStatus {
     pub files: u32,
 }
 
+/// Server UDP status metadata.
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub struct ServerUdpStatus {
+    /// Matched status challenge.
+    pub challenge: u32,
+    /// Current server user count.
+    pub users: u32,
+    /// Current server file count.
+    pub files: u32,
+    /// Optional maximum users.
+    pub max_users: Option<u32>,
+    /// Optional soft file limit.
+    pub soft_files: Option<u32>,
+    /// Optional hard file limit.
+    pub hard_files: Option<u32>,
+    /// Optional UDP capability flags.
+    pub udp_flags: Option<u32>,
+    /// Optional LowID user count.
+    pub low_id_users: Option<u32>,
+    /// Optional UDP obfuscation port.
+    pub udp_obfuscation_port: Option<u16>,
+    /// Optional TCP obfuscation port.
+    pub tcp_obfuscation_port: Option<u16>,
+    /// Optional UDP key.
+    pub udp_key: Option<u32>,
+}
+
 /// Obfuscation metadata attached to a found source.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SourceObfuscation {
@@ -184,6 +211,96 @@ pub enum ServerTcpError {
     /// A typed tag cannot be encoded.
     #[error("invalid ED2K server tag")]
     InvalidTag,
+}
+
+/// Native server UDP state retained by raria.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServerUdpState {
+    /// Outstanding status challenge.
+    pub expected_challenge: Option<u32>,
+    /// Last accepted status response.
+    pub status: Option<ServerUdpStatus>,
+}
+
+impl ServerUdpState {
+    /// Create UDP state with an outstanding status challenge.
+    pub fn new(expected_challenge: u32) -> Self {
+        Self {
+            expected_challenge: Some(expected_challenge),
+            status: None,
+        }
+    }
+
+    /// Apply a UDP server status response payload.
+    pub fn apply_status_response(
+        &mut self,
+        payload: &[u8],
+    ) -> Result<ServerUdpStatus, ServerTcpError> {
+        let mut cursor = Cursor::new(payload);
+        let challenge = cursor.read_u32().ok_or(ServerTcpError::InvalidPayload)?;
+        if self.expected_challenge != Some(challenge) {
+            return Err(ServerTcpError::InvalidPayload);
+        }
+        let mut status = ServerUdpStatus {
+            challenge,
+            users: cursor.read_u32().ok_or(ServerTcpError::InvalidPayload)?,
+            files: cursor.read_u32().ok_or(ServerTcpError::InvalidPayload)?,
+            max_users: cursor.read_u32(),
+            soft_files: None,
+            hard_files: None,
+            udp_flags: None,
+            low_id_users: None,
+            udp_obfuscation_port: None,
+            tcp_obfuscation_port: None,
+            udp_key: None,
+        };
+        if let (Some(soft_files), Some(hard_files)) = (cursor.read_u32(), cursor.read_u32()) {
+            status.soft_files = Some(soft_files);
+            status.hard_files = Some(hard_files);
+        }
+        status.udp_flags = cursor.read_u32();
+        status.low_id_users = cursor.read_u32();
+        if let (Some(udp_port), Some(tcp_port), Some(udp_key)) =
+            (cursor.read_u16(), cursor.read_u16(), cursor.read_u32())
+        {
+            status.udp_obfuscation_port = Some(udp_port);
+            status.tcp_obfuscation_port = Some(tcp_port);
+            status.udp_key = Some(udp_key);
+        }
+        self.expected_challenge = None;
+        self.status = Some(status);
+        Ok(status)
+    }
+}
+
+/// Bounded server request cadence.
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub struct ServerRequestCadence {
+    /// Minimum interval between UDP status requests.
+    pub status_interval: Duration,
+    /// Minimum interval between UDP source requests.
+    pub source_interval: Duration,
+}
+
+impl Default for ServerRequestCadence {
+    fn default() -> Self {
+        Self {
+            status_interval: Duration::from_secs(60),
+            source_interval: Duration::from_secs(20),
+        }
+    }
+}
+
+impl ServerRequestCadence {
+    /// Return whether a status request is due at `now_seconds`.
+    pub fn status_due(self, last_seconds: Option<u64>, now_seconds: u64) -> bool {
+        request_due(last_seconds, now_seconds, self.status_interval)
+    }
+
+    /// Return whether a source request is due at `now_seconds`.
+    pub fn source_due(self, last_seconds: Option<u64>, now_seconds: u64) -> bool {
+        request_due(last_seconds, now_seconds, self.source_interval)
+    }
 }
 
 /// Native server TCP state retained by raria.
@@ -418,6 +535,104 @@ pub fn build_get_sources_request(
     })
 }
 
+/// Build a UDP server status request datagram payload.
+pub fn build_udp_status_request(challenge: u32) -> PacketFrame {
+    PacketFrame {
+        protocol: Protocol::Edonkey,
+        opcode: ServerOpcode::GlobalServerStatusRequest.into(),
+        payload: challenge.to_le_bytes().to_vec(),
+    }
+}
+
+/// Build a UDP global source request datagram payload.
+pub fn build_global_get_sources_request(
+    file_hash: Ed2kHash,
+    file_size: u64,
+    extended_get_sources2: bool,
+) -> PacketFrame {
+    let mut payload = Vec::with_capacity(28);
+    payload.extend_from_slice(&file_hash);
+    if extended_get_sources2 {
+        if let Ok(size) = u32::try_from(file_size) {
+            payload.extend_from_slice(&size.to_le_bytes());
+        } else {
+            payload.extend_from_slice(&0_u32.to_le_bytes());
+            payload.extend_from_slice(&file_size.to_le_bytes());
+        }
+    }
+    PacketFrame {
+        protocol: Protocol::Edonkey,
+        opcode: if extended_get_sources2 {
+            ServerOpcode::GlobalGetSources2.into()
+        } else {
+            ServerOpcode::GlobalGetSources.into()
+        },
+        payload,
+    }
+}
+
+/// Parse one or more packed UDP found-source payloads for the expected hash.
+pub fn parse_udp_found_sources_payloads(
+    payload: &[u8],
+    expected_hash: Ed2kHash,
+) -> Result<Vec<FoundSource>, ServerTcpError> {
+    let mut offset = 0;
+    let mut parsed_packet = false;
+    let mut sources = Vec::new();
+    while offset < payload.len() {
+        if payload.len() - offset < 17 {
+            return if parsed_packet {
+                Ok(sources)
+            } else {
+                Err(ServerTcpError::InvalidPayload)
+            };
+        }
+        let mut file_hash = [0_u8; 16];
+        file_hash.copy_from_slice(&payload[offset..offset + 16]);
+        offset += 16;
+        let count = payload[offset];
+        offset += 1;
+        if payload.len() - offset < usize::from(count) * 6 {
+            return Err(ServerTcpError::InvalidPayload);
+        }
+        for _ in 0..count {
+            let client_id = u32::from_le_bytes(
+                payload[offset..offset + 4]
+                    .try_into()
+                    .map_err(|_| ServerTcpError::InvalidPayload)?,
+            );
+            offset += 4;
+            let tcp_port = u16::from_le_bytes(
+                payload[offset..offset + 2]
+                    .try_into()
+                    .map_err(|_| ServerTcpError::InvalidPayload)?,
+            );
+            offset += 2;
+            if file_hash == expected_hash {
+                sources.push(FoundSource {
+                    client_id,
+                    tcp_port,
+                    obfuscation: None,
+                });
+            }
+        }
+        parsed_packet = true;
+        if offset == payload.len() {
+            break;
+        }
+        if payload.len() - offset < 2 {
+            return Ok(sources);
+        }
+        if payload[offset] != u8::from(Protocol::Edonkey)
+            || payload[offset + 1] != u8::from(ServerOpcode::GlobalFoundSources)
+        {
+            return Ok(sources);
+        }
+        offset += 2;
+    }
+    Ok(sources)
+}
+
 fn parse_server_message(payload: &[u8]) -> Result<ServerTcpEvent, ServerTcpError> {
     let mut cursor = Cursor::new(payload);
     let len = cursor.read_u16().ok_or(ServerTcpError::InvalidPayload)? as usize;
@@ -458,6 +673,13 @@ fn parse_found_sources(payload: &[u8], obfuscated: bool) -> Result<ServerTcpEven
         return Err(ServerTcpError::InvalidPayload);
     }
     Ok(ServerTcpEvent::FoundSources { file_hash, sources })
+}
+
+fn request_due(last_seconds: Option<u64>, now_seconds: u64, interval: Duration) -> bool {
+    let Some(last_seconds) = last_seconds else {
+        return true;
+    };
+    now_seconds.saturating_sub(last_seconds) >= interval.as_secs()
 }
 
 fn apply_identity_tag(state: &mut ServerTcpState, tag: Tag) {
