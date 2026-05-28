@@ -2104,6 +2104,14 @@ mod tests {
             default_segments: 6,
             min_segment_size: 1024,
             retry_attempts: 3,
+            ed2k_enabled: true,
+            ed2k_enable_servers: false,
+            ed2k_enable_kad: true,
+            ed2k_listen_tcp_port: 14662,
+            ed2k_listen_udp_port: 14672,
+            ed2k_max_sources_per_task: 250,
+            ed2k_max_upload_slots: 5,
+            ed2k_share_completed: true,
             metalink_preferred_locations: vec!["us".into(), "jp".into()],
             metalink_preferred_protocol: Some("https".into()),
             metalink_unique_protocols: true,
@@ -2132,6 +2140,14 @@ mod tests {
         assert_eq!(body["downloads"]["defaultSegments"], 6);
         assert_eq!(body["downloads"]["minSegmentSize"], 1024);
         assert_eq!(body["downloads"]["retryMaxAttempts"], 3);
+        assert_eq!(body["ed2k"]["enabled"], true);
+        assert_eq!(body["ed2k"]["enableServers"], false);
+        assert_eq!(body["ed2k"]["enableKad"], true);
+        assert_eq!(body["ed2k"]["listenTcpPort"], 14662);
+        assert_eq!(body["ed2k"]["listenUdpPort"], 14672);
+        assert_eq!(body["ed2k"]["maxSourcesPerTask"], 250);
+        assert_eq!(body["ed2k"]["maxUploadSlots"], 5);
+        assert_eq!(body["ed2k"]["shareCompleted"], true);
         assert_eq!(
             body["metalink"]["preferredLocations"],
             serde_json::json!(["us", "jp"])

@@ -147,6 +147,22 @@ pub struct GlobalConfig {
     pub bt_enable_pex: bool,
     /// BT piece selection strategy forwarded into the BitTorrent runtime.
     pub bt_piece_strategy: BtPieceStrategy,
+    /// Enable the native ED2K backend.
+    pub ed2k_enabled: bool,
+    /// Enable ED2K server discovery.
+    pub ed2k_enable_servers: bool,
+    /// Enable eMule Kad discovery.
+    pub ed2k_enable_kad: bool,
+    /// TCP listen port for ED2K peer sessions.
+    pub ed2k_listen_tcp_port: u16,
+    /// UDP listen port for ED2K server UDP and Kad traffic.
+    pub ed2k_listen_udp_port: u16,
+    /// Maximum retained sources per ED2K task.
+    pub ed2k_max_sources_per_task: u32,
+    /// Maximum local upload slots for shared ED2K files.
+    pub ed2k_max_upload_slots: u16,
+    /// Share completed ED2K files through native metadata.
+    pub ed2k_share_completed: bool,
     /// Hook script fired when a task starts running.
     pub on_task_start: Option<PathBuf>,
     /// Hook script fired when a task completes.
@@ -212,6 +228,14 @@ impl Default for GlobalConfig {
             bt_dht_config_file: None,
             bt_enable_pex: true,
             bt_piece_strategy: BtPieceStrategy::RarestFirst,
+            ed2k_enabled: false,
+            ed2k_enable_servers: true,
+            ed2k_enable_kad: true,
+            ed2k_listen_tcp_port: 4662,
+            ed2k_listen_udp_port: 4672,
+            ed2k_max_sources_per_task: 400,
+            ed2k_max_upload_slots: 3,
+            ed2k_share_completed: false,
             on_task_start: None,
             on_task_complete: None,
             on_task_fail: None,

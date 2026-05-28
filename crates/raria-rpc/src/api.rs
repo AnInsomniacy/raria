@@ -159,6 +159,7 @@ async fn handle_health(State(state): State<NativeApiState>) -> impl IntoResponse
 struct RuntimeConfigResponse {
     daemon: RuntimeDaemonConfig,
     downloads: RuntimeDownloadsConfig,
+    ed2k: RuntimeEd2kConfig,
     metalink: RuntimeMetalinkConfig,
 }
 
@@ -176,6 +177,19 @@ struct RuntimeDownloadsConfig {
     default_segments: u32,
     min_segment_size: u64,
     retry_max_attempts: u32,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RuntimeEd2kConfig {
+    enabled: bool,
+    enable_servers: bool,
+    enable_kad: bool,
+    listen_tcp_port: u16,
+    listen_udp_port: u16,
+    max_sources_per_task: u32,
+    max_upload_slots: u16,
+    share_completed: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -203,6 +217,16 @@ async fn handle_config(
             default_segments: config.default_segments,
             min_segment_size: config.min_segment_size,
             retry_max_attempts: config.retry_attempts,
+        },
+        ed2k: RuntimeEd2kConfig {
+            enabled: config.ed2k_enabled,
+            enable_servers: config.ed2k_enable_servers,
+            enable_kad: config.ed2k_enable_kad,
+            listen_tcp_port: config.ed2k_listen_tcp_port,
+            listen_udp_port: config.ed2k_listen_udp_port,
+            max_sources_per_task: config.ed2k_max_sources_per_task,
+            max_upload_slots: config.ed2k_max_upload_slots,
+            share_completed: config.ed2k_share_completed,
         },
         metalink: RuntimeMetalinkConfig {
             preferred_locations: config.metalink_preferred_locations.clone(),

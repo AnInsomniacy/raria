@@ -119,3 +119,25 @@ and `cargo check --workspace --locked` passed.
 Remaining: Start ED2K-007 stable identity and config.
 
 Blocked: none.
+
+## 2026-05-28 ED2K-007 verified
+
+Changed: Added stable native ED2K identity loading and runtime configuration
+projection. `raria-ed2k` can now load or create a persistent client hash from
+native redb identity rows. `raria-core` now carries ED2K runtime policy from
+strict `raria.toml` into `GlobalConfig`. `/api/v1/config` now exposes a native
+`ed2k` object without legacy names or secrets.
+
+Verified: The RED checks failed before implementation because the identity
+loader, `GlobalConfig` ED2K fields, and API projection did not exist. After
+implementation, `cargo test -p raria-ed2k identity --locked`, `cargo test -p
+raria-ed2k --locked`, `cargo test -p raria-core --test native_config
+--locked`, `cargo test -p raria-rpc --test native_api
+config_endpoint_returns_native_runtime_projection --locked`, `cargo clippy -p
+raria-ed2k --locked --all-targets -- -D warnings`, `cargo clippy -p
+raria-core --locked --all-targets -- -D warnings`, and `cargo clippy -p
+raria-rpc --locked --all-targets -- -D warnings` passed.
+
+Remaining: Start ED2K-008 packet codec.
+
+Blocked: none.

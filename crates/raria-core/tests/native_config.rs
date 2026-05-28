@@ -194,6 +194,14 @@ mod tests {
         assert_eq!(global.default_segments, 7);
         assert_eq!(global.min_segment_size, 2097152);
         assert_eq!(global.retry_attempts, 4);
+        assert!(!global.ed2k_enabled);
+        assert!(global.ed2k_enable_servers);
+        assert!(global.ed2k_enable_kad);
+        assert_eq!(global.ed2k_listen_tcp_port, 4662);
+        assert_eq!(global.ed2k_listen_udp_port, 4672);
+        assert_eq!(global.ed2k_max_sources_per_task, 400);
+        assert_eq!(global.ed2k_max_upload_slots, 3);
+        assert!(!global.ed2k_share_completed);
         assert!(global.bt_enable_pex);
         assert_eq!(global.proxy.as_deref(), Some("http://proxy.example:8080"));
         assert_eq!(global.no_proxy.as_deref(), Some("localhost"));
@@ -268,5 +276,34 @@ mod tests {
         let global = config.to_global_config().expect("convert to global config");
 
         assert!(!global.bt_enable_pex);
+    }
+
+    #[test]
+    fn native_config_carries_ed2k_policy_into_runtime_config() {
+        let config = RariaConfig::from_toml_str(
+            r#"
+            [ed2k]
+            enabled = true
+            enable_servers = false
+            enable_kad = false
+            listen_tcp_port = 14662
+            listen_udp_port = 14672
+            max_sources_per_task = 250
+            max_upload_slots = 5
+            share_completed = true
+            "#,
+        )
+        .expect("native config should parse");
+
+        let global = config.to_global_config().expect("convert to global config");
+
+        assert!(global.ed2k_enabled);
+        assert!(!global.ed2k_enable_servers);
+        assert!(!global.ed2k_enable_kad);
+        assert_eq!(global.ed2k_listen_tcp_port, 14662);
+        assert_eq!(global.ed2k_listen_udp_port, 14672);
+        assert_eq!(global.ed2k_max_sources_per_task, 250);
+        assert_eq!(global.ed2k_max_upload_slots, 5);
+        assert!(global.ed2k_share_completed);
     }
 }
