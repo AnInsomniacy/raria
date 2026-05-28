@@ -292,3 +292,27 @@ After implementation, `cargo test -p raria-ed2k --test source_exchange
 Remaining: Start ED2K-015 part request planning and I64 offsets.
 
 Blocked: none.
+
+## 2026-05-28 ED2K-015 verified
+
+Changed: Added native ED2K part request planning in `raria-ed2k`. The
+transfer module now plans non-overlapping AICH emblock ranges while respecting
+completed ranges, globally owned ranges, peer-owned outstanding ranges, remote
+part availability, known file size, and last partial blocks. It also builds and
+parses retained RequestParts and RequestPartsI64 payloads with typed errors for
+invalid ranges, too many ranges, legacy offset overflow, truncated payloads,
+and file-hash mismatch.
+
+Verified: The RED check failed before implementation because part planning,
+RequestParts codec helpers, I64 offsets, and typed payload errors did not
+exist. A later focused run exposed two defects: existing peer-owned ranges were
+incorrectly counted against the new request frame capacity, and short payloads
+with a readable wrong hash returned `Truncated` before `HashMismatch`. After
+fixing those root causes, `cargo test -p raria-ed2k --test part_planning
+--locked`, `cargo test -p raria-ed2k --locked`, `cargo fmt --all --check`,
+`cargo clippy -p raria-ed2k --locked --all-targets -- -D warnings`, and
+`cargo check --workspace --locked` passed.
+
+Remaining: Start ED2K-016 compressed parts, cancellation, timeout, and retry.
+
+Blocked: none.
