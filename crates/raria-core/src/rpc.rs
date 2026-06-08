@@ -43,6 +43,7 @@ pub struct HttpTask {
     pub header: Option<String>,
     pub load_cookies: Option<String>,
     pub max_download_limit: Option<u32>,
+    pub split: Option<u16>,
 }
 
 impl RpcEvent {
@@ -326,6 +327,7 @@ impl RpcEngine {
                     header: task.header.clone(),
                     load_cookies: task.load_cookies.clone(),
                     max_download_limit: task.max_download_limit,
+                    split: task.split,
                 })
             })
             .collect()
@@ -407,6 +409,12 @@ impl RpcEngine {
             .and_then(|options| options.get("max-download-limit"))
             .and_then(RpcValue::as_str)
             .and_then(|value| value.parse::<u32>().ok());
+        let split = params
+            .as_array()
+            .and_then(|params| params.get(1))
+            .and_then(|options| options.get("split"))
+            .and_then(RpcValue::as_str)
+            .and_then(|value| value.parse::<u16>().ok());
 
         let gid = self.allocate_gid();
         self.tasks.insert(
@@ -420,6 +428,7 @@ impl RpcEngine {
                 header,
                 load_cookies,
                 max_download_limit,
+                split,
                 completed_length: 0,
                 error_message: None,
             },
@@ -586,6 +595,7 @@ struct Task {
     header: Option<String>,
     load_cookies: Option<String>,
     max_download_limit: Option<u32>,
+    split: Option<u16>,
     completed_length: u64,
     error_message: Option<String>,
 }

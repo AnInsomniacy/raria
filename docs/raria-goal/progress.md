@@ -44,4 +44,6 @@ Remaining in `40-http-engine`: true range splitting, proxy/header/cookie/netrc o
 
 Added HTTP request option coverage for per-task `header` and a simple `load-cookies` file, both applied through reqwest. Added task-level `max-download-limit` enforcement through governor with a focused local fixture. `40.03` remains in progress until proxy and netrc behavior are covered.
 
-Remaining in `40-http-engine`: true range splitting plus proxy and netrc option coverage.
+Added focused range splitting support for HTTP downloads. For `split > 1`, raria probes `Content-Range` with a small range request, then performs sequential range requests and joins the bytes into the output file. This keeps the first implementation deterministic while preserving the external aria-style split behavior contract.
+
+Remaining in `40-http-engine`: proxy and netrc option coverage.

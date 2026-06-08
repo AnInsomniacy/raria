@@ -8,7 +8,7 @@ use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use tokio::{fs, io::AsyncWriteExt};
 
-use crate::{Error, RariaConfig, Result, RpcEngine};
+use crate::{Error, HttpTask, RariaConfig, Result, RpcEngine};
 
 pub struct DownloadEngine {
     config: RariaConfig,
@@ -29,32 +29,12 @@ impl DownloadEngine {
             let path = self.output_path(&task.uri, task.out.as_deref());
             let control_path = self.control_path(&path);
             let completed = read_control_file(&control_path).await?;
-            let mut request = self.client.get(&task.uri);
-            if let Some(header) = &task.header {
-                let (name, value) = header
-                    .split_once(':')
-                    .ok_or_else(|| Error::Download(format!("invalid header option: {header}")))?;
-                request = request.header(name.trim(), value.trim());
-            }
-            if let Some(path) = &task.load_cookies {
-                let cookie = fs::read_to_string(path)
-                    .await
-                    .map_err(|error| Error::Download(error.to_string()))?;
-                request = request.header(reqwest::header::COOKIE, cookie.trim());
-            }
-            if completed > 0 {
-                request = request.header(reqwest::header::RANGE, format!("bytes={completed}-"));
-            }
-            let response = request
-                .send()
-                .await
-                .map_err(|error| Error::Download(error.to_string()))?
-                .error_for_status()
-                .map_err(|error| Error::Download(error.to_string()))?;
-            let bytes = response
-                .bytes()
-                .await
-                .map_err(|error| Error::Download(error.to_string()))?;
+            let bytes = if completed == 0 && task.split.unwrap_or(1) > 1 {
+                self.download_split(&task).await?
+            } else {
+                let range = (completed > 0).then(|| format!("bytes={completed}-"));
+                self.download_range(&task, range.as_deref()).await?
+            };
             if let Some(limit) = task.max_download_limit {
                 throttle_bytes(limit, bytes.len()).await?;
             }
@@ -104,6 +84,86 @@ impl DownloadEngine {
             output_path.display(),
             self.config.control_file_extension
         ))
+    }
+
+    async fn download_split(&self, task: &HttpTask) -> Result<bytes::Bytes> {
+        let total_length = self.probe_length(task).await?;
+        let split = u64::from(task.split.unwrap_or(1).max(1));
+        let chunk_size = total_length.div_ceil(split);
+        let mut out = Vec::new();
+        for index in 0..split {
+            let start = index * chunk_size;
+            if start >= total_length {
+                break;
+            }
+            let end = ((start + chunk_size).min(total_length)) - 1;
+            let range = if index + 1 == split {
+                format!("bytes={start}-")
+            } else {
+                format!("bytes={start}-{end}")
+            };
+            out.extend_from_slice(&self.download_range(task, Some(&range)).await?);
+        }
+        Ok(out.into())
+    }
+
+    async fn probe_length(&self, task: &HttpTask) -> Result<u64> {
+        let response = self
+            .prepare_request(task, Some("bytes=0-0"))
+            .await?
+            .send()
+            .await
+            .map_err(|error| Error::Download(error.to_string()))?
+            .error_for_status()
+            .map_err(|error| Error::Download(error.to_string()))?;
+        let header = response
+            .headers()
+            .get(reqwest::header::CONTENT_RANGE)
+            .and_then(|value| value.to_str().ok())
+            .ok_or_else(|| Error::Download("missing content-range for split download".into()))?;
+        let (_, total) = header
+            .rsplit_once('/')
+            .ok_or_else(|| Error::Download(format!("invalid content-range: {header}")))?;
+        total
+            .parse::<u64>()
+            .map_err(|error| Error::Download(error.to_string()))
+    }
+
+    async fn download_range(&self, task: &HttpTask, range: Option<&str>) -> Result<bytes::Bytes> {
+        self.prepare_request(task, range)
+            .await?
+            .send()
+            .await
+            .map_err(|error| Error::Download(error.to_string()))?
+            .error_for_status()
+            .map_err(|error| Error::Download(error.to_string()))?
+            .bytes()
+            .await
+            .map_err(|error| Error::Download(error.to_string()))
+    }
+
+    async fn prepare_request(
+        &self,
+        task: &HttpTask,
+        range: Option<&str>,
+    ) -> Result<reqwest::RequestBuilder> {
+        let mut request = self.client.get(&task.uri);
+        if let Some(header) = &task.header {
+            let (name, value) = header
+                .split_once(':')
+                .ok_or_else(|| Error::Download(format!("invalid header option: {header}")))?;
+            request = request.header(name.trim(), value.trim());
+        }
+        if let Some(path) = &task.load_cookies {
+            let cookie = fs::read_to_string(path)
+                .await
+                .map_err(|error| Error::Download(error.to_string()))?;
+            request = request.header(reqwest::header::COOKIE, cookie.trim());
+        }
+        if let Some(range) = range {
+            request = request.header(reqwest::header::RANGE, range);
+        }
+        Ok(request)
     }
 }
 
