@@ -389,6 +389,34 @@ fn add_uri_accepts_magnet_as_bittorrent_metadata_task() {
 }
 
 #[test]
+fn add_uri_maps_magnet_selected_files_into_file_status() {
+    let mut engine = RpcEngine::default();
+
+    let gid = engine
+        .call(RpcCall::new(
+            "aria2.addUri",
+            RpcValue::array([
+                RpcValue::array([RpcValue::string(
+                    "magnet:?xt=urn:btih:9d8cd776fc2f80d08eee2de831b139010d4b033f&dn=file.txt",
+                )]),
+                RpcValue::object([("select-file", RpcValue::string("2-3"))]),
+            ]),
+        ))
+        .expect("addUri should work")
+        .as_str()
+        .expect("gid")
+        .to_owned();
+
+    let task = engine
+        .pending_bittorrent_tasks()
+        .into_iter()
+        .find(|task| task.gid == gid)
+        .expect("pending bittorrent task");
+
+    assert_eq!(task.selected_files, Some(vec![2, 3]));
+}
+
+#[test]
 fn lists_methods_and_notifications_for_client_discovery() {
     let mut engine = RpcEngine::default();
 

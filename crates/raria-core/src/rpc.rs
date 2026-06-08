@@ -508,11 +508,13 @@ impl RpcEngine {
             .and_then(RpcValue::as_str)
             .map(ToOwned::to_owned);
 
-        let initial_peers = initial_peers(params.as_array().and_then(|params| params.get(1)))?;
+        let bittorrent_options = params.as_array().and_then(|params| params.get(1));
+        let selected_files = selected_files(bittorrent_options)?;
+        let initial_peers = initial_peers(bittorrent_options)?;
         let bittorrent = uris
             .iter()
             .find(|uri| uri.starts_with("magnet:"))
-            .map(|uri| torrent_from_magnet(uri, initial_peers.clone()))
+            .map(|uri| torrent_from_magnet(uri, selected_files.clone(), initial_peers.clone()))
             .transpose()?;
         let gid = self.allocate_gid();
         self.tasks.insert(
@@ -1007,10 +1009,15 @@ fn initial_peers(options: Option<&RpcValue>) -> Result<Vec<String>, RpcError> {
         .collect())
 }
 
-fn torrent_from_magnet(uri: &str, initial_peers: Vec<String>) -> Result<BittorrentTask, RpcError> {
+fn torrent_from_magnet(
+    uri: &str,
+    selected_files: Option<Vec<usize>>,
+    initial_peers: Vec<String>,
+) -> Result<BittorrentTask, RpcError> {
     parse_magnet_uri(uri)
         .map(|meta| {
             let mut task = BittorrentTask::from_magnet(uri, meta);
+            task.selected_files = selected_files;
             task.initial_peers = initial_peers;
             task
         })
