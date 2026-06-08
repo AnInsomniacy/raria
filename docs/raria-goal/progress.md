@@ -21,3 +21,9 @@ Completed checkpoint `10-foundation`. The Rust workspace now has `raria-core` an
 Current checkpoint: `20-cli-config`.
 
 Next action: implement CLI/config/input parsing with focused fixtures for supported, pruned, and unsupported option classes.
+
+Completed checkpoint `20-cli-config` with a focused first parser pass. `raria-core` now exposes `parse_cli`, `parse_config_text`, `parse_input_file_text`, and `save_session_text`. The covered contract includes common new-session CLI options, aria-style config lines, input-file tasks with per-task options, loadable save-session text for new tasks, and explicit dispositions for pruned and phase-one unsupported options. This is intentionally a parser and contract layer only; it does not start downloads.
+
+Current checkpoint: `30-rpc-events`.
+
+Next action: build the JSON-RPC shape and in-process queue state first, then expose HTTP and WebSocket transports once contract fixtures pass.

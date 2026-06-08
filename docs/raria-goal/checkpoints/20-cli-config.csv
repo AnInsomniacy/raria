@@ -1,6 +1,6 @@
 id,task,status,acceptance,evidence
-20.01,Implement CLI parser for common new-task options,pending,"Common aria2-next-style invocations parse","CLI tests"
-20.02,Implement config file loading,pending,"Config precedence is documented and tested","config tests"
-20.03,Implement input-file parser,pending,"Multiple URI lines and per-task options parse","input fixture tests"
-20.04,Implement save-session format for new tasks,pending,"New-task sessions can be saved and loaded by raria","session tests"
-20.05,Handle unsupported options,pending,"Unsupported options are explicit and stable","contract tests"
+20.01,Implement CLI parser for common new-task options,done,"Common aria2-next-style invocations parse","crates/raria-core/tests/cli_config.rs"
+20.02,Implement config file loading,done,"Config precedence is documented and tested","crates/raria-core/tests/cli_config.rs"
+20.03,Implement input-file parser,done,"Multiple URI lines and per-task options parse","crates/raria-core/tests/cli_config.rs"
+20.04,Implement save-session format for new tasks,done,"New-task sessions can be saved and loaded by raria","crates/raria-core/tests/cli_config.rs"
+20.05,Handle unsupported options,done,"Unsupported options are explicit and stable","crates/raria-core/tests/cli_config.rs"
