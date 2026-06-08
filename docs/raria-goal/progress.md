@@ -27,3 +27,9 @@ Completed checkpoint `20-cli-config` with a focused first parser pass. `raria-co
 Current checkpoint: `30-rpc-events`.
 
 Next action: build the JSON-RPC shape and in-process queue state first, then expose HTTP and WebSocket transports once contract fixtures pass.
+
+Completed checkpoint `30-rpc-events`. The core now has an in-memory `RpcEngine`, aria2-shaped GIDs, `aria2.addUri`, `aria2.tellStatus`, pause/unpause/remove, `aria2.getGlobalStat`, `system.multicall`, `system.listMethods`, `system.listNotifications`, explicit phase-one unsupported ED2K errors, HTTP POST `/jsonrpc`, and WebSocket notification delivery on `/jsonrpc`. The RPC transport uses `axum + serde_json` so raria keeps full control over aria2-compatible token and response shaping. `jsonrpsee` is recorded as declined for phase one because it owns too much of the method/error surface for this compatibility layer.
+
+Current checkpoint: `40-http-engine`.
+
+Next action: implement HTTP(S) new-task download execution behind the existing RPC task model, starting with a local HTTP fixture for add/poll/pause/resume/save.

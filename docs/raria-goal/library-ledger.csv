@@ -1,8 +1,8 @@
 area,crate,decision,version_policy,why,risk,status
 runtime,tokio,preferred,"1.x stable","Mature async runtime and ecosystem center for network services.","Actor design must avoid unbounded task growth.",accepted_for_foundation
 http,reqwest,preferred,"0.13 stable","Mature HTTP client with async, TLS, headers, proxies, and streaming.","Range and resume semantics need raria orchestration.",accepted_for_http_probe
-rpc,jsonrpsee,probe,"0.26 stable","Mature JSON-RPC library with HTTP and WebSocket support.","May constrain exact aria2 response and token shapes.",probe_required
-rpc fallback,axum + serde_json,backup,stable,"Gives full control over aria2-shaped JSON-RPC if jsonrpsee is too rigid.","More custom RPC plumbing.",backup
+rpc,jsonrpsee,declined_for_phase_one,"0.26 stable","Mature JSON-RPC library with HTTP and WebSocket support.","It can own too much of the JSON-RPC method and error shape for aria2 token stripping and system.multicall compatibility.",recorded
+rpc fallback,axum + serde_json,accepted,stable,"Gives full control over aria2-shaped JSON-RPC while still using mature HTTP and WebSocket libraries.","More custom RPC adapter code, but the core RPC behavior remains raria-specific.",accepted_for_rpc_transport
 bt,librqbit,probe,"9.0.0-rc.0","Existing Rust BitTorrent engine candidate from rqbit.","Release candidate status conflicts with stable-first policy; probe hard before accepting.",probe_required
 bencode,bendy,preferred,stable,"Focused bencode parser/encoder.","Integration depends on selected BitTorrent crate.",planned
 metalink,quick-xml,preferred,"0.40 stable","Mature streaming XML parser with serde support.","Metalink v3/v4 mapping still needs raria domain model.",accepted_for_metalink_probe

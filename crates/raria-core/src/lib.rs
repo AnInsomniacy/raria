@@ -1,5 +1,6 @@
 mod cli;
 mod config;
+mod rpc;
 mod runtime;
 
 pub use cli::{
@@ -7,6 +8,7 @@ pub use cli::{
     save_session_text,
 };
 pub use config::RariaConfig;
+pub use rpc::{RpcCall, RpcEngine, RpcError, RpcErrorCode, RpcEvent, RpcValue, build_rpc_router};
 pub use runtime::RariaRuntime;
 
 pub type Result<T> = std::result::Result<T, Error>;

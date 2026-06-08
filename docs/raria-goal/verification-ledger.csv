@@ -2,7 +2,7 @@ checkpoint,command,expected,last_result,evidence
 00,"manual audit of aria2-next README, manual, RPC factory, session serializer, control file code","contract ledgers populated",passed,"docs/raria-goal/contract-ledger.csv; docs/raria-goal/contracts/options.toml"
 10,"cargo fmt --check && cargo clippy --workspace --all-targets && cargo test --workspace","all pass after workspace foundation",passed,"cargo fmt --check; cargo clippy --workspace --all-targets -- -D warnings; cargo test --workspace"
 20,"cargo test --workspace cli config input","CLI/config/input fixtures pass",passed,"cargo test --workspace; crates/raria-core/tests/cli_config.rs"
-30,"cargo test --workspace rpc events","RPC and WebSocket contract fixtures pass",pending,"contracts/rpc.json; contracts/events.json"
+30,"cargo test --workspace rpc events","RPC and WebSocket contract fixtures pass",passed,"cargo test --workspace; crates/raria-core/tests/rpc_events.rs; crates/raria-core/tests/rpc_transport.rs"
 40,"cargo test --workspace http","HTTP range/resume fixture passes",pending,""
 50,"cargo test --workspace ftp sftp","FTP and SFTP controlled fixtures pass",pending,""
 60,"cargo test --workspace bittorrent","BitTorrent fixtures or probe report passes",pending,""
