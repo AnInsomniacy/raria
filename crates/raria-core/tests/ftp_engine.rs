@@ -1,5 +1,8 @@
 use libunftp::ServerBuilder;
-use raria_core::{DownloadEngine, RariaConfig, RpcCall, RpcEngine, RpcValue};
+use raria_core::{
+    ControlFile, DownloadEngine, RariaConfig, RpcCall, RpcEngine, RpcValue,
+    write_control_file_atomic,
+};
 use tokio::{fs, net::TcpListener};
 use unftp_sbe_fs::Filesystem;
 
@@ -79,9 +82,16 @@ async fn resumes_ftp_download_from_raria_control_file() {
     fs::write(temp.path().join("file.txt"), b"hello ")
         .await
         .expect("partial file");
-    fs::write(
-        temp.path().join("file.txt.raria"),
-        br#"{"completedLength":6}"#,
+    write_control_file_atomic(
+        &temp.path().join("file.txt.raria"),
+        &ControlFile::new_http(
+            "0000000000000001",
+            temp.path(),
+            "file.txt",
+            Some(14),
+            6,
+            vec![format!("ftp://{addr}/file.txt")],
+        ),
     )
     .await
     .expect("control file");

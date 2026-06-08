@@ -10,12 +10,13 @@ use governor::{Quota, RateLimiter};
 use librqbit::{AddTorrent, AddTorrentOptions, AddTorrentResponse, Session, SessionOptions};
 use russh::client;
 use russh_sftp::client::SftpSession;
-use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use suppaftp::tokio::AsyncFtpStream;
 use tokio::{fs, io::AsyncWriteExt};
 
-use crate::{BittorrentDownloadTask, DownloadTask, Error, RariaConfig, Result, RpcEngine};
+use crate::{
+    BittorrentDownloadTask, DownloadTask, Error, RariaConfig, Result, RpcEngine, read_control_file,
+};
 
 pub struct DownloadEngine {
     config: RariaConfig,
@@ -68,7 +69,7 @@ impl DownloadEngine {
     async fn run_http_task(&self, rpc: &mut RpcEngine, task: DownloadTask) -> Result<()> {
         let path = self.output_path(&task.uri, task.out.as_deref());
         let control_path = self.control_path(&path);
-        let completed = read_control_file(&control_path).await?;
+        let completed = control_completed_length(&control_path).await?;
         let bytes = if completed == 0 && task.split.unwrap_or(1) > 1 {
             self.download_split(&task).await?
         } else {
@@ -82,7 +83,7 @@ impl DownloadEngine {
     async fn run_ftp_task(&self, rpc: &mut RpcEngine, task: DownloadTask) -> Result<()> {
         let path = self.output_path(&task.uri, task.out.as_deref());
         let control_path = self.control_path(&path);
-        let completed = read_control_file(&control_path).await?;
+        let completed = control_completed_length(&control_path).await?;
         let bytes = self.download_ftp(&task, completed).await?;
         self.finish_task(rpc, &task, &path, &control_path, completed, &bytes)
             .await
@@ -91,7 +92,7 @@ impl DownloadEngine {
     async fn run_sftp_task(&self, rpc: &mut RpcEngine, task: DownloadTask) -> Result<()> {
         let path = self.output_path(&task.uri, task.out.as_deref());
         let control_path = self.control_path(&path);
-        let completed = read_control_file(&control_path).await?;
+        let completed = control_completed_length(&control_path).await?;
         let bytes = self.download_sftp(&task, completed).await?;
         self.finish_task(rpc, &task, &path, &control_path, completed, &bytes)
             .await
@@ -504,20 +505,10 @@ async fn checksum_error(checksum: Option<&str>, path: &Path) -> Result<Option<St
     }
 }
 
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct ControlFile {
-    completed_length: u64,
-}
-
-async fn read_control_file(path: &Path) -> Result<u64> {
-    match fs::read_to_string(path).await {
-        Ok(text) => {
-            let control: ControlFile =
-                serde_json::from_str(&text).map_err(|error| Error::Download(error.to_string()))?;
-            Ok(control.completed_length)
-        }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(0),
-        Err(error) => Err(Error::Download(error.to_string())),
-    }
+async fn control_completed_length(path: &Path) -> Result<u64> {
+    read_control_file(path)
+        .await?
+        .map(|control| control.completed_length())
+        .transpose()
+        .map(|completed| completed.unwrap_or(0))
 }

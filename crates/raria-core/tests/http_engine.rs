@@ -7,7 +7,10 @@ use axum::{
     response::{IntoResponse, Response},
     routing::get,
 };
-use raria_core::{DownloadEngine, RariaConfig, RpcCall, RpcEngine, RpcValue};
+use raria_core::{
+    ControlFile, DownloadEngine, RariaConfig, RpcCall, RpcEngine, RpcValue,
+    write_control_file_atomic,
+};
 use tokio::{fs, net::TcpListener, sync::Mutex, time::Instant};
 
 #[tokio::test]
@@ -77,9 +80,16 @@ async fn resumes_http_download_from_raria_control_file() {
     fs::write(temp.path().join("range.txt"), b"hello ")
         .await
         .expect("partial file");
-    fs::write(
-        temp.path().join("range.txt.raria"),
-        br#"{"completedLength":6}"#,
+    write_control_file_atomic(
+        &temp.path().join("range.txt.raria"),
+        &ControlFile::new_http(
+            "0000000000000001",
+            temp.path(),
+            "range.txt",
+            Some(16),
+            6,
+            vec![format!("http://{addr}/range.txt")],
+        ),
     )
     .await
     .expect("control file");

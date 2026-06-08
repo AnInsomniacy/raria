@@ -1,11 +1,12 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "Raria control file",
+  "description": "Phase-one .raria control file for new-task resume. It is not compatible with aria2 .aria2 files.",
   "type": "object",
   "required": ["format", "version", "gid", "kind", "target", "pieces"],
   "properties": {
     "format": { "const": "raria-control" },
-    "version": { "type": "integer", "minimum": 1 },
+    "version": { "const": 1 },
     "gid": { "type": "string", "pattern": "^[0-9a-f]{16}$" },
     "kind": { "enum": ["http", "ftp", "sftp", "bittorrent", "metalink"] },
     "target": {
@@ -21,8 +22,12 @@
       "type": "object",
       "required": ["pieceLength", "bitfield"],
       "properties": {
-        "pieceLength": { "type": "integer", "minimum": 1 },
-        "bitfield": { "type": "string" }
+        "pieceLength": { "const": 1 },
+        "bitfield": {
+          "type": "string",
+          "pattern": "^[0-9]+$",
+          "description": "Phase-one completed byte count encoded as a string; later piece maps can extend this under a new version."
+        }
       }
     },
     "sources": {
@@ -33,4 +38,3 @@
     "updatedAt": { "type": "string" }
   }
 }
-

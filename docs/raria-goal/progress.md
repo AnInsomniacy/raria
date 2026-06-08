@@ -71,3 +71,9 @@ Completed checkpoint `70-metalink`. The Metalink parser now uses `quick-xml` for
 Current checkpoint: `80-persistence`.
 
 Next action: tighten `.raria` control-file semantics for new-task persistence and restart-style resume without old `.aria2` migration.
+
+Completed checkpoint `80-persistence`. The core now has a versioned `.raria` control model with atomic JSON writes, public read/write helpers, and restart-style HTTP resume through the same control file used by protocol fixtures. Completion cleanup removes the `.raria` sidecar after successful HTTP, FTP, and SFTP downloads. The schema explicitly documents phase-one completed-byte storage and keeps old `.aria2` migration out of scope.
+
+Current checkpoint: `90-release-readiness`.
+
+Next action: audit phase-one contract gaps, tighten user-facing scope docs, run final verification, and leave a release-readiness checkpoint with remaining post-phase-one probes clearly recorded.

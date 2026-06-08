@@ -1,5 +1,5 @@
 id,task,status,acceptance,evidence
-80.01,Finalize .raria schema,pending,"Schema is versioned and documented","contracts/raria-control.schema.json"
-80.02,Implement atomic .raria writes,pending,"Interrupted writes do not corrupt previous state","persistence tests"
-80.03,Implement new-task resume,pending,"HTTP partial state resumes after restart","persistence tests"
-80.04,Implement cleanup policy,pending,"Completed tasks remove or retain state according to option contract","persistence tests"
+80.01,Finalize .raria schema,done,"Schema is versioned and documented","contracts/raria-control.schema.json; crates/raria-core/src/persistence.rs"
+80.02,Implement atomic .raria writes,done,"Interrupted writes do not corrupt previous state","crates/raria-core/tests/persistence.rs"
+80.03,Implement new-task resume,done,"HTTP partial state resumes after restart","crates/raria-core/tests/persistence.rs"
+80.04,Implement cleanup policy,done,"Completed tasks remove or retain state according to option contract","crates/raria-core/tests/persistence.rs; protocol resume fixtures"
