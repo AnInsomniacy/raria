@@ -304,10 +304,20 @@ impl RpcEngine {
             "aria2.addMetalink" => self.add_metalink(call.params),
             "aria2.tellStatus" => self.tell_status(call.params),
             "aria2.getFiles" => self.get_files(call.params),
+            "aria2.getUris" => self.get_uris(call.params),
+            "aria2.tellActive" => Ok(self.tell_by_status("active")),
+            "aria2.tellWaiting" => Ok(self.tell_by_status("waiting")),
+            "aria2.tellStopped" => Ok(self.tell_stopped()),
             "aria2.pause" | "aria2.forcePause" => self.set_status(call.params, "paused"),
             "aria2.unpause" => self.set_status(call.params, "waiting"),
             "aria2.remove" | "aria2.forceRemove" => self.set_status(call.params, "removed"),
             "aria2.getGlobalStat" => Ok(self.global_stat()),
+            "aria2.getVersion" => Ok(self.version()),
+            "aria2.getSessionInfo" => Ok(RpcValue::object([(
+                "sessionId",
+                RpcValue::string("raria-new-session"),
+            )])),
+            "aria2.saveSession" => Ok(RpcValue::string("OK")),
             "system.multicall" => self.multicall(call.params),
             "system.listMethods" => Ok(RpcValue::Array(
                 RPC_METHODS
@@ -423,6 +433,7 @@ impl RpcEngine {
     }
 
     fn add_uri(&mut self, params: RpcValue) -> Result<RpcValue, RpcError> {
+        let params = strip_token(params);
         let uris = params
             .as_array()
             .and_then(|params| params.first())
@@ -533,6 +544,7 @@ impl RpcEngine {
     }
 
     fn add_torrent(&mut self, params: RpcValue) -> Result<RpcValue, RpcError> {
+        let params = strip_token(params);
         let encoded = params
             .as_array()
             .and_then(|params| params.first())
@@ -580,6 +592,7 @@ impl RpcEngine {
     }
 
     fn add_metalink(&mut self, params: RpcValue) -> Result<RpcValue, RpcError> {
+        let params = strip_token(params);
         let encoded = params
             .as_array()
             .and_then(|params| params.first())
@@ -627,42 +640,16 @@ impl RpcEngine {
     }
 
     fn tell_status(&self, params: RpcValue) -> Result<RpcValue, RpcError> {
-        let gid = gid_param(params)?;
+        let gid = gid_param(strip_token(params))?;
         let task = self
             .tasks
             .get(&gid)
             .ok_or_else(|| RpcError::invalid_params(format!("unknown gid: {gid}")))?;
-
-        let mut status = BTreeMap::from([
-            ("gid".to_string(), RpcValue::string(&task.gid)),
-            ("status".to_string(), RpcValue::string(&task.status)),
-            (
-                "totalLength".to_string(),
-                RpcValue::string(task.total_length().to_string()),
-            ),
-            (
-                "completedLength".to_string(),
-                RpcValue::string(task.completed_length.to_string()),
-            ),
-            ("downloadSpeed".to_string(), RpcValue::string("0")),
-            ("uploadSpeed".to_string(), RpcValue::string("0")),
-        ]);
-        status.insert("files".into(), RpcValue::Array(task.files_value()));
-        if let Some(bittorrent) = &task.bittorrent {
-            status.insert(
-                "infoHash".into(),
-                RpcValue::string(&bittorrent.info_hash_hex),
-            );
-            status.insert("bittorrent".into(), bittorrent.status_value());
-        }
-        if let Some(message) = &task.error_message {
-            status.insert("errorMessage".into(), RpcValue::string(message));
-        }
-        Ok(RpcValue::Object(status))
+        Ok(task.status_value())
     }
 
     fn set_status(&mut self, params: RpcValue, status: &str) -> Result<RpcValue, RpcError> {
-        let gid = gid_param(params)?;
+        let gid = gid_param(strip_token(params))?;
         let task = self
             .tasks
             .get_mut(&gid)
@@ -672,12 +659,31 @@ impl RpcEngine {
     }
 
     fn get_files(&self, params: RpcValue) -> Result<RpcValue, RpcError> {
-        let gid = gid_param(params)?;
+        let gid = gid_param(strip_token(params))?;
         let task = self
             .tasks
             .get(&gid)
             .ok_or_else(|| RpcError::invalid_params(format!("unknown gid: {gid}")))?;
         Ok(RpcValue::Array(task.files_value()))
+    }
+
+    fn get_uris(&self, params: RpcValue) -> Result<RpcValue, RpcError> {
+        let gid = gid_param(strip_token(params))?;
+        let task = self
+            .tasks
+            .get(&gid)
+            .ok_or_else(|| RpcError::invalid_params(format!("unknown gid: {gid}")))?;
+        Ok(RpcValue::Array(
+            task.uris
+                .iter()
+                .map(|uri| {
+                    RpcValue::object([
+                        ("uri", RpcValue::string(uri)),
+                        ("status", RpcValue::string("used")),
+                    ])
+                })
+                .collect(),
+        ))
     }
 
     fn global_stat(&self) -> RpcValue {
@@ -695,7 +701,45 @@ impl RpcEngine {
         ])
     }
 
+    fn tell_by_status(&self, status: &str) -> RpcValue {
+        RpcValue::Array(
+            self.tasks
+                .values()
+                .filter(|task| task.status == status)
+                .map(Task::status_value)
+                .collect(),
+        )
+    }
+
+    fn tell_stopped(&self) -> RpcValue {
+        RpcValue::Array(
+            self.tasks
+                .values()
+                .filter(|task| matches!(task.status.as_str(), "removed" | "complete" | "error"))
+                .map(Task::status_value)
+                .collect(),
+        )
+    }
+
+    fn version(&self) -> RpcValue {
+        RpcValue::object([
+            ("version", RpcValue::string(env!("CARGO_PKG_VERSION"))),
+            (
+                "enabledFeatures",
+                RpcValue::array([
+                    RpcValue::string("Async DNS"),
+                    RpcValue::string("BitTorrent"),
+                    RpcValue::string("Firefox3 Cookie"),
+                    RpcValue::string("HTTPS"),
+                    RpcValue::string("Metalink"),
+                    RpcValue::string("SFTP"),
+                ]),
+            ),
+        ])
+    }
+
     fn multicall(&mut self, params: RpcValue) -> Result<RpcValue, RpcError> {
+        let params = strip_token(params);
         let calls = params
             .as_array()
             .and_then(|params| params.first())
@@ -840,6 +884,35 @@ impl Task {
             ),
         )])]
     }
+
+    fn status_value(&self) -> RpcValue {
+        let mut status = BTreeMap::from([
+            ("gid".to_string(), RpcValue::string(&self.gid)),
+            ("status".to_string(), RpcValue::string(&self.status)),
+            (
+                "totalLength".to_string(),
+                RpcValue::string(self.total_length().to_string()),
+            ),
+            (
+                "completedLength".to_string(),
+                RpcValue::string(self.completed_length.to_string()),
+            ),
+            ("downloadSpeed".to_string(), RpcValue::string("0")),
+            ("uploadSpeed".to_string(), RpcValue::string("0")),
+            ("files".to_string(), RpcValue::Array(self.files_value())),
+        ]);
+        if let Some(bittorrent) = &self.bittorrent {
+            status.insert(
+                "infoHash".into(),
+                RpcValue::string(&bittorrent.info_hash_hex),
+            );
+            status.insert("bittorrent".into(), bittorrent.status_value());
+        }
+        if let Some(message) = &self.error_message {
+            status.insert("errorMessage".into(), RpcValue::string(message));
+        }
+        RpcValue::Object(status)
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -951,4 +1024,20 @@ fn gid_param(params: RpcValue) -> Result<String, RpcError> {
         .and_then(RpcValue::as_str)
         .map(ToOwned::to_owned)
         .ok_or_else(|| RpcError::invalid_params("expected gid parameter"))
+}
+
+fn strip_token(params: RpcValue) -> RpcValue {
+    let RpcValue::Array(values) = params else {
+        return params;
+    };
+    let mut values = values;
+    if values
+        .first()
+        .and_then(RpcValue::as_str)
+        .map(|value| value.starts_with("token:"))
+        .unwrap_or(false)
+    {
+        values.remove(0);
+    }
+    RpcValue::Array(values)
 }

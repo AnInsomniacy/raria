@@ -77,3 +77,7 @@ Completed checkpoint `80-persistence`. The core now has a versioned `.raria` con
 Current checkpoint: `90-release-readiness`.
 
 Next action: audit phase-one contract gaps, tighten user-facing scope docs, run final verification, and leave a release-readiness checkpoint with remaining post-phase-one probes clearly recorded.
+
+Started checkpoint `90-release-readiness`. The release audit found stale RPC contract statuses and a practical new-session polling gap around token stripping plus common query methods. The core now supports token-prefixed RPC parameters, `aria2.getUris`, `aria2.tellActive`, `aria2.tellWaiting`, `aria2.tellStopped`, `aria2.getVersion`, `aria2.getSessionInfo`, and `aria2.saveSession` acknowledgement. Phase-one scope is summarized in `release-scope.md`.
+
+Completed checkpoint `90-release-readiness`. Final verification passed for formatting, clippy, workspace tests, and goal document parsing. Phase-one scope is documented, pruning decisions are current, and the remaining non-phase-one probes are explicit rather than silently fake-compatible.

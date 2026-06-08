@@ -108,6 +108,107 @@ fn multicall_wraps_each_result_like_aria2() {
 }
 
 #[test]
+fn common_query_methods_support_new_session_polling() {
+    let mut engine = RpcEngine::default();
+
+    let gid = engine
+        .call(RpcCall::new(
+            "aria2.addUri",
+            RpcValue::array([
+                RpcValue::string("token:secret"),
+                RpcValue::array([RpcValue::string("https://example.test/file.iso")]),
+            ]),
+        ))
+        .expect("token addUri should work")
+        .as_str()
+        .expect("gid")
+        .to_owned();
+
+    let uris = engine
+        .call(RpcCall::new(
+            "aria2.getUris",
+            RpcValue::array([RpcValue::string(&gid)]),
+        ))
+        .expect("getUris");
+    assert_eq!(
+        uris.as_array()
+            .and_then(|items| items.first())
+            .and_then(|item| item.get("uri"))
+            .and_then(RpcValue::as_str),
+        Some("https://example.test/file.iso")
+    );
+
+    let waiting = engine
+        .call(RpcCall::new(
+            "aria2.tellWaiting",
+            RpcValue::array([
+                RpcValue::string("0"),
+                RpcValue::string("10"),
+                RpcValue::array([]),
+            ]),
+        ))
+        .expect("tellWaiting");
+    assert_eq!(waiting.as_array().expect("waiting").len(), 1);
+
+    let active = engine
+        .call(RpcCall::new("aria2.tellActive", RpcValue::array([])))
+        .expect("tellActive");
+    assert_eq!(active.as_array().expect("active").len(), 0);
+
+    engine
+        .call(RpcCall::new(
+            "aria2.remove",
+            RpcValue::array([RpcValue::string(&gid)]),
+        ))
+        .expect("remove");
+    let stopped = engine
+        .call(RpcCall::new(
+            "aria2.tellStopped",
+            RpcValue::array([
+                RpcValue::string("0"),
+                RpcValue::string("10"),
+                RpcValue::array([]),
+            ]),
+        ))
+        .expect("tellStopped");
+    assert_eq!(stopped.as_array().expect("stopped").len(), 1);
+}
+
+#[test]
+fn session_metadata_methods_are_available() {
+    let mut engine = RpcEngine::default();
+
+    let version = engine
+        .call(RpcCall::new("aria2.getVersion", RpcValue::array([])))
+        .expect("version");
+    assert_eq!(
+        version.get("version").and_then(RpcValue::as_str),
+        Some("0.1.0")
+    );
+    assert!(
+        version
+            .get("enabledFeatures")
+            .and_then(RpcValue::as_array)
+            .expect("features")
+            .iter()
+            .any(|feature| feature.as_str() == Some("BitTorrent"))
+    );
+
+    let session = engine
+        .call(RpcCall::new("aria2.getSessionInfo", RpcValue::array([])))
+        .expect("session info");
+    assert_eq!(
+        session.get("sessionId").and_then(RpcValue::as_str),
+        Some("raria-new-session")
+    );
+
+    let saved = engine
+        .call(RpcCall::new("aria2.saveSession", RpcValue::array([])))
+        .expect("save session");
+    assert_eq!(saved.as_str(), Some("OK"));
+}
+
+#[test]
 fn events_follow_aria2_notification_shape() {
     let mut engine = RpcEngine::default();
     let gid = engine
