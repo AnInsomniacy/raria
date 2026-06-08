@@ -40,6 +40,9 @@ pub struct HttpTask {
     pub uri: String,
     pub out: Option<String>,
     pub checksum: Option<String>,
+    pub header: Option<String>,
+    pub load_cookies: Option<String>,
+    pub max_download_limit: Option<u32>,
 }
 
 impl RpcEvent {
@@ -320,6 +323,9 @@ impl RpcEngine {
                     uri: uri.clone(),
                     out: task.out.clone(),
                     checksum: task.checksum.clone(),
+                    header: task.header.clone(),
+                    load_cookies: task.load_cookies.clone(),
+                    max_download_limit: task.max_download_limit,
                 })
             })
             .collect()
@@ -383,6 +389,24 @@ impl RpcEngine {
             .and_then(|options| options.get("checksum"))
             .and_then(RpcValue::as_str)
             .map(ToOwned::to_owned);
+        let header = params
+            .as_array()
+            .and_then(|params| params.get(1))
+            .and_then(|options| options.get("header"))
+            .and_then(RpcValue::as_str)
+            .map(ToOwned::to_owned);
+        let load_cookies = params
+            .as_array()
+            .and_then(|params| params.get(1))
+            .and_then(|options| options.get("load-cookies"))
+            .and_then(RpcValue::as_str)
+            .map(ToOwned::to_owned);
+        let max_download_limit = params
+            .as_array()
+            .and_then(|params| params.get(1))
+            .and_then(|options| options.get("max-download-limit"))
+            .and_then(RpcValue::as_str)
+            .and_then(|value| value.parse::<u32>().ok());
 
         let gid = self.allocate_gid();
         self.tasks.insert(
@@ -393,6 +417,9 @@ impl RpcEngine {
                 uris,
                 out,
                 checksum,
+                header,
+                load_cookies,
+                max_download_limit,
                 completed_length: 0,
                 error_message: None,
             },
@@ -556,6 +583,9 @@ struct Task {
     uris: Vec<String>,
     out: Option<String>,
     checksum: Option<String>,
+    header: Option<String>,
+    load_cookies: Option<String>,
+    max_download_limit: Option<u32>,
     completed_length: u64,
     error_message: Option<String>,
 }

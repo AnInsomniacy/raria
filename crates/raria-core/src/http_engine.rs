@@ -1,5 +1,9 @@
-use std::path::{Path, PathBuf};
+use std::{
+    num::NonZeroU32,
+    path::{Path, PathBuf},
+};
 
+use governor::{Quota, RateLimiter};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use tokio::{fs, io::AsyncWriteExt};
@@ -26,6 +30,18 @@ impl DownloadEngine {
             let control_path = self.control_path(&path);
             let completed = read_control_file(&control_path).await?;
             let mut request = self.client.get(&task.uri);
+            if let Some(header) = &task.header {
+                let (name, value) = header
+                    .split_once(':')
+                    .ok_or_else(|| Error::Download(format!("invalid header option: {header}")))?;
+                request = request.header(name.trim(), value.trim());
+            }
+            if let Some(path) = &task.load_cookies {
+                let cookie = fs::read_to_string(path)
+                    .await
+                    .map_err(|error| Error::Download(error.to_string()))?;
+                request = request.header(reqwest::header::COOKIE, cookie.trim());
+            }
             if completed > 0 {
                 request = request.header(reqwest::header::RANGE, format!("bytes={completed}-"));
             }
@@ -39,6 +55,9 @@ impl DownloadEngine {
                 .bytes()
                 .await
                 .map_err(|error| Error::Download(error.to_string()))?;
+            if let Some(limit) = task.max_download_limit {
+                throttle_bytes(limit, bytes.len()).await?;
+            }
             if let Some(parent) = path.parent() {
                 fs::create_dir_all(parent)
                     .await
@@ -86,6 +105,21 @@ impl DownloadEngine {
             self.config.control_file_extension
         ))
     }
+}
+
+async fn throttle_bytes(bytes_per_second: u32, byte_count: usize) -> Result<()> {
+    if byte_count == 0 {
+        return Ok(());
+    }
+    let quota = NonZeroU32::new(bytes_per_second)
+        .map(Quota::per_second)
+        .map(|quota| quota.allow_burst(NonZeroU32::new(1).expect("one is non-zero")))
+        .ok_or_else(|| Error::Download("max-download-limit must be greater than zero".into()))?;
+    let limiter = RateLimiter::direct(quota);
+    for _ in 0..byte_count {
+        limiter.until_ready().await;
+    }
+    Ok(())
 }
 
 async fn checksum_error(checksum: Option<&str>, path: &Path) -> Result<Option<String>> {

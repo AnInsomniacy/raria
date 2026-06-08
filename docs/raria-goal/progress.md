@@ -41,3 +41,7 @@ Remaining in `40-http-engine`: true range splitting, proxy/header/cookie/netrc o
 Added whole-file SHA-256 checksum verification for HTTP downloads. A mismatch now marks the task as `error`, emits the existing error path, and exposes an `errorMessage` through `aria2.tellStatus`.
 
 Remaining in `40-http-engine`: true range splitting, proxy/header/cookie/netrc option coverage, and rate limiting.
+
+Added HTTP request option coverage for per-task `header` and a simple `load-cookies` file, both applied through reqwest. Added task-level `max-download-limit` enforcement through governor with a focused local fixture. `40.03` remains in progress until proxy and netrc behavior are covered.
+
+Remaining in `40-http-engine`: true range splitting plus proxy and netrc option coverage.

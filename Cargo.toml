@@ -24,5 +24,6 @@ tower = { version = "0.5.3", features = ["util"] }
 tracing = "0.1.43"
 tracing-subscriber = { version = "0.3.22", features = ["env-filter", "fmt"] }
 futures-util = "0.3.32"
+governor = "0.10.4"
 reqwest = { version = "0.13.4", default-features = false, features = ["rustls", "stream"] }
 tempfile = "3.24.0"

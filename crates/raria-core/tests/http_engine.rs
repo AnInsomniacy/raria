@@ -5,7 +5,7 @@ use axum::{
     routing::get,
 };
 use raria_core::{DownloadEngine, RariaConfig, RpcCall, RpcEngine, RpcValue};
-use tokio::{fs, net::TcpListener};
+use tokio::{fs, net::TcpListener, time::Instant};
 
 #[tokio::test]
 async fn downloads_single_http_uri_to_configured_directory() {
@@ -182,6 +182,92 @@ async fn reports_error_when_checksum_does_not_match() {
     );
 }
 
+#[tokio::test]
+async fn sends_configured_header_and_cookie_file() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("listener");
+    let addr = listener.local_addr().expect("local addr");
+    tokio::spawn(async move {
+        let app = Router::new().route("/guarded.txt", get(guarded_file));
+        axum::serve(listener, app).await.expect("fixture server");
+    });
+
+    let temp = tempfile::tempdir().expect("tempdir");
+    let cookie_path = temp.path().join("cookies.txt");
+    fs::write(&cookie_path, "session=abc")
+        .await
+        .expect("cookie file");
+
+    let mut rpc = RpcEngine::default();
+    rpc.call(RpcCall::new(
+        "aria2.addUri",
+        RpcValue::array([
+            RpcValue::array([RpcValue::string(format!("http://{addr}/guarded.txt"))]),
+            RpcValue::object([
+                ("out", RpcValue::string("guarded.txt")),
+                ("header", RpcValue::string("X-Raria-Test: yes")),
+                (
+                    "load-cookies",
+                    RpcValue::string(cookie_path.to_string_lossy()),
+                ),
+            ]),
+        ]),
+    ))
+    .expect("addUri");
+
+    let config = RariaConfig {
+        download_dir: temp.path().to_path_buf(),
+        ..RariaConfig::default()
+    };
+    DownloadEngine::new(config)
+        .run_once(&mut rpc)
+        .await
+        .expect("download");
+
+    let bytes = fs::read(temp.path().join("guarded.txt"))
+        .await
+        .expect("downloaded file");
+    assert_eq!(bytes, b"guarded content");
+}
+
+#[tokio::test]
+async fn applies_task_download_rate_limit() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("listener");
+    let addr = listener.local_addr().expect("local addr");
+    tokio::spawn(async move {
+        let app = Router::new().route("/file.txt", get(test_file));
+        axum::serve(listener, app).await.expect("fixture server");
+    });
+
+    let temp = tempfile::tempdir().expect("tempdir");
+    let mut rpc = RpcEngine::default();
+    rpc.call(RpcCall::new(
+        "aria2.addUri",
+        RpcValue::array([
+            RpcValue::array([RpcValue::string(format!("http://{addr}/file.txt"))]),
+            RpcValue::object([
+                ("out", RpcValue::string("file.txt")),
+                ("max-download-limit", RpcValue::string("40")),
+            ]),
+        ]),
+    ))
+    .expect("addUri");
+
+    let config = RariaConfig {
+        download_dir: temp.path().to_path_buf(),
+        ..RariaConfig::default()
+    };
+    let started = Instant::now();
+    DownloadEngine::new(config)
+        .run_once(&mut rpc)
+        .await
+        .expect("download");
+
+    assert!(
+        started.elapsed().as_millis() >= 300,
+        "16 bytes at 40 bytes/sec should be visibly throttled"
+    );
+}
+
 async fn test_file() -> impl IntoResponse {
     "hello from raria"
 }
@@ -191,5 +277,21 @@ async fn range_file(headers: HeaderMap) -> Response {
     match headers.get("range").and_then(|value| value.to_str().ok()) {
         Some("bytes=6-") => (StatusCode::PARTIAL_CONTENT, &bytes[6..]).into_response(),
         _ => (StatusCode::OK, &bytes[..]).into_response(),
+    }
+}
+
+async fn guarded_file(headers: HeaderMap) -> Response {
+    let has_header = headers
+        .get("x-raria-test")
+        .and_then(|value| value.to_str().ok())
+        == Some("yes");
+    let has_cookie = headers
+        .get("cookie")
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value.contains("session=abc"));
+    if has_header && has_cookie {
+        (StatusCode::OK, "guarded content").into_response()
+    } else {
+        (StatusCode::FORBIDDEN, "missing header or cookie").into_response()
     }
 }
