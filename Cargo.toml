@@ -13,10 +13,13 @@ repository = "https://example.invalid/raria"
 [workspace.dependencies]
 anyhow = "1.0.100"
 axum = { version = "0.8.9", features = ["ws"] }
+base64 = "0.22.1"
+bendy = "0.6.1"
 bytes = "1.11.1"
 clap = { version = "4.5.53", features = ["derive"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.150"
+sha1 = "0.10.6"
 sha2 = "0.10.9"
 thiserror = "2.0.17"
 tokio = { version = "1.52.3", features = ["fs", "io-util", "macros", "rt-multi-thread", "sync", "time"] }
@@ -35,3 +38,4 @@ russh-sftp = "2.3.0"
 suppaftp = { version = "8.0.3", features = ["tokio"] }
 tempfile = "3.24.0"
 unftp-sbe-fs = "0.4.0"
+url = "2.5.8"

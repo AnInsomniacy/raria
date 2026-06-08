@@ -315,6 +315,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "bendy"
+version = "0.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "57cdd50c5215bbee87e15d24a8ab68bdc9c3602adbf43bfc831815ddbf1e62ee"
+dependencies = [
+ "rustversion",
+ "thiserror",
+]
+
+[[package]]
 name = "bitflags"
 version = "2.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2497,6 +2507,8 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "axum",
+ "base64",
+ "bendy",
  "bytes",
  "clap",
  "futures-util",
@@ -2509,6 +2521,7 @@ dependencies = [
  "russh-sftp",
  "serde",
  "serde_json",
+ "sha1 0.10.6",
  "sha2 0.10.9",
  "suppaftp",
  "tempfile",
@@ -2519,6 +2532,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "unftp-sbe-fs",
+ "url",
 ]
 
 [[package]]

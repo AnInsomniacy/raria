@@ -144,6 +144,150 @@ fn ed2k_methods_return_explicit_unsupported_error() {
 }
 
 #[test]
+fn add_torrent_exposes_bittorrent_status_fields() {
+    let torrent = "ZDg6YW5ub3VuY2UzMTpodHRwOi8vdHJhY2tlci5leGFtcGxlL2Fubm91bmNlNDppbmZvZDY6bGVuZ3RoaTE0ZTQ6bmFtZTg6ZmlsZS50eHQxMjpwaWVjZSBsZW5ndGhpMTYzODRlNjpwaWVjZXMyMDoxMjM0NTY3ODkwMTIzNDU2Nzg5MGVl";
+    let mut engine = RpcEngine::default();
+
+    let gid = engine
+        .call(RpcCall::new(
+            "aria2.addTorrent",
+            RpcValue::array([RpcValue::string(torrent)]),
+        ))
+        .expect("addTorrent should work")
+        .as_str()
+        .expect("gid")
+        .to_owned();
+
+    let status = engine
+        .call(RpcCall::new(
+            "aria2.tellStatus",
+            RpcValue::array([RpcValue::string(gid)]),
+        ))
+        .expect("tellStatus should work");
+
+    assert_eq!(
+        status
+            .get("bittorrent")
+            .and_then(|value| value.get("info"))
+            .and_then(|value| value.get("name"))
+            .and_then(RpcValue::as_str),
+        Some("file.txt")
+    );
+    assert_eq!(
+        status.get("infoHash").and_then(RpcValue::as_str),
+        Some("9d8cd776fc2f80d08eee2de831b139010d4b033f")
+    );
+    assert_eq!(
+        status.get("totalLength").and_then(RpcValue::as_str),
+        Some("14")
+    );
+}
+
+#[test]
+fn add_torrent_maps_selected_files_into_file_status() {
+    let torrent = "ZDg6YW5ub3VuY2UzMTpodHRwOi8vdHJhY2tlci5leGFtcGxlL2Fubm91bmNlNDppbmZvZDU6ZmlsZXNsZDY6bGVuZ3RoaTVlNDpwYXRobDE6YWVlZDY6bGVuZ3RoaTdlNDpwYXRobDE6YmVlZTQ6bmFtZTY6YnVuZGxlMTI6cGllY2UgbGVuZ3RoaTE2Mzg0ZTY6cGllY2VzMjA6MTIzNDU2Nzg5MDEyMzQ1Njc4OTBlZQ==";
+    let mut engine = RpcEngine::default();
+
+    let gid = engine
+        .call(RpcCall::new(
+            "aria2.addTorrent",
+            RpcValue::array([
+                RpcValue::string(torrent),
+                RpcValue::array([]),
+                RpcValue::object([("select-file", RpcValue::string("2"))]),
+            ]),
+        ))
+        .expect("addTorrent should work")
+        .as_str()
+        .expect("gid")
+        .to_owned();
+
+    let status = engine
+        .call(RpcCall::new(
+            "aria2.tellStatus",
+            RpcValue::array([RpcValue::string(gid)]),
+        ))
+        .expect("tellStatus should work");
+    let files = status
+        .get("files")
+        .and_then(RpcValue::as_array)
+        .expect("files");
+
+    assert_eq!(
+        files[0].get("selected").and_then(RpcValue::as_str),
+        Some("false")
+    );
+    assert_eq!(
+        files[1].get("selected").and_then(RpcValue::as_str),
+        Some("true")
+    );
+}
+
+#[test]
+fn get_files_returns_bittorrent_file_list() {
+    let torrent = "ZDg6YW5ub3VuY2UzMTpodHRwOi8vdHJhY2tlci5leGFtcGxlL2Fubm91bmNlNDppbmZvZDU6ZmlsZXNsZDY6bGVuZ3RoaTVlNDpwYXRobDE6YWVlZDY6bGVuZ3RoaTdlNDpwYXRobDE6YmVlZTQ6bmFtZTY6YnVuZGxlMTI6cGllY2UgbGVuZ3RoaTE2Mzg0ZTY6cGllY2VzMjA6MTIzNDU2Nzg5MDEyMzQ1Njc4OTBlZQ==";
+    let mut engine = RpcEngine::default();
+    let gid = engine
+        .call(RpcCall::new(
+            "aria2.addTorrent",
+            RpcValue::array([RpcValue::string(torrent)]),
+        ))
+        .expect("addTorrent")
+        .as_str()
+        .expect("gid")
+        .to_owned();
+
+    let files = engine
+        .call(RpcCall::new(
+            "aria2.getFiles",
+            RpcValue::array([RpcValue::string(gid)]),
+        ))
+        .expect("getFiles");
+    let files = files.as_array().expect("files");
+
+    assert_eq!(files.len(), 2);
+    assert_eq!(files[0].get("path").and_then(RpcValue::as_str), Some("a"));
+    assert_eq!(files[1].get("length").and_then(RpcValue::as_str), Some("7"));
+}
+
+#[test]
+fn add_uri_accepts_magnet_as_bittorrent_metadata_task() {
+    let mut engine = RpcEngine::default();
+
+    let gid = engine
+        .call(RpcCall::new(
+            "aria2.addUri",
+            RpcValue::array([RpcValue::array([RpcValue::string(
+                "magnet:?xt=urn:btih:9d8cd776fc2f80d08eee2de831b139010d4b033f&dn=file.txt",
+            )])]),
+        ))
+        .expect("addUri should work")
+        .as_str()
+        .expect("gid")
+        .to_owned();
+
+    let status = engine
+        .call(RpcCall::new(
+            "aria2.tellStatus",
+            RpcValue::array([RpcValue::string(gid)]),
+        ))
+        .expect("tellStatus should work");
+
+    assert_eq!(
+        status
+            .get("bittorrent")
+            .and_then(|value| value.get("info"))
+            .and_then(|value| value.get("name"))
+            .and_then(RpcValue::as_str),
+        Some("file.txt")
+    );
+    assert_eq!(
+        status.get("infoHash").and_then(RpcValue::as_str),
+        Some("9d8cd776fc2f80d08eee2de831b139010d4b033f")
+    );
+}
+
+#[test]
 fn lists_methods_and_notifications_for_client_discovery() {
     let mut engine = RpcEngine::default();
 

@@ -32,6 +32,8 @@ protocol,FTP/SFTP username and password options,keep,1,medium,aria2-next manual,
 protocol,FTP proxy options,probe,1,low,aria2-next manual,"ftp-proxy and related proxy credential options need a later library capability pass."
 protocol,SFTP host key pinning,probe,1,medium,aria2-next manual,"ssh-host-key-md needs explicit host key verification policy before user-facing support."
 protocol,BitTorrent,keep,1,medium,aria2-next manual,"Use mature library if capability probe passes."
+protocol,BitTorrent torrent metadata,keep,1,medium,aria2-next manual,"Torrent files are decoded with bendy, SHA-1 info hashes are exposed, and files are visible through tellStatus/getFiles."
+protocol,BitTorrent magnet metadata,keep,1,medium,aria2-next manual,"Magnet btih, display name, and trackers are parsed for new-task status before full peer download support."
 protocol,BitTorrent web seed,probe,1,medium,aria2-next manual,"Needed for torrent plus HTTP/FTP source workflows if the selected BT engine exposes hooks."
 protocol,BitTorrent encryption knobs,probe,1,low,aria2-next manual,"Keep only when selected mature library supports them cleanly."
 protocol,Metalink,keep,1,medium,aria2-next manual,"Use XML parser and task generation."

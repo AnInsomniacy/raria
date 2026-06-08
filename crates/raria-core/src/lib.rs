@@ -1,9 +1,11 @@
+mod bittorrent;
 mod cli;
 mod config;
 mod http_engine;
 mod rpc;
 mod runtime;
 
+pub use bittorrent::{MagnetMeta, TorrentFile, TorrentMeta, parse_magnet_uri, parse_torrent_bytes};
 pub use cli::{
     CliCommand, InputTask, OptionDisposition, parse_cli, parse_config_text, parse_input_file_text,
     save_session_text,

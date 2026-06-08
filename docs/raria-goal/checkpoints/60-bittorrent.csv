@@ -1,6 +1,6 @@
 id,task,status,acceptance,evidence
-60.01,Probe librqbit capabilities,pending,"Decision records supported and missing aria2-style semantics","library-ledger.csv"
-60.02,Implement torrent file new-task flow,pending,"Torrent fixture starts and reports status","BT tests"
-60.03,Implement magnet new-task flow,pending,"Magnet fixture starts metadata path","BT tests"
-60.04,Implement file selection mapping,pending,"Selected files affect task model and RPC files response","BT tests"
-60.05,Implement BT status fields,pending,"RPC status contains expected bittorrent fields","contracts/rpc.json"
+60.01,Probe librqbit capabilities,in_progress,"Decision records supported and missing aria2-style semantics","library-ledger.csv"
+60.02,Implement torrent file new-task flow,in_progress,"Torrent fixture starts and reports status","crates/raria-core/tests/bittorrent.rs; crates/raria-core/tests/rpc_events.rs"
+60.03,Implement magnet new-task flow,in_progress,"Magnet fixture starts metadata path","crates/raria-core/tests/bittorrent.rs; crates/raria-core/tests/rpc_events.rs"
+60.04,Implement file selection mapping,done,"Selected files affect task model and RPC files response","crates/raria-core/tests/rpc_events.rs"
+60.05,Implement BT status fields,in_progress,"RPC status contains expected bittorrent fields","contracts/rpc.json"

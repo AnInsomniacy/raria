@@ -9,9 +9,12 @@ use axum::{
     response::IntoResponse,
     routing::post,
 };
+use base64::{Engine as _, engine::general_purpose::STANDARD};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tokio::sync::{Mutex, broadcast};
+
+use crate::{MagnetMeta, TorrentFile, TorrentMeta, parse_magnet_uri, parse_torrent_bytes};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RpcCall {
@@ -285,7 +288,9 @@ impl RpcEngine {
     pub fn call(&mut self, call: RpcCall) -> Result<RpcValue, RpcError> {
         match call.method.as_str() {
             "aria2.addUri" => self.add_uri(call.params),
+            "aria2.addTorrent" => self.add_torrent(call.params),
             "aria2.tellStatus" => self.tell_status(call.params),
+            "aria2.getFiles" => self.get_files(call.params),
             "aria2.pause" | "aria2.forcePause" => self.set_status(call.params, "paused"),
             "aria2.unpause" => self.set_status(call.params, "waiting"),
             "aria2.remove" | "aria2.forceRemove" => self.set_status(call.params, "removed"),
@@ -462,6 +467,11 @@ impl RpcEngine {
             .and_then(RpcValue::as_str)
             .map(ToOwned::to_owned);
 
+        let bittorrent = uris
+            .iter()
+            .find(|uri| uri.starts_with("magnet:"))
+            .map(|uri| torrent_from_magnet(uri))
+            .transpose()?;
         let gid = self.allocate_gid();
         self.tasks.insert(
             gid.clone(),
@@ -479,6 +489,48 @@ impl RpcEngine {
                 http_proxy,
                 ftp_user,
                 ftp_passwd,
+                bittorrent,
+                completed_length: 0,
+                error_message: None,
+            },
+        );
+        self.emit_event(RpcEvent {
+            method: "aria2.onDownloadStart".into(),
+            params: vec![RpcValue::object([("gid", RpcValue::string(&gid))])],
+        });
+        Ok(RpcValue::string(gid))
+    }
+
+    fn add_torrent(&mut self, params: RpcValue) -> Result<RpcValue, RpcError> {
+        let encoded = params
+            .as_array()
+            .and_then(|params| params.first())
+            .and_then(RpcValue::as_str)
+            .ok_or_else(|| RpcError::invalid_params("aria2.addTorrent expects torrent bytes"))?;
+        let bytes = STANDARD
+            .decode(encoded)
+            .map_err(|error| RpcError::invalid_params(error.to_string()))?;
+        let meta = parse_torrent_bytes(&bytes)
+            .map_err(|error| RpcError::invalid_params(error.to_string()))?;
+        let selected_files = selected_files(params.as_array().and_then(|params| params.get(2)))?;
+        let gid = self.allocate_gid();
+        self.tasks.insert(
+            gid.clone(),
+            Task {
+                gid: gid.clone(),
+                status: "waiting".into(),
+                uris: Vec::new(),
+                out: None,
+                checksum: None,
+                header: None,
+                load_cookies: None,
+                max_download_limit: None,
+                split: None,
+                netrc_path: None,
+                http_proxy: None,
+                ftp_user: None,
+                ftp_passwd: None,
+                bittorrent: Some(BittorrentTask::from_torrent(meta, selected_files)),
                 completed_length: 0,
                 error_message: None,
             },
@@ -500,7 +552,10 @@ impl RpcEngine {
         let mut status = BTreeMap::from([
             ("gid".to_string(), RpcValue::string(&task.gid)),
             ("status".to_string(), RpcValue::string(&task.status)),
-            ("totalLength".to_string(), RpcValue::string("0")),
+            (
+                "totalLength".to_string(),
+                RpcValue::string(task.total_length().to_string()),
+            ),
             (
                 "completedLength".to_string(),
                 RpcValue::string(task.completed_length.to_string()),
@@ -508,18 +563,14 @@ impl RpcEngine {
             ("downloadSpeed".to_string(), RpcValue::string("0")),
             ("uploadSpeed".to_string(), RpcValue::string("0")),
         ]);
-        status.insert(
-            "files".into(),
-            RpcValue::array([RpcValue::object([(
-                "uris",
-                RpcValue::Array(
-                    task.uris
-                        .iter()
-                        .map(|uri| RpcValue::object([("uri", RpcValue::string(uri))]))
-                        .collect(),
-                ),
-            )])]),
-        );
+        status.insert("files".into(), RpcValue::Array(task.files_value()));
+        if let Some(bittorrent) = &task.bittorrent {
+            status.insert(
+                "infoHash".into(),
+                RpcValue::string(&bittorrent.info_hash_hex),
+            );
+            status.insert("bittorrent".into(), bittorrent.status_value());
+        }
         if let Some(message) = &task.error_message {
             status.insert("errorMessage".into(), RpcValue::string(message));
         }
@@ -534,6 +585,15 @@ impl RpcEngine {
             .ok_or_else(|| RpcError::invalid_params(format!("unknown gid: {gid}")))?;
         task.status = status.into();
         Ok(RpcValue::string(gid))
+    }
+
+    fn get_files(&self, params: RpcValue) -> Result<RpcValue, RpcError> {
+        let gid = gid_param(params)?;
+        let task = self
+            .tasks
+            .get(&gid)
+            .ok_or_else(|| RpcError::invalid_params(format!("unknown gid: {gid}")))?;
+        Ok(RpcValue::Array(task.files_value()))
     }
 
     fn global_stat(&self) -> RpcValue {
@@ -650,8 +710,121 @@ struct Task {
     http_proxy: Option<String>,
     ftp_user: Option<String>,
     ftp_passwd: Option<String>,
+    bittorrent: Option<BittorrentTask>,
     completed_length: u64,
     error_message: Option<String>,
+}
+
+impl Task {
+    fn total_length(&self) -> u64 {
+        self.bittorrent
+            .as_ref()
+            .map(|bittorrent| bittorrent.total_length)
+            .unwrap_or(0)
+    }
+
+    fn files_value(&self) -> Vec<RpcValue> {
+        if let Some(bittorrent) = &self.bittorrent {
+            return bittorrent
+                .files
+                .iter()
+                .enumerate()
+                .map(|(index, file)| {
+                    let selected = bittorrent
+                        .selected_files
+                        .as_ref()
+                        .map(|selected| selected.contains(&(index + 1)))
+                        .unwrap_or(true);
+                    RpcValue::object([
+                        ("index", RpcValue::string((index + 1).to_string())),
+                        ("path", RpcValue::string(&file.path)),
+                        ("length", RpcValue::string(file.length.to_string())),
+                        ("completedLength", RpcValue::string("0")),
+                        ("selected", RpcValue::string(selected.to_string())),
+                        ("uris", RpcValue::array([])),
+                    ])
+                })
+                .collect();
+        }
+        vec![RpcValue::object([(
+            "uris",
+            RpcValue::Array(
+                self.uris
+                    .iter()
+                    .map(|uri| RpcValue::object([("uri", RpcValue::string(uri))]))
+                    .collect(),
+            ),
+        )])]
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct BittorrentTask {
+    info_hash_hex: String,
+    name: Option<String>,
+    total_length: u64,
+    files: Vec<TorrentFile>,
+    selected_files: Option<Vec<usize>>,
+}
+
+impl BittorrentTask {
+    fn from_torrent(meta: TorrentMeta, selected_files: Option<Vec<usize>>) -> Self {
+        Self {
+            info_hash_hex: meta.info_hash_hex,
+            name: Some(meta.name),
+            total_length: meta.total_length,
+            files: meta.files,
+            selected_files,
+        }
+    }
+
+    fn from_magnet(meta: MagnetMeta) -> Self {
+        Self {
+            info_hash_hex: meta.info_hash_hex,
+            name: meta.name,
+            total_length: 0,
+            files: Vec::new(),
+            selected_files: None,
+        }
+    }
+
+    fn status_value(&self) -> RpcValue {
+        let name = self.name.as_deref().unwrap_or("");
+        RpcValue::object([("info", RpcValue::object([("name", RpcValue::string(name))]))])
+    }
+}
+
+fn selected_files(options: Option<&RpcValue>) -> Result<Option<Vec<usize>>, RpcError> {
+    let Some(value) = options
+        .and_then(|options| options.get("select-file"))
+        .and_then(RpcValue::as_str)
+    else {
+        return Ok(None);
+    };
+    let mut selected = Vec::new();
+    for part in value.split(',') {
+        if let Some((start, end)) = part.split_once('-') {
+            let start = start
+                .parse::<usize>()
+                .map_err(|error| RpcError::invalid_params(error.to_string()))?;
+            let end = end
+                .parse::<usize>()
+                .map_err(|error| RpcError::invalid_params(error.to_string()))?;
+            selected.extend(start..=end);
+        } else {
+            selected.push(
+                part.parse::<usize>()
+                    .map_err(|error| RpcError::invalid_params(error.to_string()))?,
+            );
+        }
+    }
+    Ok(Some(selected))
+}
+
+fn torrent_from_magnet(uri: &str) -> Result<BittorrentTask, RpcError> {
+    parse_magnet_uri(uri)
+        .map(BittorrentTask::from_magnet)
+        .map_err(|error| RpcError::invalid_params(error.to_string()))
 }
 
 fn gid_param(params: RpcValue) -> Result<String, RpcError> {

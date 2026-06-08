@@ -3,7 +3,7 @@
   "compatibilityTarget": "new-session JSON-RPC polling compatibility",
   "methods": {
     "aria2.addUri": { "decision": "keep", "status": "planned" },
-    "aria2.addTorrent": { "decision": "keep", "status": "planned" },
+    "aria2.addTorrent": { "decision": "keep", "status": "metadata_implemented" },
     "aria2.addMetalink": { "decision": "keep", "status": "planned" },
     "aria2.remove": { "decision": "keep", "status": "planned" },
     "aria2.forceRemove": { "decision": "keep", "status": "planned" },
@@ -18,7 +18,7 @@
     "aria2.tellWaiting": { "decision": "keep", "status": "planned" },
     "aria2.tellStopped": { "decision": "keep", "status": "planned" },
     "aria2.getUris": { "decision": "keep", "status": "planned" },
-    "aria2.getFiles": { "decision": "keep", "status": "planned" },
+    "aria2.getFiles": { "decision": "keep", "status": "implemented_for_http_uri_and_bt_metadata" },
     "aria2.getPeers": { "decision": "keep", "status": "planned" },
     "aria2.getServers": { "decision": "keep", "status": "planned" },
     "aria2.changePosition": { "decision": "keep", "status": "planned" },
@@ -42,4 +42,3 @@
     "aria2.getEd2kSearchResults": { "decision": "unsupported_phase_one", "status": "planned" }
   }
 }
-

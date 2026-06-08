@@ -7,6 +7,8 @@ repository.workspace = true
 
 [dependencies]
 axum.workspace = true
+base64.workspace = true
+bendy.workspace = true
 bytes.workspace = true
 clap.workspace = true
 governor.workspace = true
@@ -16,6 +18,7 @@ russh.workspace = true
 russh-sftp.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+sha1.workspace = true
 sha2.workspace = true
 suppaftp.workspace = true
 thiserror.workspace = true
@@ -23,6 +26,7 @@ tokio.workspace = true
 tower.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
+url.workspace = true
 
 [dev-dependencies]
 anyhow.workspace = true
