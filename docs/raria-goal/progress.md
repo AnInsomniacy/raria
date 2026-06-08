@@ -37,3 +37,7 @@ Next action: implement HTTP(S) new-task download execution behind the existing R
 Started checkpoint `40-http-engine`. The HTTP adapter now uses `reqwest` for single-source HTTP(S) downloads behind the existing RPC task model. A local axum fixture proves `aria2.addUri` can create a task, `DownloadEngine::run_once` downloads it to the configured directory, and `aria2.tellStatus` reports completion. A second fixture proves basic `.raria` resume behavior: raria reads a JSON control sidecar with `completedLength`, sends an HTTP Range request, appends the remaining bytes, removes the control file on completion, and updates completed length.
 
 Remaining in `40-http-engine`: true range splitting, proxy/header/cookie/netrc option coverage, checksum verification, and rate limiting.
+
+Added whole-file SHA-256 checksum verification for HTTP downloads. A mismatch now marks the task as `error`, emits the existing error path, and exposes an `errorMessage` through `aria2.tellStatus`.
+
+Remaining in `40-http-engine`: true range splitting, proxy/header/cookie/netrc option coverage, and rate limiting.

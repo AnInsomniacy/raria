@@ -1,6 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
+use sha2::{Digest, Sha256};
 use tokio::{fs, io::AsyncWriteExt};
 
 use crate::{Error, RariaConfig, Result, RpcEngine};
@@ -58,6 +59,12 @@ impl DownloadEngine {
                     .map_err(|error| Error::Download(error.to_string()))?;
             }
             let completed_length = completed + bytes.len() as u64;
+            if let Some(message) = checksum_error(task.checksum.as_deref(), &path).await? {
+                let _ = fs::remove_file(&control_path).await;
+                rpc.fail_task(&task.gid, message)
+                    .map_err(|error| Error::Download(error.message))?;
+                continue;
+            }
             let _ = fs::remove_file(&control_path).await;
             rpc.complete_task(&task.gid, completed_length)
                 .map_err(|error| Error::Download(error.message))?;
@@ -78,6 +85,26 @@ impl DownloadEngine {
             output_path.display(),
             self.config.control_file_extension
         ))
+    }
+}
+
+async fn checksum_error(checksum: Option<&str>, path: &Path) -> Result<Option<String>> {
+    let Some(checksum) = checksum else {
+        return Ok(None);
+    };
+    let Some(expected) = checksum.strip_prefix("sha-256=") else {
+        return Ok(Some(format!("unsupported checksum format: {checksum}")));
+    };
+    let bytes = fs::read(path)
+        .await
+        .map_err(|error| Error::Download(error.to_string()))?;
+    let actual = format!("{:x}", Sha256::digest(&bytes));
+    if actual == expected {
+        Ok(None)
+    } else {
+        Ok(Some(format!(
+            "checksum mismatch: expected sha-256={expected}, actual sha-256={actual}"
+        )))
     }
 }
 

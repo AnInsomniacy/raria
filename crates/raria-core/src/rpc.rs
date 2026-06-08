@@ -39,6 +39,7 @@ pub struct HttpTask {
     pub gid: String,
     pub uri: String,
     pub out: Option<String>,
+    pub checksum: Option<String>,
 }
 
 impl RpcEvent {
@@ -318,6 +319,7 @@ impl RpcEngine {
                     gid: task.gid.clone(),
                     uri: uri.clone(),
                     out: task.out.clone(),
+                    checksum: task.checksum.clone(),
                 })
             })
             .collect()
@@ -332,6 +334,20 @@ impl RpcEngine {
         task.completed_length = completed_length;
         self.emit_event(RpcEvent {
             method: "aria2.onDownloadComplete".into(),
+            params: vec![RpcValue::object([("gid", RpcValue::string(gid))])],
+        });
+        Ok(())
+    }
+
+    pub fn fail_task(&mut self, gid: &str, message: String) -> Result<(), RpcError> {
+        let task = self
+            .tasks
+            .get_mut(gid)
+            .ok_or_else(|| RpcError::invalid_params(format!("unknown gid: {gid}")))?;
+        task.status = "error".into();
+        task.error_message = Some(message);
+        self.emit_event(RpcEvent {
+            method: "aria2.onDownloadError".into(),
             params: vec![RpcValue::object([("gid", RpcValue::string(gid))])],
         });
         Ok(())
@@ -361,6 +377,12 @@ impl RpcEngine {
             .and_then(|options| options.get("out"))
             .and_then(RpcValue::as_str)
             .map(ToOwned::to_owned);
+        let checksum = params
+            .as_array()
+            .and_then(|params| params.get(1))
+            .and_then(|options| options.get("checksum"))
+            .and_then(RpcValue::as_str)
+            .map(ToOwned::to_owned);
 
         let gid = self.allocate_gid();
         self.tasks.insert(
@@ -370,7 +392,9 @@ impl RpcEngine {
                 status: "waiting".into(),
                 uris,
                 out,
+                checksum,
                 completed_length: 0,
+                error_message: None,
             },
         );
         self.emit_event(RpcEvent {
@@ -387,29 +411,33 @@ impl RpcEngine {
             .get(&gid)
             .ok_or_else(|| RpcError::invalid_params(format!("unknown gid: {gid}")))?;
 
-        Ok(RpcValue::object([
-            ("gid", RpcValue::string(&task.gid)),
-            ("status", RpcValue::string(&task.status)),
-            ("totalLength", RpcValue::string("0")),
+        let mut status = BTreeMap::from([
+            ("gid".to_string(), RpcValue::string(&task.gid)),
+            ("status".to_string(), RpcValue::string(&task.status)),
+            ("totalLength".to_string(), RpcValue::string("0")),
             (
-                "completedLength",
+                "completedLength".to_string(),
                 RpcValue::string(task.completed_length.to_string()),
             ),
-            ("downloadSpeed", RpcValue::string("0")),
-            ("uploadSpeed", RpcValue::string("0")),
-            (
-                "files",
-                RpcValue::array([RpcValue::object([(
-                    "uris",
-                    RpcValue::Array(
-                        task.uris
-                            .iter()
-                            .map(|uri| RpcValue::object([("uri", RpcValue::string(uri))]))
-                            .collect(),
-                    ),
-                )])]),
-            ),
-        ]))
+            ("downloadSpeed".to_string(), RpcValue::string("0")),
+            ("uploadSpeed".to_string(), RpcValue::string("0")),
+        ]);
+        status.insert(
+            "files".into(),
+            RpcValue::array([RpcValue::object([(
+                "uris",
+                RpcValue::Array(
+                    task.uris
+                        .iter()
+                        .map(|uri| RpcValue::object([("uri", RpcValue::string(uri))]))
+                        .collect(),
+                ),
+            )])]),
+        );
+        if let Some(message) = &task.error_message {
+            status.insert("errorMessage".into(), RpcValue::string(message));
+        }
+        Ok(RpcValue::Object(status))
     }
 
     fn set_status(&mut self, params: RpcValue, status: &str) -> Result<RpcValue, RpcError> {
@@ -527,7 +555,9 @@ struct Task {
     status: String,
     uris: Vec<String>,
     out: Option<String>,
+    checksum: Option<String>,
     completed_length: u64,
+    error_message: Option<String>,
 }
 
 fn gid_param(params: RpcValue) -> Result<String, RpcError> {

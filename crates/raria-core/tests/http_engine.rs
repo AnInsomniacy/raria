@@ -127,6 +127,61 @@ async fn resumes_http_download_from_raria_control_file() {
     );
 }
 
+#[tokio::test]
+async fn reports_error_when_checksum_does_not_match() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("listener");
+    let addr = listener.local_addr().expect("local addr");
+    tokio::spawn(async move {
+        let app = Router::new().route("/file.txt", get(test_file));
+        axum::serve(listener, app).await.expect("fixture server");
+    });
+
+    let temp = tempfile::tempdir().expect("tempdir");
+    let mut rpc = RpcEngine::default();
+    let gid = rpc
+        .call(RpcCall::new(
+            "aria2.addUri",
+            RpcValue::array([
+                RpcValue::array([RpcValue::string(format!("http://{addr}/file.txt"))]),
+                RpcValue::object([
+                    ("out", RpcValue::string("file.txt")),
+                    ("checksum", RpcValue::string("sha-256=deadbeef")),
+                ]),
+            ]),
+        ))
+        .expect("addUri")
+        .as_str()
+        .expect("gid")
+        .to_owned();
+
+    let config = RariaConfig {
+        download_dir: temp.path().to_path_buf(),
+        ..RariaConfig::default()
+    };
+    DownloadEngine::new(config)
+        .run_once(&mut rpc)
+        .await
+        .expect("download attempt should finish with task error");
+
+    let status = rpc
+        .call(RpcCall::new(
+            "aria2.tellStatus",
+            RpcValue::array([RpcValue::string(gid)]),
+        ))
+        .expect("status");
+    assert_eq!(
+        status.get("status").and_then(RpcValue::as_str),
+        Some("error")
+    );
+    assert!(
+        status
+            .get("errorMessage")
+            .and_then(RpcValue::as_str)
+            .expect("error message")
+            .contains("checksum")
+    );
+}
+
 async fn test_file() -> impl IntoResponse {
     "hello from raria"
 }
