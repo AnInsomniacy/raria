@@ -34,6 +34,13 @@ pub struct RpcEvent {
     pub params: Vec<RpcValue>,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct HttpTask {
+    pub gid: String,
+    pub uri: String,
+    pub out: Option<String>,
+}
+
 impl RpcEvent {
     fn into_json(self) -> Value {
         json!({
@@ -298,6 +305,38 @@ impl RpcEngine {
         std::mem::take(&mut self.events)
     }
 
+    pub fn pending_http_tasks(&self) -> Vec<HttpTask> {
+        self.tasks
+            .values()
+            .filter(|task| task.status == "waiting")
+            .filter_map(|task| {
+                let uri = task
+                    .uris
+                    .iter()
+                    .find(|uri| uri.starts_with("http://") || uri.starts_with("https://"))?;
+                Some(HttpTask {
+                    gid: task.gid.clone(),
+                    uri: uri.clone(),
+                    out: task.out.clone(),
+                })
+            })
+            .collect()
+    }
+
+    pub fn complete_task(&mut self, gid: &str, completed_length: u64) -> Result<(), RpcError> {
+        let task = self
+            .tasks
+            .get_mut(gid)
+            .ok_or_else(|| RpcError::invalid_params(format!("unknown gid: {gid}")))?;
+        task.status = "complete".into();
+        task.completed_length = completed_length;
+        self.emit_event(RpcEvent {
+            method: "aria2.onDownloadComplete".into(),
+            params: vec![RpcValue::object([("gid", RpcValue::string(gid))])],
+        });
+        Ok(())
+    }
+
     fn subscribe_events(&self) -> broadcast::Receiver<RpcEvent> {
         self.event_tx.subscribe()
     }
@@ -316,6 +355,12 @@ impl RpcEngine {
                     .ok_or_else(|| RpcError::invalid_params("URI must be a string"))
             })
             .collect::<Result<Vec<_>, _>>()?;
+        let out = params
+            .as_array()
+            .and_then(|params| params.get(1))
+            .and_then(|options| options.get("out"))
+            .and_then(RpcValue::as_str)
+            .map(ToOwned::to_owned);
 
         let gid = self.allocate_gid();
         self.tasks.insert(
@@ -324,6 +369,8 @@ impl RpcEngine {
                 gid: gid.clone(),
                 status: "waiting".into(),
                 uris,
+                out,
+                completed_length: 0,
             },
         );
         self.emit_event(RpcEvent {
@@ -344,7 +391,10 @@ impl RpcEngine {
             ("gid", RpcValue::string(&task.gid)),
             ("status", RpcValue::string(&task.status)),
             ("totalLength", RpcValue::string("0")),
-            ("completedLength", RpcValue::string("0")),
+            (
+                "completedLength",
+                RpcValue::string(task.completed_length.to_string()),
+            ),
             ("downloadSpeed", RpcValue::string("0")),
             ("uploadSpeed", RpcValue::string("0")),
             (
@@ -476,6 +526,8 @@ struct Task {
     gid: String,
     status: String,
     uris: Vec<String>,
+    out: Option<String>,
+    completed_length: u64,
 }
 
 fn gid_param(params: RpcValue) -> Result<String, RpcError> {

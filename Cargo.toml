@@ -17,9 +17,11 @@ clap = { version = "4.5.53", features = ["derive"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.150"
 thiserror = "2.0.17"
-tokio = { version = "1.52.3", features = ["macros", "rt-multi-thread", "sync", "time"] }
+tokio = { version = "1.52.3", features = ["fs", "io-util", "macros", "rt-multi-thread", "sync", "time"] }
 tokio-tungstenite = "0.29.0"
 tower = { version = "0.5.3", features = ["util"] }
 tracing = "0.1.43"
 tracing-subscriber = { version = "0.3.22", features = ["env-filter", "fmt"] }
 futures-util = "0.3.32"
+reqwest = { version = "0.13.4", default-features = false, features = ["rustls", "stream"] }
+tempfile = "3.24.0"
