@@ -1,0 +1,21 @@
+{
+  "phase": 1,
+  "transport": "JSON-RPC over WebSocket",
+  "events": {
+    "aria2.onDownloadStart": { "decision": "keep", "status": "planned" },
+    "aria2.onDownloadPause": { "decision": "keep", "status": "planned" },
+    "aria2.onDownloadStop": { "decision": "keep", "status": "planned" },
+    "aria2.onDownloadComplete": { "decision": "keep", "status": "planned" },
+    "aria2.onDownloadError": { "decision": "keep", "status": "planned" },
+    "aria2.onBtDownloadComplete": { "decision": "keep", "status": "planned" }
+  },
+  "eventShape": {
+    "method": "string",
+    "params": [
+      {
+        "gid": "string"
+      }
+    ]
+  }
+}
+

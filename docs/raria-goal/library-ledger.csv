@@ -1,0 +1,13 @@
+area,crate,decision,version_policy,why,risk,status
+runtime,tokio,preferred,stable,"Mature async runtime and ecosystem center for network services.","Actor design must avoid unbounded task growth.",planned
+http,reqwest,preferred,stable,"Mature HTTP client with async, TLS, headers, proxies, and streaming.","Range and resume semantics need raria orchestration.",planned
+rpc,jsonrpsee,probe,stable,"Mature JSON-RPC library with HTTP and WebSocket support.","May constrain exact aria2 response and token shapes.",planned
+rpc fallback,axum + serde_json,backup,stable,"Gives full control over aria2-shaped JSON-RPC if jsonrpsee is too rigid.","More custom RPC plumbing.",planned
+bt,librqbit,probe,stable,"Existing Rust BitTorrent engine candidate.","May not expose all aria2-style state and file-selection semantics.",planned
+bencode,bendy,preferred,stable,"Focused bencode parser/encoder.","Integration depends on selected BitTorrent crate.",planned
+metalink,quick-xml,preferred,stable,"Mature streaming XML parser with serde support.","Metalink v3/v4 mapping still needs raria domain model.",planned
+ftp,suppaftp,probe,stable,"Maintained FTP/FTPS client candidate.","Async and resume behavior must be verified.",planned
+sftp,russh_sftp,probe,stable,"Rust SFTP client candidate in the russh ecosystem.","Host key verification and resume behavior must be verified.",planned
+rate_limit,governor,preferred,stable,"Mature rate limiting library.","Per-task and global limiter composition must be designed.",planned
+persistence,serde + ciborium,probe,stable,"Structured binary state with schema-friendly serde model.","Need atomic writes and version policy.",planned
+hashing,RustCrypto digest crates,preferred,stable,"Mature digest implementations for checksum contracts.","ED2K MD4 only matters in later phase.",planned

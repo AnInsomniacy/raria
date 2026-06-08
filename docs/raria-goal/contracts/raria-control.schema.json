@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Raria control file",
+  "type": "object",
+  "required": ["format", "version", "gid", "kind", "target", "pieces"],
+  "properties": {
+    "format": { "const": "raria-control" },
+    "version": { "type": "integer", "minimum": 1 },
+    "gid": { "type": "string", "pattern": "^[0-9a-f]{16}$" },
+    "kind": { "enum": ["http", "ftp", "sftp", "bittorrent", "metalink"] },
+    "target": {
+      "type": "object",
+      "required": ["dir", "name"],
+      "properties": {
+        "dir": { "type": "string" },
+        "name": { "type": "string" },
+        "length": { "type": ["integer", "null"], "minimum": 0 }
+      }
+    },
+    "pieces": {
+      "type": "object",
+      "required": ["pieceLength", "bitfield"],
+      "properties": {
+        "pieceLength": { "type": "integer", "minimum": 1 },
+        "bitfield": { "type": "string" }
+      }
+    },
+    "sources": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "createdAt": { "type": "string" },
+    "updatedAt": { "type": "string" }
+  }
+}
+

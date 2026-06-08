@@ -1,0 +1,5 @@
+id,task,status,acceptance,evidence
+90.01,Run full verification,pending,"fmt and clippy and tests and fixtures pass","verification-ledger.csv"
+90.02,Document phase-one scope,pending,"User-facing notes state supported protocols and unsupported ED2K/legacy state","README or docs"
+90.03,Validate new-session replacement workflow,pending,"CLI and RPC smoke flow works from a clean state","smoke notes"
+90.04,Review pruning decisions,pending,"decision-ledger.csv matches implemented behavior","decision-ledger.csv"

@@ -1,0 +1,40 @@
+# Rust build output
+/target/
+
+# Test and coverage output
+/coverage/
+/tarpaulin-report.html
+*.profraw
+*.profdata
+lcov.info
+
+# Generated logs and temporary files
+*.log
+*.tmp
+*.temp
+*.bak
+*.swp
+*.swo
+*~
+
+# Runtime download state and scratch artifacts
+*.raria
+*.raria.tmp
+*.aria2
+*.part
+*.download
+
+# Local environment files
+.env
+.env.*
+!.env.example
+
+# Editor and IDE files
+.idea/
+.vscode/
+*.code-workspace
+
+# OS metadata
+.DS_Store
+Thumbs.db
+

@@ -1,0 +1,6 @@
+id,task,status,acceptance,evidence
+30.01,Select JSON-RPC implementation after probe,pending,"jsonrpsee or axum path is recorded","library-ledger.csv"
+30.02,Implement add/poll/pause/resume/remove methods,pending,"Core polling clients work for new tasks","contracts/rpc.json"
+30.03,Implement system.multicall,pending,"Batch polling works","RPC tests"
+30.04,Implement WebSocket notifications,pending,"Event fixture matches emitted notifications","contracts/events.json"
+30.05,Implement unsupported ED2K RPC behavior,pending,"ED2K methods return explicit unsupported errors","RPC tests"

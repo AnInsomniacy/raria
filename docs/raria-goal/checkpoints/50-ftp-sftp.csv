@@ -1,0 +1,6 @@
+id,task,status,acceptance,evidence
+50.01,Probe FTP library behavior,pending,"Library decision is recorded","library-ledger.csv"
+50.02,Implement FTP adapter,pending,"Basic FTP download and status polling work","FTP tests"
+50.03,Probe SFTP library behavior,pending,"Library decision is recorded","library-ledger.csv"
+50.04,Implement SFTP adapter,pending,"Basic SFTP download and status polling work","SFTP tests"
+50.05,Map unsupported FTP/SFTP options,pending,"Unsupported behavior is documented and tested","contract-ledger.csv"

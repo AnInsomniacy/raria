@@ -1,0 +1,6 @@
+id,task,status,acceptance,evidence
+20.01,Implement CLI parser for common new-task options,pending,"Common aria2-next-style invocations parse","CLI tests"
+20.02,Implement config file loading,pending,"Config precedence is documented and tested","config tests"
+20.03,Implement input-file parser,pending,"Multiple URI lines and per-task options parse","input fixture tests"
+20.04,Implement save-session format for new tasks,pending,"New-task sessions can be saved and loaded by raria","session tests"
+20.05,Handle unsupported options,pending,"Unsupported options are explicit and stable","contract tests"

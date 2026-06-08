@@ -1,0 +1,5 @@
+id,task,status,acceptance,evidence
+10.01,Create Rust workspace structure,pending,"Workspace crates match the approved architecture","Cargo workspace"
+10.02,Add shared error and result model,pending,"All crates use one error boundary","cargo test"
+10.03,Add runtime shell,pending,"Tokio runtime starts and shuts down cleanly","cargo test"
+10.04,Add tracing and configuration shell,pending,"Logs and config can be initialized without downloads","cargo test"

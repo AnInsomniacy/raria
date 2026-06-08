@@ -1,0 +1,5 @@
+id,task,status,acceptance,evidence
+70.01,Implement Metalink parser model,pending,"v3/v4 fixtures parse through quick-xml","Metalink tests"
+70.02,Generate download tasks from Metalink resources,pending,"HTTP resources become task inputs","Metalink tests"
+70.03,Implement Metalink checksum mapping,pending,"Piece or whole-file hashes are applied where supported","checksum tests"
+70.04,Implement Metalink RPC upload path,pending,"addMetalink accepts bytes and creates tasks","contracts/rpc.json"

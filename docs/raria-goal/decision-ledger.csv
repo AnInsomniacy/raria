@@ -1,0 +1,10 @@
+item,type,decision,reason,impact
+Project identity,scope,"Treat raria as a new project.","User wants low migration friction for new tasks, not old state compatibility.","Old aria2 state is intentionally not supported."
+Architecture,architecture,"Prefer Tokio actor or event-driven task state machines.","Rust can model task orchestration directly without cloning aria2's C++ polling command model.","Internal design can be simpler and more modern."
+Mature libraries,engineering,"Use mature crates by default and probe before rejecting them.","Avoid hand-rolled protocol and parser code when stable crates exist.","Implementation work stays focused on raria-specific behavior."
+ED2K,scope,"Defer ED2K implementation from phase one.","User explicitly removed ED2K from the first phase.","ED2K inputs and RPC methods return explicit unsupported behavior."
+Old .aria2 migration,prune,"Do not implement old control-file migration.","Old tasks are out of scope.","Users start new raria tasks."
+XML-RPC,prune,"Do not implement XML-RPC in phase one.","New-session replacement target centers on JSON-RPC and WebSocket.","Old XML-RPC clients must migrate."
+rpc-user/rpc-passwd,prune,"Do not implement deprecated RPC username/password authentication.","aria2-next already marks it deprecated in favor of rpc-secret.","Clients use token-based rpc-secret."
+HTTP pipelining,prune,"Do not implement HTTP/1.1 pipelining.","Modern HTTP stacks and multiplexing make it poor fit for the new core.","Option is ignored or unsupported with clear messaging."
+event-poll option,prune,"Do not expose backend-specific event polling choices.","Tokio owns runtime polling details.","Old event-poll tuning is not part of raria's API."

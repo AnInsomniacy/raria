@@ -1,0 +1,6 @@
+id,task,status,acceptance,evidence
+40.01,Implement HTTP(S) adapter with reqwest,pending,"Single-source download works","HTTP tests"
+40.02,Implement range splitting and resume,pending,"Partial download resumes through .raria state","HTTP persistence tests"
+40.03,Implement proxy headers cookies and netrc support,pending,"Common option fixtures pass","HTTP option tests"
+40.04,Implement checksum verification,pending,"Whole-file checksum failure is reported","checksum tests"
+40.05,Implement rate limits,pending,"Global and task limiters are enforced","rate limit tests"

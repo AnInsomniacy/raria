@@ -1,0 +1,53 @@
+[meta]
+phase = 1
+compatibility_target = "common new-session CLI and config compatibility"
+
+[policy]
+unknown_options = "error"
+known_unsupported_options = "explicit_unsupported_or_ignored_with_warning"
+legacy_state_options = "not_supported"
+ed2k_options = "explicit_unsupported"
+
+[keep]
+common = [
+  "dir",
+  "input-file",
+  "log",
+  "max-concurrent-downloads",
+  "check-integrity",
+  "continue",
+  "out",
+  "split",
+  "min-split-size",
+  "max-connection-per-server",
+  "max-tries",
+  "retry-wait",
+  "max-download-limit",
+  "max-overall-download-limit",
+  "enable-rpc",
+  "rpc-listen-port",
+  "rpc-listen-all",
+  "rpc-secret",
+  "save-session",
+  "save-session-interval",
+  "auto-save-interval"
+]
+
+[prune]
+legacy = [
+  "event-poll",
+  "enable-http-pipelining",
+  "rpc-user",
+  "rpc-passwd"
+]
+
+[unsupported_phase_one]
+ed2k = [
+  "ed2k-server",
+  "ed2k-server-list",
+  "ed2k-node-list",
+  "ed2k-listen-port",
+  "ed2k-udp-listen-port",
+  "ed2k-upload-slots"
+]
+
