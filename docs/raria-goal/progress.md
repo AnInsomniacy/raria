@@ -59,3 +59,9 @@ Current checkpoint: `60-bittorrent`.
 Next action: probe the BitTorrent library path, with extra scrutiny because the current `librqbit` candidate is published as a release candidate.
 
 Started checkpoint `60-bittorrent`. The stable metadata layer now uses `bendy` for torrent bencode decoding, RustCrypto `sha1` for raw info-hash calculation, and `url` for magnet parsing. RPC now accepts `aria2.addTorrent` base64 torrent metadata and magnet `aria2.addUri` tasks, exposes `infoHash`, `bittorrent.info.name`, torrent file lists through `tellStatus` and `aria2.getFiles`, and maps `select-file` into per-file selected status. Full peer transfer remains unresolved because `librqbit` and its core crates are still published as `9.0.0-rc.0`; continue probing before accepting it as the engine.
+
+Completed checkpoint `60-bittorrent`. The transfer adapter now uses stable `librqbit` 8.1.1 rather than the 9.0.0 release candidate. Local multi-threaded fixtures prove both `aria2.addTorrent` torrent bytes and magnet `aria2.addUri` can download from an initial local peer into the configured raria directory and mark the RPC task complete. raria keeps only the compatibility/task orchestration layer: base64 torrent ingestion, magnet metadata status, selected-file mapping, `bt-initial-peer` fixture support, and completion status shaping.
+
+Current checkpoint: `70-metalink`.
+
+Next action: implement Metalink v3/v4 parsing with `quick-xml`, map Metalink entries into new download tasks, and keep unsupported legacy Metalink behavior explicit.

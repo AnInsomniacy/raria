@@ -5,7 +5,7 @@ id,title,status,scope,done_gate,active_file
 30,RPC and events,done,"Implement JSON-RPC over HTTP, system.multicall, status polling, queue operations, and WebSocket notifications","contracts/rpc.json and contracts/events.json fixtures pass",checkpoints/30-rpc-events.csv
 40,HTTP engine,done,"Implement HTTP(S) new-task downloads, range splitting, resume, checksums, cookies, proxies, and rate limits","local HTTP fixture proves add/poll/pause/resume/save for a new task",checkpoints/40-http-engine.csv
 50,FTP and SFTP,done,"Implement FTP and SFTP adapters through mature libraries","local or controlled fixtures prove basic download and status polling",checkpoints/50-ftp-sftp.csv
-60,BitTorrent,in_progress,"Evaluate and adapt a mature BitTorrent library for magnet and torrent workflows","magnet/torrent new-task path works or a documented library gap plan exists",checkpoints/60-bittorrent.csv
+60,BitTorrent,done,"Evaluate and adapt a mature BitTorrent library for magnet and torrent workflows","magnet/torrent new-task path works or a documented library gap plan exists",checkpoints/60-bittorrent.csv
 70,Metalink,pending,"Implement Metalink v3/v4 parsing and task generation through XML and metadata libraries","Metalink fixtures produce expected tasks and checksums",checkpoints/70-metalink.csv
 80,Persistence,pending,"Implement .raria control files and new-task resume semantics","schema and persistence fixtures pass across restart",checkpoints/80-persistence.csv
 90,Release readiness,pending,"Package binary, user notes, final verification, and phase-one unsupported behavior","fmt and clippy and tests and contract fixtures and documented smoke paths pass",checkpoints/90-release-readiness.csv

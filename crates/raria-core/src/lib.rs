@@ -13,7 +13,8 @@ pub use cli::{
 pub use config::RariaConfig;
 pub use http_engine::DownloadEngine;
 pub use rpc::{
-    DownloadTask, RpcCall, RpcEngine, RpcError, RpcErrorCode, RpcEvent, RpcValue, build_rpc_router,
+    BittorrentDownloadTask, DownloadTask, RpcCall, RpcEngine, RpcError, RpcErrorCode, RpcEvent,
+    RpcValue, build_rpc_router,
 };
 pub use runtime::RariaRuntime;
 

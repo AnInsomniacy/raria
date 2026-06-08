@@ -12,6 +12,7 @@ bendy.workspace = true
 bytes.workspace = true
 clap.workspace = true
 governor.workspace = true
+librqbit.workspace = true
 netrc.workspace = true
 reqwest.workspace = true
 russh.workspace = true

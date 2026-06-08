@@ -53,6 +53,15 @@ pub struct DownloadTask {
     pub ftp_passwd: Option<String>,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BittorrentDownloadTask {
+    pub gid: String,
+    pub torrent_bytes: Option<Vec<u8>>,
+    pub magnet_uri: Option<String>,
+    pub selected_files: Option<Vec<usize>>,
+    pub initial_peers: Vec<String>,
+}
+
 impl RpcEvent {
     fn into_json(self) -> Value {
         json!({
@@ -333,6 +342,23 @@ impl RpcEngine {
         self.pending_tasks_with_scheme(|uri| uri.starts_with("sftp://"))
     }
 
+    pub fn pending_bittorrent_tasks(&self) -> Vec<BittorrentDownloadTask> {
+        self.tasks
+            .values()
+            .filter(|task| task.status == "waiting")
+            .filter_map(|task| {
+                let bittorrent = task.bittorrent.as_ref()?;
+                Some(BittorrentDownloadTask {
+                    gid: task.gid.clone(),
+                    torrent_bytes: bittorrent.torrent_bytes.clone(),
+                    magnet_uri: bittorrent.magnet_uri.clone(),
+                    selected_files: bittorrent.selected_files.clone(),
+                    initial_peers: bittorrent.initial_peers.clone(),
+                })
+            })
+            .collect()
+    }
+
     fn pending_tasks_with_scheme(
         &self,
         matches_scheme: impl Fn(&str) -> bool,
@@ -467,10 +493,11 @@ impl RpcEngine {
             .and_then(RpcValue::as_str)
             .map(ToOwned::to_owned);
 
+        let initial_peers = initial_peers(params.as_array().and_then(|params| params.get(1)))?;
         let bittorrent = uris
             .iter()
             .find(|uri| uri.starts_with("magnet:"))
-            .map(|uri| torrent_from_magnet(uri))
+            .map(|uri| torrent_from_magnet(uri, initial_peers.clone()))
             .transpose()?;
         let gid = self.allocate_gid();
         self.tasks.insert(
@@ -513,6 +540,7 @@ impl RpcEngine {
         let meta = parse_torrent_bytes(&bytes)
             .map_err(|error| RpcError::invalid_params(error.to_string()))?;
         let selected_files = selected_files(params.as_array().and_then(|params| params.get(2)))?;
+        let initial_peers = initial_peers(params.as_array().and_then(|params| params.get(2)))?;
         let gid = self.allocate_gid();
         self.tasks.insert(
             gid.clone(),
@@ -530,7 +558,12 @@ impl RpcEngine {
                 http_proxy: None,
                 ftp_user: None,
                 ftp_passwd: None,
-                bittorrent: Some(BittorrentTask::from_torrent(meta, selected_files)),
+                bittorrent: Some(BittorrentTask::from_torrent(
+                    meta,
+                    bytes,
+                    selected_files,
+                    initial_peers,
+                )),
                 completed_length: 0,
                 error_message: None,
             },
@@ -765,26 +798,40 @@ struct BittorrentTask {
     total_length: u64,
     files: Vec<TorrentFile>,
     selected_files: Option<Vec<usize>>,
+    torrent_bytes: Option<Vec<u8>>,
+    magnet_uri: Option<String>,
+    initial_peers: Vec<String>,
 }
 
 impl BittorrentTask {
-    fn from_torrent(meta: TorrentMeta, selected_files: Option<Vec<usize>>) -> Self {
+    fn from_torrent(
+        meta: TorrentMeta,
+        torrent_bytes: Vec<u8>,
+        selected_files: Option<Vec<usize>>,
+        initial_peers: Vec<String>,
+    ) -> Self {
         Self {
             info_hash_hex: meta.info_hash_hex,
             name: Some(meta.name),
             total_length: meta.total_length,
             files: meta.files,
             selected_files,
+            torrent_bytes: Some(torrent_bytes),
+            magnet_uri: None,
+            initial_peers,
         }
     }
 
-    fn from_magnet(meta: MagnetMeta) -> Self {
+    fn from_magnet(uri: &str, meta: MagnetMeta) -> Self {
         Self {
             info_hash_hex: meta.info_hash_hex,
             name: meta.name,
             total_length: 0,
             files: Vec::new(),
             selected_files: None,
+            torrent_bytes: None,
+            magnet_uri: Some(uri.to_owned()),
+            initial_peers: Vec::new(),
         }
     }
 
@@ -821,9 +868,28 @@ fn selected_files(options: Option<&RpcValue>) -> Result<Option<Vec<usize>>, RpcE
     Ok(Some(selected))
 }
 
-fn torrent_from_magnet(uri: &str) -> Result<BittorrentTask, RpcError> {
+fn initial_peers(options: Option<&RpcValue>) -> Result<Vec<String>, RpcError> {
+    let Some(value) = options
+        .and_then(|options| options.get("bt-initial-peer"))
+        .and_then(RpcValue::as_str)
+    else {
+        return Ok(Vec::new());
+    };
+    Ok(value
+        .split(',')
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+        .collect())
+}
+
+fn torrent_from_magnet(uri: &str, initial_peers: Vec<String>) -> Result<BittorrentTask, RpcError> {
     parse_magnet_uri(uri)
-        .map(BittorrentTask::from_magnet)
+        .map(|meta| {
+            let mut task = BittorrentTask::from_magnet(uri, meta);
+            task.initial_peers = initial_peers;
+            task
+        })
         .map_err(|error| RpcError::invalid_params(error.to_string()))
 }
 

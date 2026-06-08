@@ -1,11 +1,13 @@
 use std::{
     io::Cursor,
+    net::SocketAddr,
     num::NonZeroU32,
     path::{Path, PathBuf},
     sync::Arc,
 };
 
 use governor::{Quota, RateLimiter};
+use librqbit::{AddTorrent, AddTorrentOptions, AddTorrentResponse, Session, SessionOptions};
 use russh::client;
 use russh_sftp::client::SftpSession;
 use serde::Deserialize;
@@ -13,7 +15,7 @@ use sha2::{Digest, Sha256};
 use suppaftp::tokio::AsyncFtpStream;
 use tokio::{fs, io::AsyncWriteExt};
 
-use crate::{DownloadTask, Error, RariaConfig, Result, RpcEngine};
+use crate::{BittorrentDownloadTask, DownloadTask, Error, RariaConfig, Result, RpcEngine};
 
 pub struct DownloadEngine {
     config: RariaConfig,
@@ -40,6 +42,10 @@ impl DownloadEngine {
         let tasks = rpc.pending_sftp_tasks();
         for task in tasks {
             self.run_sftp_task(rpc, task).await?;
+        }
+        let tasks = rpc.pending_bittorrent_tasks();
+        for task in tasks {
+            self.run_bittorrent_task(rpc, task).await?;
         }
         Ok(())
     }
@@ -89,6 +95,72 @@ impl DownloadEngine {
         let bytes = self.download_sftp(&task, completed).await?;
         self.finish_task(rpc, &task, &path, &control_path, completed, &bytes)
             .await
+    }
+
+    async fn run_bittorrent_task(
+        &self,
+        rpc: &mut RpcEngine,
+        task: BittorrentDownloadTask,
+    ) -> Result<()> {
+        let session = Session::new_with_opts(
+            self.config.download_dir.clone(),
+            SessionOptions {
+                disable_dht: task.initial_peers.is_empty(),
+                disable_dht_persistence: true,
+                ..Default::default()
+            },
+        )
+        .await
+        .map_err(|error| Error::Download(error.to_string()))?;
+        let initial_peers = task
+            .initial_peers
+            .iter()
+            .map(|peer| {
+                peer.parse::<SocketAddr>().map_err(|error| {
+                    Error::Download(format!("invalid bt-initial-peer '{peer}': {error}"))
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let only_files = task
+            .selected_files
+            .as_ref()
+            .map(|files| files.iter().map(|file| file - 1).collect());
+        let add = match (&task.torrent_bytes, &task.magnet_uri) {
+            (Some(bytes), _) => AddTorrent::TorrentFileBytes(bytes.clone().into()),
+            (None, Some(uri)) => AddTorrent::from_url(uri.as_str()),
+            (None, None) => {
+                return Err(Error::Download("BitTorrent task has no metadata".into()));
+            }
+        };
+        let response = session
+            .add_torrent(
+                add,
+                Some(AddTorrentOptions {
+                    initial_peers: Some(initial_peers),
+                    only_files,
+                    overwrite: true,
+                    output_folder: Some(self.config.download_dir.to_string_lossy().into_owned()),
+                    ..Default::default()
+                }),
+            )
+            .await
+            .map_err(|error| Error::Download(error.to_string()))?;
+        let handle = match response {
+            AddTorrentResponse::Added(_, handle)
+            | AddTorrentResponse::AlreadyManaged(_, handle) => handle,
+            AddTorrentResponse::ListOnly(_) => {
+                return Err(Error::Download("BitTorrent task returned list-only".into()));
+            }
+        };
+        handle
+            .wait_until_completed()
+            .await
+            .map_err(|error| Error::Download(error.to_string()))?;
+        let completed_length = handle.stats().progress_bytes;
+        session.stop().await;
+        rpc.complete_task(&task.gid, completed_length)
+            .map_err(|error| Error::Download(error.message))?;
+        Ok(())
     }
 
     async fn finish_task(
