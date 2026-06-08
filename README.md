@@ -141,4 +141,4 @@ Recent end-to-end evidence for the current tree is kept outside the repository u
 
 ## License
 
-The Cargo metadata declares `MIT OR Apache-2.0`. License text files have not been added to this repository yet.
+Apache-2.0. See [LICENSE](LICENSE).
