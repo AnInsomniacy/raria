@@ -1,6 +1,6 @@
 id,task,status,acceptance,evidence
-00.01,Read aria2-next public README and manual,pending,"Supported surfaces and phase-one scope are recorded","contract-ledger.csv"
-00.02,Extract CLI option categories and common workflows,pending,"option decisions are reflected in contract-ledger.csv and contracts/options.toml","contracts/options.toml"
-00.03,Extract JSON-RPC methods and event notifications,pending,"RPC and event fixtures list phase-one method behavior","contracts/rpc.json; contracts/events.json"
-00.04,Audit old-state surfaces,pending,"old .aria2, old session, and old queue migration decisions are recorded","decision-ledger.csv"
-00.05,Audit library candidates,pending,"library-ledger.csv has preferred/probe/backup decisions","library-ledger.csv"
+00.01,Read aria2-next public README and manual,done,"Supported surfaces and phase-one scope are recorded","contract-ledger.csv"
+00.02,Extract CLI option categories and common workflows,done,"option decisions are reflected in contract-ledger.csv and contracts/options.toml","contracts/options.toml"
+00.03,Extract JSON-RPC methods and event notifications,done,"RPC and event fixtures list phase-one method behavior","contracts/rpc.json; contracts/events.json"
+00.04,Audit old-state surfaces,done,"old .aria2, old session, and old queue migration decisions are recorded","decision-ledger.csv"
+00.05,Audit library candidates,done,"library-ledger.csv has preferred/probe/backup decisions","library-ledger.csv"

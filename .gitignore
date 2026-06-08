@@ -23,6 +23,8 @@ lcov.info
 *.aria2
 *.part
 *.download
+!tests/fixtures/**/*.raria
+!crates/**/tests/fixtures/**/*.raria
 
 # Local environment files
 .env
@@ -37,4 +39,3 @@ lcov.info
 # OS metadata
 .DS_Store
 Thumbs.db
-

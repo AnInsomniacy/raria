@@ -1,5 +1,5 @@
 id,task,status,acceptance,evidence
-10.01,Create Rust workspace structure,pending,"Workspace crates match the approved architecture","Cargo workspace"
-10.02,Add shared error and result model,pending,"All crates use one error boundary","cargo test"
-10.03,Add runtime shell,pending,"Tokio runtime starts and shuts down cleanly","cargo test"
-10.04,Add tracing and configuration shell,pending,"Logs and config can be initialized without downloads","cargo test"
+10.01,Create Rust workspace structure,done,"Workspace crates match the approved architecture","Cargo workspace with raria-core and raria binary"
+10.02,Add shared error and result model,done,"All crates use one error boundary","raria_core::Result and raria_core::Error"
+10.03,Add runtime shell,done,"Tokio runtime starts and shuts down cleanly","crates/raria-core/tests/foundation.rs"
+10.04,Add tracing and configuration shell,done,"Logs and config can be initialized without downloads","RariaConfig default contract and runtime tracing init"

@@ -33,12 +33,231 @@ common = [
   "auto-save-interval"
 ]
 
+http_ftp_sftp = [
+  "all-proxy",
+  "all-proxy-user",
+  "all-proxy-passwd",
+  "checksum",
+  "connect-timeout",
+  "lowest-speed-limit",
+  "max-connection-per-server",
+  "max-file-not-found",
+  "max-tries",
+  "min-split-size",
+  "no-proxy",
+  "out",
+  "remote-time",
+  "retry-wait",
+  "split",
+  "timeout",
+  "uri-selector"
+]
+
+http = [
+  "ca-certificate",
+  "certificate",
+  "check-certificate",
+  "http-accept-gzip",
+  "http-auth-challenge",
+  "http-no-cache",
+  "http-user",
+  "http-passwd",
+  "http-proxy",
+  "http-proxy-user",
+  "http-proxy-passwd",
+  "https-proxy",
+  "https-proxy-user",
+  "https-proxy-passwd",
+  "private-key",
+  "referer",
+  "enable-http-keep-alive",
+  "header",
+  "load-cookies",
+  "save-cookies",
+  "user-agent"
+]
+
+ftp_sftp = [
+  "ftp-user",
+  "ftp-passwd",
+  "ftp-pasv",
+  "ftp-proxy",
+  "ftp-proxy-user",
+  "ftp-proxy-passwd",
+  "ftp-type",
+  "ftp-reuse-connection",
+  "ssh-host-key-md"
+]
+
+rpc = [
+  "enable-rpc",
+  "pause",
+  "pause-metadata",
+  "rpc-allow-origin-all",
+  "rpc-certificate",
+  "rpc-listen-all",
+  "rpc-listen-port",
+  "rpc-max-request-size",
+  "rpc-private-key",
+  "rpc-save-upload-metadata",
+  "rpc-secret",
+  "rpc-secure"
+]
+
+bittorrent_metalink = [
+  "select-file",
+  "show-files"
+]
+
+bittorrent = [
+  "bt-exclude-tracker",
+  "bt-hash-check-seed",
+  "bt-load-saved-metadata",
+  "bt-max-open-files",
+  "bt-max-peers",
+  "bt-metadata-only",
+  "bt-remove-unselected-file",
+  "bt-save-metadata",
+  "bt-stop-timeout",
+  "bt-tracker",
+  "bt-tracker-connect-timeout",
+  "bt-tracker-interval",
+  "bt-tracker-timeout",
+  "enable-dht",
+  "enable-dht6",
+  "enable-peer-exchange",
+  "follow-torrent",
+  "index-out",
+  "listen-port",
+  "max-overall-upload-limit",
+  "max-upload-limit",
+  "peer-agent",
+  "torrent-file"
+]
+
+metalink = [
+  "follow-metalink",
+  "metalink-base-uri",
+  "metalink-file",
+  "metalink-language",
+  "metalink-location",
+  "metalink-os",
+  "metalink-version",
+  "metalink-preferred-protocol",
+  "metalink-enable-unique-protocol"
+]
+
+advanced = [
+  "allow-overwrite",
+  "allow-piece-length-change",
+  "always-resume",
+  "auto-file-renaming",
+  "conditional-get",
+  "conf-path",
+  "console-log-level",
+  "content-disposition-default-utf8",
+  "deferred-input",
+  "disable-ipv6",
+  "download-result",
+  "force-save",
+  "save-not-found",
+  "gid",
+  "hash-check-only",
+  "human-readable",
+  "interface",
+  "keep-unfinished-download-result",
+  "max-download-result",
+  "max-resume-failure-tries",
+  "min-tls-version",
+  "multiple-interface",
+  "log-level",
+  "piece-length",
+  "show-console-readout",
+  "stderr",
+  "summary-interval",
+  "force-sequential",
+  "max-overall-download-limit",
+  "max-download-limit",
+  "no-conf",
+  "parameterized-uri",
+  "quiet",
+  "remove-control-file",
+  "socket-recv-buffer-size",
+  "stop",
+  "stop-with-process",
+  "version"
+]
+
+[probe]
+http_ftp_sftp = [
+  "dry-run",
+  "netrc-path",
+  "no-netrc",
+  "reuse-uri",
+  "server-stat-of",
+  "server-stat-if",
+  "server-stat-timeout",
+  "stream-piece-selector"
+]
+
+http = [
+  "use-head",
+  "no-want-digest-header"
+]
+
+bittorrent = [
+  "detach-share-only",
+  "seed-ratio",
+  "seed-time",
+  "bt-enable-hook-after-hash-check",
+  "bt-enable-lpd",
+  "bt-external-ip",
+  "bt-force-encryption",
+  "bt-lpd-interface",
+  "bt-min-crypto-level",
+  "bt-prioritize-piece",
+  "bt-require-crypto",
+  "bt-request-peer-speed-limit",
+  "bt-seed-unverified",
+  "dht-entry-point",
+  "dht-entry-point6",
+  "dht-file-path",
+  "dht-file-path6",
+  "dht-listen-addr6",
+  "dht-listen-port",
+  "dht-message-timeout",
+  "peer-id-prefix"
+]
+
+advanced = [
+  "async-dns",
+  "async-dns-server",
+  "disk-cache",
+  "rlimit-nofile",
+  "file-allocation",
+  "max-mmap-limit",
+  "optimize-concurrent-downloads",
+  "realtime-chunk-checksum"
+]
+
 [prune]
 legacy = [
   "event-poll",
   "enable-http-pipelining",
   "rpc-user",
-  "rpc-passwd"
+  "rpc-passwd",
+  "daemon",
+  "enable-mmap",
+  "dscp"
+]
+
+hooks = [
+  "on-bt-download-complete",
+  "on-download-complete",
+  "on-download-error",
+  "on-download-pause",
+  "on-download-start",
+  "on-download-stop"
 ]
 
 [unsupported_phase_one]
@@ -50,4 +269,3 @@ ed2k = [
   "ed2k-udp-listen-port",
   "ed2k-upload-slots"
 ]
-

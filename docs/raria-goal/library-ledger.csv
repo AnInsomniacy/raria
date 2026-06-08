@@ -1,13 +1,17 @@
 area,crate,decision,version_policy,why,risk,status
-runtime,tokio,preferred,stable,"Mature async runtime and ecosystem center for network services.","Actor design must avoid unbounded task growth.",planned
-http,reqwest,preferred,stable,"Mature HTTP client with async, TLS, headers, proxies, and streaming.","Range and resume semantics need raria orchestration.",planned
-rpc,jsonrpsee,probe,stable,"Mature JSON-RPC library with HTTP and WebSocket support.","May constrain exact aria2 response and token shapes.",planned
-rpc fallback,axum + serde_json,backup,stable,"Gives full control over aria2-shaped JSON-RPC if jsonrpsee is too rigid.","More custom RPC plumbing.",planned
-bt,librqbit,probe,stable,"Existing Rust BitTorrent engine candidate.","May not expose all aria2-style state and file-selection semantics.",planned
+runtime,tokio,preferred,"1.x stable","Mature async runtime and ecosystem center for network services.","Actor design must avoid unbounded task growth.",accepted_for_foundation
+http,reqwest,preferred,"0.13 stable","Mature HTTP client with async, TLS, headers, proxies, and streaming.","Range and resume semantics need raria orchestration.",accepted_for_http_probe
+rpc,jsonrpsee,probe,"0.26 stable","Mature JSON-RPC library with HTTP and WebSocket support.","May constrain exact aria2 response and token shapes.",probe_required
+rpc fallback,axum + serde_json,backup,stable,"Gives full control over aria2-shaped JSON-RPC if jsonrpsee is too rigid.","More custom RPC plumbing.",backup
+bt,librqbit,probe,"9.0.0-rc.0","Existing Rust BitTorrent engine candidate from rqbit.","Release candidate status conflicts with stable-first policy; probe hard before accepting.",probe_required
 bencode,bendy,preferred,stable,"Focused bencode parser/encoder.","Integration depends on selected BitTorrent crate.",planned
-metalink,quick-xml,preferred,stable,"Mature streaming XML parser with serde support.","Metalink v3/v4 mapping still needs raria domain model.",planned
-ftp,suppaftp,probe,stable,"Maintained FTP/FTPS client candidate.","Async and resume behavior must be verified.",planned
-sftp,russh_sftp,probe,stable,"Rust SFTP client candidate in the russh ecosystem.","Host key verification and resume behavior must be verified.",planned
-rate_limit,governor,preferred,stable,"Mature rate limiting library.","Per-task and global limiter composition must be designed.",planned
-persistence,serde + ciborium,probe,stable,"Structured binary state with schema-friendly serde model.","Need atomic writes and version policy.",planned
+metalink,quick-xml,preferred,"0.40 stable","Mature streaming XML parser with serde support.","Metalink v3/v4 mapping still needs raria domain model.",accepted_for_metalink_probe
+ftp,suppaftp,probe,"8.x stable","Maintained FTP/FTPS client candidate with tokio and rustls feature paths.","Async resume behavior must be verified.",probe_required
+sftp,russh-sftp,probe,"2.x stable","Rust SFTP client candidate in the russh ecosystem.","Client ergonomics, host key verification, and resume behavior must be verified.",probe_required
+rate_limit,governor,preferred,"0.10 stable","Mature rate limiting library.","Per-task and global limiter composition must be designed.",accepted_for_foundation
+persistence,serde + ciborium,probe,"serde stable plus ciborium 0.2","Structured binary state with schema-friendly serde model.","Need atomic writes and version policy.",probe_required
 hashing,RustCrypto digest crates,preferred,stable,"Mature digest implementations for checksum contracts.","ED2K MD4 only matters in later phase.",planned
+cli,clap,preferred,"4.x stable","Mature CLI parser with derive support and stable ecosystem usage.","Need explicit handling for aria2-style dashed option names.",planned
+config,toml,preferred,stable,"Mature TOML parser for raria config and fixtures.","aria2 input-file syntax remains custom domain parsing.",planned
+errors,thiserror + anyhow,preferred,stable,"Mature split between library errors and binary context errors.","Error mapping into aria2-shaped RPC codes must stay explicit.",planned
+logging,tracing + tracing-subscriber,preferred,stable,"Tokio-native structured logging ecosystem.","Keep user-facing logs quiet by default.",planned
