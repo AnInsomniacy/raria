@@ -1,5 +1,5 @@
 id,task,status,acceptance,evidence
-70.01,Implement Metalink parser model,pending,"v3/v4 fixtures parse through quick-xml","Metalink tests"
-70.02,Generate download tasks from Metalink resources,pending,"HTTP resources become task inputs","Metalink tests"
-70.03,Implement Metalink checksum mapping,pending,"Piece or whole-file hashes are applied where supported","checksum tests"
-70.04,Implement Metalink RPC upload path,pending,"addMetalink accepts bytes and creates tasks","contracts/rpc.json"
+70.01,Implement Metalink parser model,done,"v3/v4 fixtures parse through quick-xml","crates/raria-core/tests/metalink.rs"
+70.02,Generate download tasks from Metalink resources,done,"HTTP resources become task inputs","crates/raria-core/tests/metalink.rs::add_metalink_creates_http_download_task"
+70.03,Implement Metalink checksum mapping,done,"Piece or whole-file hashes are applied where supported","crates/raria-core/tests/metalink.rs"
+70.04,Implement Metalink RPC upload path,done,"addMetalink accepts bytes and creates tasks","contracts/rpc.json; crates/raria-core/tests/metalink.rs"

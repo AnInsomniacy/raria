@@ -14,7 +14,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tokio::sync::{Mutex, broadcast};
 
-use crate::{MagnetMeta, TorrentFile, TorrentMeta, parse_magnet_uri, parse_torrent_bytes};
+use crate::{
+    MagnetMeta, TorrentFile, TorrentMeta, parse_magnet_uri, parse_metalink_bytes,
+    parse_torrent_bytes,
+};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RpcCall {
@@ -298,6 +301,7 @@ impl RpcEngine {
         match call.method.as_str() {
             "aria2.addUri" => self.add_uri(call.params),
             "aria2.addTorrent" => self.add_torrent(call.params),
+            "aria2.addMetalink" => self.add_metalink(call.params),
             "aria2.tellStatus" => self.tell_status(call.params),
             "aria2.getFiles" => self.get_files(call.params),
             "aria2.pause" | "aria2.forcePause" => self.set_status(call.params, "paused"),
@@ -573,6 +577,53 @@ impl RpcEngine {
             params: vec![RpcValue::object([("gid", RpcValue::string(&gid))])],
         });
         Ok(RpcValue::string(gid))
+    }
+
+    fn add_metalink(&mut self, params: RpcValue) -> Result<RpcValue, RpcError> {
+        let encoded = params
+            .as_array()
+            .and_then(|params| params.first())
+            .and_then(RpcValue::as_str)
+            .ok_or_else(|| RpcError::invalid_params("aria2.addMetalink expects Metalink bytes"))?;
+        let bytes = STANDARD
+            .decode(encoded)
+            .map_err(|error| RpcError::invalid_params(error.to_string()))?;
+        let metalink = parse_metalink_bytes(&bytes)
+            .map_err(|error| RpcError::invalid_params(error.to_string()))?;
+        let mut gids = Vec::new();
+        for file in metalink.files {
+            let Some(uri) = file.resources.first().cloned() else {
+                continue;
+            };
+            let gid = self.allocate_gid();
+            self.tasks.insert(
+                gid.clone(),
+                Task {
+                    gid: gid.clone(),
+                    status: "waiting".into(),
+                    uris: vec![uri],
+                    out: Some(file.name),
+                    checksum: file.checksum,
+                    header: None,
+                    load_cookies: None,
+                    max_download_limit: None,
+                    split: None,
+                    netrc_path: None,
+                    http_proxy: None,
+                    ftp_user: None,
+                    ftp_passwd: None,
+                    bittorrent: None,
+                    completed_length: 0,
+                    error_message: None,
+                },
+            );
+            self.emit_event(RpcEvent {
+                method: "aria2.onDownloadStart".into(),
+                params: vec![RpcValue::object([("gid", RpcValue::string(&gid))])],
+            });
+            gids.push(RpcValue::string(gid));
+        }
+        Ok(RpcValue::Array(gids))
     }
 
     fn tell_status(&self, params: RpcValue) -> Result<RpcValue, RpcError> {

@@ -34,6 +34,7 @@ librqbit = { version = "8.1.1", default-features = false, features = ["rust-tls"
 netrc = "0.4.1"
 reqwest = { version = "0.13.4", default-features = false, features = ["rustls", "stream"] }
 rand = "0.10.1"
+quick-xml = "0.37.5"
 russh = { version = "0.61.2", default-features = false, features = ["ring"] }
 russh-sftp = "2.3.0"
 suppaftp = { version = "8.0.3", features = ["tokio"] }

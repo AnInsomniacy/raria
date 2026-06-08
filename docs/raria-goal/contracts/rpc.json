@@ -4,7 +4,7 @@
   "methods": {
     "aria2.addUri": { "decision": "keep", "status": "implemented_for_http_ftp_sftp_and_magnet" },
     "aria2.addTorrent": { "decision": "keep", "status": "implemented_for_torrent_transfer_fixture" },
-    "aria2.addMetalink": { "decision": "keep", "status": "planned" },
+    "aria2.addMetalink": { "decision": "keep", "status": "implemented_for_http_resources" },
     "aria2.remove": { "decision": "keep", "status": "planned" },
     "aria2.forceRemove": { "decision": "keep", "status": "planned" },
     "aria2.pause": { "decision": "keep", "status": "planned" },

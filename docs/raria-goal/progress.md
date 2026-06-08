@@ -65,3 +65,9 @@ Completed checkpoint `60-bittorrent`. The transfer adapter now uses stable `libr
 Current checkpoint: `70-metalink`.
 
 Next action: implement Metalink v3/v4 parsing with `quick-xml`, map Metalink entries into new download tasks, and keep unsupported legacy Metalink behavior explicit.
+
+Completed checkpoint `70-metalink`. The Metalink parser now uses `quick-xml` for v3 and v4 file entries, size, SHA-256 whole-file hashes, and HTTP resource URLs. `aria2.addMetalink` accepts base64 Metalink bytes, creates ordinary HTTP download tasks, applies the mapped checksum, returns aria2-style gid arrays, and reuses the existing HTTP engine path.
+
+Current checkpoint: `80-persistence`.
+
+Next action: tighten `.raria` control-file semantics for new-task persistence and restart-style resume without old `.aria2` migration.
