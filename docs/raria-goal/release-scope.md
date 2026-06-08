@@ -33,4 +33,5 @@ Post-phase-one probes remain for FTPS, FTP proxy, SFTP host-key pinning, advance
 Final smoke evidence:
 
 - `cargo run -p raria -- --dir <temp> http://127.0.0.1:<fixture>/file.txt`
+- `cargo run -p raria -- --dir <temp> --input-file <temp>/tasks.txt --save-session <temp>/session.txt`
 - `crates/raria-core/tests/runtime_server.rs` covers RPC add, poll, and background HTTP completion from a clean session.

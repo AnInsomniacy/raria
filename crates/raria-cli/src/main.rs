@@ -2,7 +2,7 @@ use std::{path::PathBuf, sync::Arc};
 
 use raria_core::{
     DownloadEngine, RariaConfig, RpcCall, RpcEngine, RpcServer, RpcValue, build_rpc_router,
-    parse_cli,
+    parse_cli, parse_input_file_text, save_session_text,
 };
 use tokio::sync::Mutex;
 
@@ -24,27 +24,40 @@ async fn main() -> anyhow::Result<()> {
         return Ok(());
     }
 
-    if command.uris.is_empty() {
+    let mut input_tasks = Vec::new();
+    if let Some(path) = &command.input_file {
+        let text = tokio::fs::read_to_string(path).await?;
+        input_tasks.extend(parse_input_file_text(&text)?);
+    }
+    if !command.uris.is_empty() {
+        input_tasks.push(raria_core::InputTask {
+            uris: command.uris,
+            options: Vec::new(),
+        });
+    }
+    if let Some(path) = &command.save_session {
+        tokio::fs::write(path, save_session_text(&input_tasks)).await?;
+    }
+
+    if input_tasks.is_empty() {
         return Ok(());
     }
 
     let mut engine = RpcEngine::default();
-    for uri in command.uris {
+    for task in input_tasks {
         let mut options = Vec::new();
         if let Some(split) = command.split {
-            options.push(("split", RpcValue::string(split.to_string())));
+            options.push(("split".to_string(), RpcValue::string(split.to_string())));
+        }
+        for (key, value) in task.options {
+            options.push((key, RpcValue::string(value)));
         }
         engine
             .call(RpcCall::new(
                 "aria2.addUri",
                 RpcValue::array([
-                    RpcValue::array([RpcValue::string(uri)]),
-                    RpcValue::Object(
-                        options
-                            .into_iter()
-                            .map(|(key, value)| (key.into(), value))
-                            .collect(),
-                    ),
+                    RpcValue::Array(task.uris.into_iter().map(RpcValue::string).collect()),
+                    RpcValue::Object(options.into_iter().collect()),
                 ]),
             ))
             .map_err(|error| anyhow::anyhow!(error.message))?;

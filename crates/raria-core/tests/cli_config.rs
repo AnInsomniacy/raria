@@ -13,6 +13,8 @@ fn parses_common_new_session_cli_options() {
         "--rpc-secret=secret",
         "--continue=true",
         "--split=4",
+        "--input-file=tasks.txt",
+        "--save-session=session.txt",
         "https://example.test/file.iso",
     ])
     .expect("common options should parse");
@@ -26,6 +28,8 @@ fn parses_common_new_session_cli_options() {
             rpc_secret: Some("secret".into()),
             continue_download: true,
             split: Some(4),
+            input_file: Some("tasks.txt".into()),
+            save_session: Some("session.txt".into()),
             uris: vec!["https://example.test/file.iso".into()],
             dispositions: Vec::new(),
         }

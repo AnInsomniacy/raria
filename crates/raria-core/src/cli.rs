@@ -10,6 +10,8 @@ pub struct CliCommand {
     pub rpc_secret: Option<String>,
     pub continue_download: bool,
     pub split: Option<u16>,
+    pub input_file: Option<String>,
+    pub save_session: Option<String>,
     pub uris: Vec<String>,
     pub dispositions: Vec<OptionDisposition>,
 }
@@ -51,6 +53,8 @@ where
             .map(|split| split.parse::<u16>())
             .transpose()
             .map_err(|error| Error::CliParse(error.to_string()))?,
+        input_file: matches.get_one::<String>("input-file").cloned(),
+        save_session: matches.get_one::<String>("save-session").cloned(),
         uris: matches
             .get_many::<String>("uris")
             .into_iter()
@@ -147,6 +151,8 @@ fn command() -> Command {
         .arg(value_option("rpc-secret", "rpc-secret"))
         .arg(value_option("continue", "continue"))
         .arg(value_option("split", "split"))
+        .arg(value_option("input-file", "input-file"))
+        .arg(value_option("save-session", "save-session"))
         .arg(value_option(
             "enable-http-pipelining",
             "enable-http-pipelining",
