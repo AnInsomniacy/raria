@@ -18,9 +18,9 @@ pub use metalink::{MetalinkDocument, MetalinkFile, parse_metalink_bytes};
 pub use persistence::{ControlFile, read_control_file, write_control_file_atomic};
 pub use rpc::{
     BittorrentDownloadTask, DownloadTask, RpcCall, RpcEngine, RpcError, RpcErrorCode, RpcEvent,
-    RpcValue, build_rpc_router,
+    RpcValue, SharedRpcEngine, build_rpc_router,
 };
-pub use runtime::RariaRuntime;
+pub use runtime::{RariaRuntime, RpcServer};
 
 pub type Result<T> = std::result::Result<T, Error>;
 

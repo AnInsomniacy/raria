@@ -1,5 +1,5 @@
 id,task,status,acceptance,evidence
 90.01,Run full verification,done,"fmt and clippy and tests and fixtures pass","verification-ledger.csv"
 90.02,Document phase-one scope,done,"User-facing notes state supported protocols and unsupported ED2K/legacy state","docs/raria-goal/release-scope.md"
-90.03,Validate new-session replacement workflow,done,"CLI and RPC smoke flow works from a clean state","crates/raria-core/tests/*"
+90.03,Validate new-session replacement workflow,done,"CLI and RPC smoke flow works from a clean state","crates/raria-core/tests/*; cargo run CLI smoke"
 90.04,Review pruning decisions,done,"decision-ledger.csv matches implemented behavior","decision-ledger.csv; contracts/rpc.json"

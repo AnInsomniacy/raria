@@ -22,7 +22,7 @@ serde_json = "1.0.150"
 sha1 = "0.10.6"
 sha2 = "0.10.9"
 thiserror = "2.0.17"
-tokio = { version = "1.52.3", features = ["fs", "io-util", "macros", "rt-multi-thread", "sync", "time"] }
+tokio = { version = "1.52.3", features = ["fs", "io-util", "macros", "rt-multi-thread", "signal", "sync", "time"] }
 tokio-tungstenite = "0.29.0"
 tower = { version = "0.5.3", features = ["util"] }
 tracing = "0.1.43"

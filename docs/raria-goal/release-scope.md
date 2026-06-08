@@ -5,9 +5,11 @@
 Supported new-session surfaces:
 
 - CLI/config/input-file parsing for common aria2-style workflows.
+- Direct CLI HTTP(S), FTP, SFTP, BitTorrent, and Metalink task execution through the shared engine where the task metadata is available.
 - Save-session text for new raria tasks.
 - JSON-RPC POST on `/jsonrpc`.
 - WebSocket notifications on `/jsonrpc`.
+- Foreground RPC server mode with a background download loop.
 - `token:SECRET` parameter stripping for RPC calls.
 - Add, poll, pause, unpause, remove, global stat, multicall, method listing, notification listing, version, session info, and save-session acknowledgement.
 - HTTP(S) download with range resume, split ranges, checksum, headers, cookies, netrc, proxy, and task rate limits.
@@ -27,3 +29,8 @@ Explicit phase-one exclusions:
 - libaria2 C API compatibility.
 
 Post-phase-one probes remain for FTPS, FTP proxy, SFTP host-key pinning, advanced BitTorrent knobs, richer Metalink policy filters, global option mutation, and full all-task RPC convenience methods.
+
+Final smoke evidence:
+
+- `cargo run -p raria -- --dir <temp> http://127.0.0.1:<fixture>/file.txt`
+- `crates/raria-core/tests/runtime_server.rs` covers RPC add, poll, and background HTTP completion from a clean session.
