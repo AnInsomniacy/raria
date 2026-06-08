@@ -46,4 +46,8 @@ Added HTTP request option coverage for per-task `header` and a simple `load-cook
 
 Added focused range splitting support for HTTP downloads. For `split > 1`, raria probes `Content-Range` with a small range request, then performs sequential range requests and joins the bytes into the output file. This keeps the first implementation deterministic while preserving the external aria-style split behavior contract.
 
-Remaining in `40-http-engine`: proxy and netrc option coverage.
+Added `netrc-path` support through the mature `netrc` crate and reqwest basic auth. Added `http-proxy` support through reqwest `Proxy::http` with a local proxy fixture that proves requests route through the proxy. Completed checkpoint `40-http-engine`.
+
+Current checkpoint: `50-ftp-sftp`.
+
+Next action: probe mature FTP and SFTP crates with controlled fixtures, then implement the minimal new-task adapter path that feeds the existing RPC status model.

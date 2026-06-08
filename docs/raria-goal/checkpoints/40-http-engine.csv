@@ -1,6 +1,6 @@
 id,task,status,acceptance,evidence
 40.01,Implement HTTP(S) adapter with reqwest,done,"Single-source download works","crates/raria-core/tests/http_engine.rs"
 40.02,Implement range splitting and resume,done,"Partial download resumes through .raria state","crates/raria-core/tests/http_engine.rs"
-40.03,Implement proxy headers cookies and netrc support,in_progress,"Common option fixtures pass","crates/raria-core/tests/http_engine.rs"
+40.03,Implement proxy headers cookies and netrc support,done,"Common option fixtures pass","crates/raria-core/tests/http_engine.rs"
 40.04,Implement checksum verification,done,"Whole-file checksum failure is reported","crates/raria-core/tests/http_engine.rs"
 40.05,Implement rate limits,done,"Global and task limiters are enforced","crates/raria-core/tests/http_engine.rs"

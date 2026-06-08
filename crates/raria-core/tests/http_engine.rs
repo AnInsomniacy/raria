@@ -321,6 +321,104 @@ async fn splits_http_download_into_range_requests() {
     );
 }
 
+#[tokio::test]
+async fn uses_netrc_credentials_for_http_auth() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("listener");
+    let addr = listener.local_addr().expect("local addr");
+    tokio::spawn(async move {
+        let app = Router::new().route("/netrc.txt", get(netrc_file));
+        axum::serve(listener, app).await.expect("fixture server");
+    });
+
+    let temp = tempfile::tempdir().expect("tempdir");
+    let netrc_path = temp.path().join(".netrc");
+    fs::write(
+        &netrc_path,
+        format!(
+            "machine 127.0.0.1 login raria password secret port {}",
+            addr.port()
+        ),
+    )
+    .await
+    .expect("netrc file");
+
+    let mut rpc = RpcEngine::default();
+    rpc.call(RpcCall::new(
+        "aria2.addUri",
+        RpcValue::array([
+            RpcValue::array([RpcValue::string(format!("http://{addr}/netrc.txt"))]),
+            RpcValue::object([
+                ("out", RpcValue::string("netrc.txt")),
+                ("netrc-path", RpcValue::string(netrc_path.to_string_lossy())),
+            ]),
+        ]),
+    ))
+    .expect("addUri");
+
+    let config = RariaConfig {
+        download_dir: temp.path().to_path_buf(),
+        ..RariaConfig::default()
+    };
+    DownloadEngine::new(config)
+        .run_once(&mut rpc)
+        .await
+        .expect("download");
+
+    let bytes = fs::read(temp.path().join("netrc.txt"))
+        .await
+        .expect("downloaded file");
+    assert_eq!(bytes, b"netrc content");
+}
+
+#[tokio::test]
+async fn uses_configured_http_proxy() {
+    let seen_uri = Arc::new(Mutex::new(None::<String>));
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("listener");
+    let proxy_addr = listener.local_addr().expect("local addr");
+    let seen_uri_for_server = seen_uri.clone();
+    tokio::spawn(async move {
+        let app = Router::new()
+            .fallback(proxy_file)
+            .with_state(seen_uri_for_server);
+        axum::serve(listener, app).await.expect("proxy server");
+    });
+
+    let temp = tempfile::tempdir().expect("tempdir");
+    let mut rpc = RpcEngine::default();
+    rpc.call(RpcCall::new(
+        "aria2.addUri",
+        RpcValue::array([
+            RpcValue::array([RpcValue::string("http://example.invalid/proxied.txt")]),
+            RpcValue::object([
+                ("out", RpcValue::string("proxied.txt")),
+                (
+                    "http-proxy",
+                    RpcValue::string(format!("http://{proxy_addr}")),
+                ),
+            ]),
+        ]),
+    ))
+    .expect("addUri");
+
+    let config = RariaConfig {
+        download_dir: temp.path().to_path_buf(),
+        ..RariaConfig::default()
+    };
+    DownloadEngine::new(config)
+        .run_once(&mut rpc)
+        .await
+        .expect("download");
+
+    let bytes = fs::read(temp.path().join("proxied.txt"))
+        .await
+        .expect("downloaded file");
+    assert_eq!(bytes, b"proxied content");
+    assert_eq!(
+        seen_uri.lock().await.as_deref(),
+        Some("http://example.invalid/proxied.txt")
+    );
+}
+
 async fn test_file() -> impl IntoResponse {
     "hello from raria"
 }
@@ -374,4 +472,24 @@ async fn split_file(
         }
         _ => (StatusCode::OK, &bytes[..]).into_response(),
     }
+}
+
+async fn netrc_file(headers: HeaderMap) -> Response {
+    let authorized = headers
+        .get("authorization")
+        .and_then(|value| value.to_str().ok())
+        == Some("Basic cmFyaWE6c2VjcmV0");
+    if authorized {
+        (StatusCode::OK, "netrc content").into_response()
+    } else {
+        (StatusCode::UNAUTHORIZED, "missing auth").into_response()
+    }
+}
+
+async fn proxy_file(
+    State(seen_uri): State<Arc<Mutex<Option<String>>>>,
+    uri: axum::http::Uri,
+) -> Response {
+    *seen_uri.lock().await = Some(uri.to_string());
+    (StatusCode::OK, "proxied content").into_response()
 }

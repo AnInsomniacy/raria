@@ -44,6 +44,8 @@ pub struct HttpTask {
     pub load_cookies: Option<String>,
     pub max_download_limit: Option<u32>,
     pub split: Option<u16>,
+    pub netrc_path: Option<String>,
+    pub http_proxy: Option<String>,
 }
 
 impl RpcEvent {
@@ -328,6 +330,8 @@ impl RpcEngine {
                     load_cookies: task.load_cookies.clone(),
                     max_download_limit: task.max_download_limit,
                     split: task.split,
+                    netrc_path: task.netrc_path.clone(),
+                    http_proxy: task.http_proxy.clone(),
                 })
             })
             .collect()
@@ -415,6 +419,18 @@ impl RpcEngine {
             .and_then(|options| options.get("split"))
             .and_then(RpcValue::as_str)
             .and_then(|value| value.parse::<u16>().ok());
+        let netrc_path = params
+            .as_array()
+            .and_then(|params| params.get(1))
+            .and_then(|options| options.get("netrc-path"))
+            .and_then(RpcValue::as_str)
+            .map(ToOwned::to_owned);
+        let http_proxy = params
+            .as_array()
+            .and_then(|params| params.get(1))
+            .and_then(|options| options.get("http-proxy"))
+            .and_then(RpcValue::as_str)
+            .map(ToOwned::to_owned);
 
         let gid = self.allocate_gid();
         self.tasks.insert(
@@ -429,6 +445,8 @@ impl RpcEngine {
                 load_cookies,
                 max_download_limit,
                 split,
+                netrc_path,
+                http_proxy,
                 completed_length: 0,
                 error_message: None,
             },
@@ -596,6 +614,8 @@ struct Task {
     load_cookies: Option<String>,
     max_download_limit: Option<u32>,
     split: Option<u16>,
+    netrc_path: Option<String>,
+    http_proxy: Option<String>,
     completed_length: u64,
     error_message: Option<String>,
 }

@@ -1,4 +1,5 @@
 use std::{
+    io::Cursor,
     num::NonZeroU32,
     path::{Path, PathBuf},
 };
@@ -147,7 +148,17 @@ impl DownloadEngine {
         task: &HttpTask,
         range: Option<&str>,
     ) -> Result<reqwest::RequestBuilder> {
-        let mut request = self.client.get(&task.uri);
+        let client = if let Some(proxy) = &task.http_proxy {
+            reqwest::Client::builder()
+                .proxy(reqwest::Proxy::http(proxy).map_err(|error| {
+                    Error::Download(format!("invalid http-proxy option: {error}"))
+                })?)
+                .build()
+                .map_err(|error| Error::Download(error.to_string()))?
+        } else {
+            self.client.clone()
+        };
+        let mut request = client.get(&task.uri);
         if let Some(header) = &task.header {
             let (name, value) = header
                 .split_once(':')
@@ -160,11 +171,41 @@ impl DownloadEngine {
                 .map_err(|error| Error::Download(error.to_string()))?;
             request = request.header(reqwest::header::COOKIE, cookie.trim());
         }
+        if let Some(path) = &task.netrc_path
+            && let Some((login, password)) = netrc_credentials(path, &task.uri).await?
+        {
+            request = request.basic_auth(login, Some(password));
+        }
         if let Some(range) = range {
             request = request.header(reqwest::header::RANGE, range);
         }
         Ok(request)
     }
+}
+
+async fn netrc_credentials(path: &str, uri: &str) -> Result<Option<(String, String)>> {
+    let text = fs::read_to_string(path)
+        .await
+        .map_err(|error| Error::Download(error.to_string()))?;
+    let netrc = netrc::Netrc::parse(Cursor::new(text))
+        .map_err(|error| Error::Download(format!("{error:?}")))?;
+    let url = reqwest::Url::parse(uri).map_err(|error| Error::Download(error.to_string()))?;
+    let Some(host) = url.host_str() else {
+        return Ok(None);
+    };
+    let port = url.port();
+    let machine = netrc
+        .hosts
+        .iter()
+        .find(|(name, machine)| name == host && (machine.port.is_none() || machine.port == port))
+        .map(|(_, machine)| machine)
+        .or(netrc.default.as_ref());
+    Ok(machine.and_then(|machine| {
+        machine
+            .password
+            .as_ref()
+            .map(|password| (machine.login.clone(), password.clone()))
+    }))
 }
 
 async fn throttle_bytes(bytes_per_second: u32, byte_count: usize) -> Result<()> {
