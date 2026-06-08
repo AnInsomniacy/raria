@@ -106,7 +106,7 @@ impl DownloadEngine {
         let session = Session::new_with_opts(
             self.config.download_dir.clone(),
             SessionOptions {
-                disable_dht: task.initial_peers.is_empty(),
+                disable_dht: !task.initial_peers.is_empty(),
                 disable_dht_persistence: true,
                 ..Default::default()
             },
