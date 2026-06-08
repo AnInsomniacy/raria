@@ -5,7 +5,7 @@
 Supported new-session surfaces:
 
 - CLI/config/input-file parsing for common aria2-style workflows.
-- Direct CLI HTTP(S), FTP, SFTP, BitTorrent, and Metalink task execution through the shared engine where the task metadata is available.
+- Direct CLI URI execution for HTTP(S), FTP, SFTP, and BitTorrent magnet tasks through the shared engine.
 - Save-session text for new raria tasks.
 - JSON-RPC POST on `/jsonrpc`.
 - WebSocket notifications on `/jsonrpc`.
