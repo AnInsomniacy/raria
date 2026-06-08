@@ -51,3 +51,9 @@ Added `netrc-path` support through the mature `netrc` crate and reqwest basic au
 Current checkpoint: `50-ftp-sftp`.
 
 Next action: probe mature FTP and SFTP crates with controlled fixtures, then implement the minimal new-task adapter path that feeds the existing RPC status model.
+
+Completed checkpoint `50-ftp-sftp`. The download engine now routes `ftp://` tasks through `suppaftp` and `sftp://` tasks through `russh-sftp + russh`. Controlled local fixtures cover basic download, `.raria` resume by completed length, status completion, and `ftp-user` plus `ftp-passwd` credential options. `libunftp + unftp-sbe-fs` is accepted as the FTP fixture stack. FTPS, FTP proxy behavior, and SFTP host-key pinning remain recorded probes rather than fake compatibility.
+
+Current checkpoint: `60-bittorrent`.
+
+Next action: probe the BitTorrent library path, with extra scrutiny because the current `librqbit` candidate is published as a release candidate.

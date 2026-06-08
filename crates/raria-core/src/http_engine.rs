@@ -2,14 +2,18 @@ use std::{
     io::Cursor,
     num::NonZeroU32,
     path::{Path, PathBuf},
+    sync::Arc,
 };
 
 use governor::{Quota, RateLimiter};
+use russh::client;
+use russh_sftp::client::SftpSession;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
+use suppaftp::tokio::AsyncFtpStream;
 use tokio::{fs, io::AsyncWriteExt};
 
-use crate::{Error, HttpTask, RariaConfig, Result, RpcEngine};
+use crate::{DownloadTask, Error, RariaConfig, Result, RpcEngine};
 
 pub struct DownloadEngine {
     config: RariaConfig,
@@ -27,47 +31,15 @@ impl DownloadEngine {
     pub async fn run_once(&self, rpc: &mut RpcEngine) -> Result<()> {
         let tasks = rpc.pending_http_tasks();
         for task in tasks {
-            let path = self.output_path(&task.uri, task.out.as_deref());
-            let control_path = self.control_path(&path);
-            let completed = read_control_file(&control_path).await?;
-            let bytes = if completed == 0 && task.split.unwrap_or(1) > 1 {
-                self.download_split(&task).await?
-            } else {
-                let range = (completed > 0).then(|| format!("bytes={completed}-"));
-                self.download_range(&task, range.as_deref()).await?
-            };
-            if let Some(limit) = task.max_download_limit {
-                throttle_bytes(limit, bytes.len()).await?;
-            }
-            if let Some(parent) = path.parent() {
-                fs::create_dir_all(parent)
-                    .await
-                    .map_err(|error| Error::Download(error.to_string()))?;
-            }
-            if completed > 0 {
-                let mut file = fs::OpenOptions::new()
-                    .append(true)
-                    .open(&path)
-                    .await
-                    .map_err(|error| Error::Download(error.to_string()))?;
-                file.write_all(&bytes)
-                    .await
-                    .map_err(|error| Error::Download(error.to_string()))?;
-            } else {
-                fs::write(&path, &bytes)
-                    .await
-                    .map_err(|error| Error::Download(error.to_string()))?;
-            }
-            let completed_length = completed + bytes.len() as u64;
-            if let Some(message) = checksum_error(task.checksum.as_deref(), &path).await? {
-                let _ = fs::remove_file(&control_path).await;
-                rpc.fail_task(&task.gid, message)
-                    .map_err(|error| Error::Download(error.message))?;
-                continue;
-            }
-            let _ = fs::remove_file(&control_path).await;
-            rpc.complete_task(&task.gid, completed_length)
-                .map_err(|error| Error::Download(error.message))?;
+            self.run_http_task(rpc, task).await?;
+        }
+        let tasks = rpc.pending_ftp_tasks();
+        for task in tasks {
+            self.run_ftp_task(rpc, task).await?;
+        }
+        let tasks = rpc.pending_sftp_tasks();
+        for task in tasks {
+            self.run_sftp_task(rpc, task).await?;
         }
         Ok(())
     }
@@ -87,7 +59,83 @@ impl DownloadEngine {
         ))
     }
 
-    async fn download_split(&self, task: &HttpTask) -> Result<bytes::Bytes> {
+    async fn run_http_task(&self, rpc: &mut RpcEngine, task: DownloadTask) -> Result<()> {
+        let path = self.output_path(&task.uri, task.out.as_deref());
+        let control_path = self.control_path(&path);
+        let completed = read_control_file(&control_path).await?;
+        let bytes = if completed == 0 && task.split.unwrap_or(1) > 1 {
+            self.download_split(&task).await?
+        } else {
+            let range = (completed > 0).then(|| format!("bytes={completed}-"));
+            self.download_range(&task, range.as_deref()).await?
+        };
+        self.finish_task(rpc, &task, &path, &control_path, completed, &bytes)
+            .await
+    }
+
+    async fn run_ftp_task(&self, rpc: &mut RpcEngine, task: DownloadTask) -> Result<()> {
+        let path = self.output_path(&task.uri, task.out.as_deref());
+        let control_path = self.control_path(&path);
+        let completed = read_control_file(&control_path).await?;
+        let bytes = self.download_ftp(&task, completed).await?;
+        self.finish_task(rpc, &task, &path, &control_path, completed, &bytes)
+            .await
+    }
+
+    async fn run_sftp_task(&self, rpc: &mut RpcEngine, task: DownloadTask) -> Result<()> {
+        let path = self.output_path(&task.uri, task.out.as_deref());
+        let control_path = self.control_path(&path);
+        let completed = read_control_file(&control_path).await?;
+        let bytes = self.download_sftp(&task, completed).await?;
+        self.finish_task(rpc, &task, &path, &control_path, completed, &bytes)
+            .await
+    }
+
+    async fn finish_task(
+        &self,
+        rpc: &mut RpcEngine,
+        task: &DownloadTask,
+        path: &Path,
+        control_path: &Path,
+        completed: u64,
+        bytes: &[u8],
+    ) -> Result<()> {
+        if let Some(limit) = task.max_download_limit {
+            throttle_bytes(limit, bytes.len()).await?;
+        }
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)
+                .await
+                .map_err(|error| Error::Download(error.to_string()))?;
+        }
+        if completed > 0 {
+            let mut file = fs::OpenOptions::new()
+                .append(true)
+                .open(path)
+                .await
+                .map_err(|error| Error::Download(error.to_string()))?;
+            file.write_all(bytes)
+                .await
+                .map_err(|error| Error::Download(error.to_string()))?;
+        } else {
+            fs::write(path, bytes)
+                .await
+                .map_err(|error| Error::Download(error.to_string()))?;
+        }
+        let completed_length = completed + bytes.len() as u64;
+        if let Some(message) = checksum_error(task.checksum.as_deref(), path).await? {
+            let _ = fs::remove_file(control_path).await;
+            rpc.fail_task(&task.gid, message)
+                .map_err(|error| Error::Download(error.message))?;
+            return Ok(());
+        }
+        let _ = fs::remove_file(control_path).await;
+        rpc.complete_task(&task.gid, completed_length)
+            .map_err(|error| Error::Download(error.message))?;
+        Ok(())
+    }
+
+    async fn download_split(&self, task: &DownloadTask) -> Result<bytes::Bytes> {
         let total_length = self.probe_length(task).await?;
         let split = u64::from(task.split.unwrap_or(1).max(1));
         let chunk_size = total_length.div_ceil(split);
@@ -108,7 +156,7 @@ impl DownloadEngine {
         Ok(out.into())
     }
 
-    async fn probe_length(&self, task: &HttpTask) -> Result<u64> {
+    async fn probe_length(&self, task: &DownloadTask) -> Result<u64> {
         let response = self
             .prepare_request(task, Some("bytes=0-0"))
             .await?
@@ -130,7 +178,11 @@ impl DownloadEngine {
             .map_err(|error| Error::Download(error.to_string()))
     }
 
-    async fn download_range(&self, task: &HttpTask, range: Option<&str>) -> Result<bytes::Bytes> {
+    async fn download_range(
+        &self,
+        task: &DownloadTask,
+        range: Option<&str>,
+    ) -> Result<bytes::Bytes> {
         self.prepare_request(task, range)
             .await?
             .send()
@@ -145,7 +197,7 @@ impl DownloadEngine {
 
     async fn prepare_request(
         &self,
-        task: &HttpTask,
+        task: &DownloadTask,
         range: Option<&str>,
     ) -> Result<reqwest::RequestBuilder> {
         let client = if let Some(proxy) = &task.http_proxy {
@@ -180,6 +232,143 @@ impl DownloadEngine {
             request = request.header(reqwest::header::RANGE, range);
         }
         Ok(request)
+    }
+
+    async fn download_ftp(&self, task: &DownloadTask, completed: u64) -> Result<Vec<u8>> {
+        let url =
+            reqwest::Url::parse(&task.uri).map_err(|error| Error::Download(error.to_string()))?;
+        let host = url
+            .host_str()
+            .ok_or_else(|| Error::Download("FTP URI is missing a host".into()))?;
+        let port = url.port().unwrap_or(21);
+        let username = task.ftp_user.as_deref().unwrap_or_else(|| {
+            if url.username().is_empty() {
+                "anonymous"
+            } else {
+                url.username()
+            }
+        });
+        let password = task
+            .ftp_passwd
+            .as_deref()
+            .or_else(|| url.password())
+            .unwrap_or("anonymous@");
+        let path = url.path().trim_start_matches('/');
+        let mut ftp = AsyncFtpStream::connect((host, port))
+            .await
+            .map_err(|error| Error::Download(error.to_string()))?;
+        ftp.login(username, password)
+            .await
+            .map_err(|error| Error::Download(error.to_string()))?;
+        if completed > 0 {
+            ftp.resume_transfer(completed as usize)
+                .await
+                .map_err(|error| Error::Download(error.to_string()))?;
+        }
+        let bytes = ftp
+            .retr(path, |mut stream| {
+                Box::pin(async move {
+                    let mut bytes = Vec::new();
+                    tokio::io::AsyncReadExt::read_to_end(&mut stream, &mut bytes)
+                        .await
+                        .map_err(suppaftp::FtpError::ConnectionError)?;
+                    Ok((bytes, stream))
+                })
+            })
+            .await
+            .map_err(|error| Error::Download(error.to_string()))?;
+        let _ = ftp.quit().await;
+        Ok(bytes)
+    }
+
+    async fn download_sftp(&self, task: &DownloadTask, completed: u64) -> Result<Vec<u8>> {
+        let url =
+            reqwest::Url::parse(&task.uri).map_err(|error| Error::Download(error.to_string()))?;
+        let host = url
+            .host_str()
+            .ok_or_else(|| Error::Download("SFTP URI is missing a host".into()))?;
+        let port = url.port().unwrap_or(22);
+        let username = task.ftp_user.as_deref().unwrap_or_else(|| {
+            if url.username().is_empty() {
+                "anonymous"
+            } else {
+                url.username()
+            }
+        });
+        let password = task
+            .ftp_passwd
+            .as_deref()
+            .or_else(|| url.password())
+            .unwrap_or("");
+        let path = url.path();
+        let config = client::Config::default();
+        let mut session = client::connect(Arc::new(config), (host, port), AcceptAnyServerKey)
+            .await
+            .map_err(|error| Error::Download(error.to_string()))?;
+        let auth = session
+            .authenticate_password(username, password)
+            .await
+            .map_err(|error| Error::Download(error.to_string()))?;
+        if !auth.success() {
+            return Err(Error::Download("SFTP authentication failed".into()));
+        }
+        let channel = session
+            .channel_open_session()
+            .await
+            .map_err(|error| Error::Download(error.to_string()))?;
+        channel
+            .request_subsystem(true, "sftp")
+            .await
+            .map_err(|error| Error::Download(error.to_string()))?;
+        let sftp = SftpSession::new(channel.into_stream())
+            .await
+            .map_err(|error| Error::Download(error.to_string()))?;
+        let mut file = sftp
+            .open(path)
+            .await
+            .map_err(|error| Error::Download(error.to_string()))?;
+        if completed > 0 {
+            tokio::io::AsyncSeekExt::seek(&mut file, std::io::SeekFrom::Start(completed))
+                .await
+                .map_err(|error| Error::Download(error.to_string()))?;
+        }
+        let mut bytes = Vec::new();
+        tokio::io::AsyncReadExt::read_to_end(&mut file, &mut bytes)
+            .await
+            .map_err(|error| Error::Download(error.to_string()))?;
+        let _ = file.shutdown().await;
+        let _ = sftp.close().await;
+        Ok(bytes)
+    }
+}
+
+#[derive(Debug)]
+struct SftpClientError(String);
+
+impl std::fmt::Display for SftpClientError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for SftpClientError {}
+
+impl From<russh::Error> for SftpClientError {
+    fn from(error: russh::Error) -> Self {
+        Self(error.to_string())
+    }
+}
+
+struct AcceptAnyServerKey;
+
+impl client::Handler for AcceptAnyServerKey {
+    type Error = SftpClientError;
+
+    async fn check_server_key(
+        &mut self,
+        _server_public_key: &russh::keys::PublicKey,
+    ) -> std::result::Result<bool, Self::Error> {
+        Ok(true)
     }
 }
 

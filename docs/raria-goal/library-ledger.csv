@@ -6,8 +6,9 @@ rpc fallback,axum + serde_json,accepted,stable,"Gives full control over aria2-sh
 bt,librqbit,probe,"9.0.0-rc.0","Existing Rust BitTorrent engine candidate from rqbit.","Release candidate status conflicts with stable-first policy; probe hard before accepting.",probe_required
 bencode,bendy,preferred,stable,"Focused bencode parser/encoder.","Integration depends on selected BitTorrent crate.",planned
 metalink,quick-xml,preferred,"0.40 stable","Mature streaming XML parser with serde support.","Metalink v3/v4 mapping still needs raria domain model.",accepted_for_metalink_probe
-ftp,suppaftp,probe,"8.x stable","Maintained FTP/FTPS client candidate with tokio and rustls feature paths.","Async resume behavior must be verified.",probe_required
-sftp,russh-sftp,probe,"2.x stable","Rust SFTP client candidate in the russh ecosystem.","Client ergonomics, host key verification, and resume behavior must be verified.",probe_required
+ftp,suppaftp,accepted,"8.0.3 stable","Maintained FTP client with a Tokio async backend, RETR streaming, and REST resume support.","FTPS remains a later probe because phase-one tests cover plain FTP only.",accepted_for_ftp_adapter
+ftp fixture,libunftp + unftp-sbe-fs,accepted,"0.23.0 + 0.4.0 stable","Mature local FTP server and filesystem backend for controlled protocol fixtures.","The fixture uses anonymous local FTP only.",accepted_for_ftp_fixture
+sftp,russh-sftp + russh,accepted,"2.3.0 + 0.61.2 stable","SFTP high-level client plus a real russh SSH transport supports read and seek-based resume fixtures.","Current adapter accepts any server key until ssh-host-key-md policy is implemented.",accepted_for_sftp_adapter
 rate_limit,governor,preferred,"0.10 stable","Mature rate limiting library.","Per-task and global limiter composition must be designed.",accepted_for_foundation
 persistence,serde + ciborium,probe,"serde stable plus ciborium 0.2","Structured binary state with schema-friendly serde model.","Need atomic writes and version policy.",probe_required
 hashing,RustCrypto digest crates,preferred,stable,"Mature digest implementations for checksum contracts.","ED2K MD4 only matters in later phase.",planned

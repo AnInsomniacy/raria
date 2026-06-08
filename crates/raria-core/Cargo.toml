@@ -12,9 +12,12 @@ clap.workspace = true
 governor.workspace = true
 netrc.workspace = true
 reqwest.workspace = true
+russh.workspace = true
+russh-sftp.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
+suppaftp.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tower.workspace = true
@@ -22,6 +25,10 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 
 [dev-dependencies]
+anyhow.workspace = true
 futures-util.workspace = true
+libunftp.workspace = true
+rand.workspace = true
 tempfile.workspace = true
 tokio-tungstenite.workspace = true
+unftp-sbe-fs.workspace = true

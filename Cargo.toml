@@ -26,6 +26,12 @@ tracing = "0.1.43"
 tracing-subscriber = { version = "0.3.22", features = ["env-filter", "fmt"] }
 futures-util = "0.3.32"
 governor = "0.10.4"
+libunftp = { version = "0.23.0", default-features = false, features = ["ring"] }
 netrc = "0.4.1"
 reqwest = { version = "0.13.4", default-features = false, features = ["rustls", "stream"] }
+rand = "0.10.1"
+russh = { version = "0.61.2", default-features = false, features = ["ring"] }
+russh-sftp = "2.3.0"
+suppaftp = { version = "8.0.3", features = ["tokio"] }
 tempfile = "3.24.0"
+unftp-sbe-fs = "0.4.0"

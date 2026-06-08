@@ -4,7 +4,7 @@ checkpoint,command,expected,last_result,evidence
 20,"cargo test --workspace cli config input","CLI/config/input fixtures pass",passed,"cargo test --workspace; crates/raria-core/tests/cli_config.rs"
 30,"cargo test --workspace rpc events","RPC and WebSocket contract fixtures pass",passed,"cargo test --workspace; crates/raria-core/tests/rpc_events.rs; crates/raria-core/tests/rpc_transport.rs"
 40,"cargo test --workspace http","HTTP range/resume fixture passes",passed,"cargo test --workspace; crates/raria-core/tests/http_engine.rs"
-50,"cargo test --workspace ftp sftp","FTP and SFTP controlled fixtures pass",pending,""
+50,"cargo test -p raria-core --test ftp_engine && cargo test -p raria-core --test sftp_engine","FTP and SFTP controlled fixtures pass",passed,"crates/raria-core/tests/ftp_engine.rs; crates/raria-core/tests/sftp_engine.rs"
 60,"cargo test --workspace bittorrent","BitTorrent fixtures or probe report passes",pending,""
 70,"cargo test --workspace metalink","Metalink fixtures pass",pending,""
 80,"cargo test --workspace persistence","raria schema and resume fixtures pass",pending,"contracts/raria-control.schema.json"

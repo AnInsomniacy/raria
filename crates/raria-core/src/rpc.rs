@@ -35,7 +35,7 @@ pub struct RpcEvent {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct HttpTask {
+pub struct DownloadTask {
     pub gid: String,
     pub uri: String,
     pub out: Option<String>,
@@ -46,6 +46,8 @@ pub struct HttpTask {
     pub split: Option<u16>,
     pub netrc_path: Option<String>,
     pub http_proxy: Option<String>,
+    pub ftp_user: Option<String>,
+    pub ftp_passwd: Option<String>,
 }
 
 impl RpcEvent {
@@ -312,16 +314,30 @@ impl RpcEngine {
         std::mem::take(&mut self.events)
     }
 
-    pub fn pending_http_tasks(&self) -> Vec<HttpTask> {
+    pub fn pending_http_tasks(&self) -> Vec<DownloadTask> {
+        self.pending_tasks_with_scheme(|uri| {
+            uri.starts_with("http://") || uri.starts_with("https://")
+        })
+    }
+
+    pub fn pending_ftp_tasks(&self) -> Vec<DownloadTask> {
+        self.pending_tasks_with_scheme(|uri| uri.starts_with("ftp://"))
+    }
+
+    pub fn pending_sftp_tasks(&self) -> Vec<DownloadTask> {
+        self.pending_tasks_with_scheme(|uri| uri.starts_with("sftp://"))
+    }
+
+    fn pending_tasks_with_scheme(
+        &self,
+        matches_scheme: impl Fn(&str) -> bool,
+    ) -> Vec<DownloadTask> {
         self.tasks
             .values()
             .filter(|task| task.status == "waiting")
             .filter_map(|task| {
-                let uri = task
-                    .uris
-                    .iter()
-                    .find(|uri| uri.starts_with("http://") || uri.starts_with("https://"))?;
-                Some(HttpTask {
+                let uri = task.uris.iter().find(|uri| matches_scheme(uri))?;
+                Some(DownloadTask {
                     gid: task.gid.clone(),
                     uri: uri.clone(),
                     out: task.out.clone(),
@@ -332,6 +348,8 @@ impl RpcEngine {
                     split: task.split,
                     netrc_path: task.netrc_path.clone(),
                     http_proxy: task.http_proxy.clone(),
+                    ftp_user: task.ftp_user.clone(),
+                    ftp_passwd: task.ftp_passwd.clone(),
                 })
             })
             .collect()
@@ -431,6 +449,18 @@ impl RpcEngine {
             .and_then(|options| options.get("http-proxy"))
             .and_then(RpcValue::as_str)
             .map(ToOwned::to_owned);
+        let ftp_user = params
+            .as_array()
+            .and_then(|params| params.get(1))
+            .and_then(|options| options.get("ftp-user"))
+            .and_then(RpcValue::as_str)
+            .map(ToOwned::to_owned);
+        let ftp_passwd = params
+            .as_array()
+            .and_then(|params| params.get(1))
+            .and_then(|options| options.get("ftp-passwd"))
+            .and_then(RpcValue::as_str)
+            .map(ToOwned::to_owned);
 
         let gid = self.allocate_gid();
         self.tasks.insert(
@@ -447,6 +477,8 @@ impl RpcEngine {
                 split,
                 netrc_path,
                 http_proxy,
+                ftp_user,
+                ftp_passwd,
                 completed_length: 0,
                 error_message: None,
             },
@@ -616,6 +648,8 @@ struct Task {
     split: Option<u16>,
     netrc_path: Option<String>,
     http_proxy: Option<String>,
+    ftp_user: Option<String>,
+    ftp_passwd: Option<String>,
     completed_length: u64,
     error_message: Option<String>,
 }
